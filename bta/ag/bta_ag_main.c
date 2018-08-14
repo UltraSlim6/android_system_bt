@@ -36,8 +36,6 @@
 #define BTA_AG_DEBUG FALSE
 #endif
 
-extern fixed_queue_t *btu_bta_alarm_queue;
-
 #if BTA_AG_DEBUG == TRUE
 static char *bta_ag_evt_str(UINT16 event, tBTA_AG_RES result);
 static char *bta_ag_state_str(UINT8 state);
@@ -276,6 +274,29 @@ tBTA_AG_CB  bta_ag_cb;
 
 /*******************************************************************************
 **
+** Function         bta_ag_timer_cback
+**
+** Description      AG timer callback.
+**
+**
+** Returns          void
+**
+*******************************************************************************/
+static void bta_ag_timer_cback(void *p)
+{
+    BT_HDR          *p_buf;
+    TIMER_LIST_ENT  *p_tle = (TIMER_LIST_ENT *) p;
+
+    if ((p_buf = (BT_HDR *) GKI_getbuf(sizeof(BT_HDR))) != NULL)
+    {
+        p_buf->event = p_tle->event;
+        p_buf->layer_specific = bta_ag_scb_to_idx((tBTA_AG_SCB *) p_tle->param);
+        bta_sys_sendmsg(p_buf);
+    }
+}
+
+/*******************************************************************************
+**
 ** Function         bta_ag_scb_alloc
 **
 ** Description      Allocate an AG service control block.
@@ -302,11 +323,9 @@ static tBTA_AG_SCB *bta_ag_scb_alloc(void)
             p_scb->sco_codec = BTA_AG_CODEC_CVSD;
 #endif
             /* set up timers */
-            p_scb->ring_timer = alarm_new("bta_ag.scb_ring_timer");
-            p_scb->collision_timer = alarm_new("bta_ag.scb_collision_timer");
+            p_scb->act_timer.param = (UINT32) p_scb;
+            p_scb->act_timer.p_cback = bta_ag_timer_cback;
 #if (BTM_WBS_INCLUDED == TRUE)
-            p_scb->codec_negotiation_timer =
-                alarm_new("bta_ag.scb_codec_negotiation_timer");
             /* set eSCO mSBC setting to T2 as the preferred */
             p_scb->codec_msbc_settings = BTA_AG_SCO_MSBC_SETTINGS_T2;
 #endif
@@ -341,12 +360,12 @@ void bta_ag_scb_dealloc(tBTA_AG_SCB *p_scb)
 
     APPL_TRACE_DEBUG("bta_ag_scb_dealloc %d", bta_ag_scb_to_idx(p_scb));
 
-    /* stop and free timers */
-    alarm_free(p_scb->ring_timer);
+    /* stop timers */
+    bta_sys_stop_timer(&p_scb->act_timer);
 #if (BTM_WBS_INCLUDED == TRUE)
-    alarm_free(p_scb->codec_negotiation_timer);
+    bta_sys_stop_timer(&p_scb->cn_timer);
 #endif
-    alarm_free(p_scb->collision_timer);
+    bta_sys_stop_timer(&p_scb->colli_timer);
 
     /* initialize control block */
     memset(p_scb, 0, sizeof(tBTA_AG_SCB));
@@ -551,7 +570,7 @@ tBTA_AG_SCB *bta_ag_get_other_idle_scb (tBTA_AG_SCB *p_curr_scb)
 
 /*******************************************************************************
 **
-** Function         bta_ag_collision_timer_cback
+** Function         bta_ag_colli_timer_cback
 **
 ** Description      AG connection collision timer callback
 **
@@ -559,15 +578,25 @@ tBTA_AG_SCB *bta_ag_get_other_idle_scb (tBTA_AG_SCB *p_curr_scb)
 ** Returns          void
 **
 *******************************************************************************/
-static void bta_ag_collision_timer_cback(void *data)
+static void bta_ag_colli_timer_cback (TIMER_LIST_ENT *p_tle)
 {
-    tBTA_AG_SCB *p_scb = (tBTA_AG_SCB *)data;
+    tBTA_AG_SCB *p_scb;
 
-    APPL_TRACE_DEBUG("%s", __func__);
+    APPL_TRACE_DEBUG ("bta_ag_colli_timer_cback");
 
-    /* If the peer haven't opened AG connection     */
-    /* we will restart opening process.             */
-    bta_ag_resume_open(p_scb);
+    if (p_tle)
+    {
+        p_scb = (tBTA_AG_SCB *)p_tle->param;
+
+        if (p_scb)
+        {
+            p_scb->colli_tmr_on = FALSE;
+
+            /* If the peer haven't opened AG connection     */
+            /* we will restart opening process.             */
+            bta_ag_resume_open (p_scb);
+        }
+    }
 }
 
 /*******************************************************************************
@@ -622,10 +651,12 @@ void bta_ag_collision_cback (tBTA_SYS_CONN_STATUS status, UINT8 id,
             bta_ag_start_servers(p_scb, p_scb->reg_services);
 
         /* Start timer to han */
-        alarm_set_on_queue(p_scb->collision_timer, BTA_AG_COLLISION_TIMEOUT_MS,
-                           bta_ag_collision_timer_cback, p_scb,
-                           btu_bta_alarm_queue);
+        p_scb->colli_timer.p_cback = (TIMER_CBACK*)&bta_ag_colli_timer_cback;
+        p_scb->colli_timer.param = (INT32)p_scb;
+        bta_sys_start_timer(&p_scb->colli_timer, 0, BTA_AG_COLLISION_TIMER);
+        p_scb->colli_tmr_on = TRUE;
     }
+
 }
 
 /*******************************************************************************
@@ -670,13 +701,6 @@ void bta_ag_resume_open (tBTA_AG_SCB *p_scb)
 static void bta_ag_api_enable(tBTA_AG_DATA *p_data)
 {
     /* initialize control block */
-    for (size_t i = 0; i < BTA_AG_NUM_SCB; i++) {
-        alarm_free(bta_ag_cb.scb[i].ring_timer);
-#if (BTM_WBS_INCLUDED == TRUE)
-        alarm_free(bta_ag_cb.scb[i].codec_negotiation_timer);
-#endif
-        alarm_free(bta_ag_cb.scb[i].collision_timer);
-    }
     memset(&bta_ag_cb, 0, sizeof(tBTA_AG_CB));
 
     /* store callback function */
@@ -989,9 +1013,9 @@ static char *bta_ag_evt_str(UINT16 event, tBTA_AG_RES result)
         return "Discovery Failed";
     case BTA_AG_CI_RX_WRITE_EVT:
         return "CI RX Write";
-    case BTA_AG_RING_TIMEOUT_EVT:
+    case BTA_AG_RING_TOUT_EVT:
         return "Ring Timeout";
-    case BTA_AG_SVC_TIMEOUT_EVT:
+    case BTA_AG_SVC_TOUT_EVT:
         return "Service Timeout";
     case BTA_AG_API_ENABLE_EVT:
         return "Enable AG";

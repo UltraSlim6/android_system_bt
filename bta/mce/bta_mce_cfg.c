@@ -23,7 +23,7 @@
  *
  ******************************************************************************/
 
-#include "bt_common.h"
+#include "gki.h"
 #include "bta_api.h"
 #include "bt_types.h"
 #include "bta_mce_api.h"

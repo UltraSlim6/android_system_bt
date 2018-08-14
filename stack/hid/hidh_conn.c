@@ -27,7 +27,7 @@
 #include <stdio.h>
 
 
-#include "bt_common.h"
+#include "gki.h"
 #include "bt_types.h"
 
 #include "l2cdefs.h"
@@ -43,11 +43,7 @@
 #include "hidh_int.h"
 #include "bt_utils.h"
 
-#include "osi/include/osi.h"
-
 #include "device/include/interop.h"
-
-extern fixed_queue_t *btu_general_alarm_queue;
 
 static UINT8 find_conn_by_cid (UINT16 cid);
 static void hidh_conn_retry (UINT8 dhandle);
@@ -78,6 +74,11 @@ static const tL2CAP_APPL_INFO hst_reg_info =
     hidh_l2cif_data_ind,
     hidh_l2cif_cong_ind,
     NULL                        /* tL2CA_TX_COMPLETE_CB */
+#if (defined(LE_L2CAP_CFC_INCLUDED) && (LE_L2CAP_CFC_INCLUDED == TRUE))
+    ,
+    NULL,
+    NULL
+#endif
 };
 
 /*******************************************************************************
@@ -232,7 +233,7 @@ static void hidh_l2cif_connect_ind (BD_ADDR  bd_addr, UINT16 l2cap_cid, UINT16 p
 #if (HID_HOST_REPAGE_WIN > 0)
     HIDH_TRACE_DEBUG ("HID-Host stopping retry timer as l2cap is connected from remote side");
     p_dev->conn_tries = HID_HOST_MAX_CONN_RETRY+1;
-    alarm_cancel(p_dev->conn.process_repage_timer);
+    btu_stop_timer(&(p_dev->conn.timer_entry));
 #endif
 #endif
 
@@ -280,7 +281,7 @@ static void hidh_l2cif_connect_ind (BD_ADDR  bd_addr, UINT16 l2cap_cid, UINT16 p
         p_hcon->disc_reason = HID_L2CAP_CONN_FAIL;  /* In case disconnection occurs before security is completed, then set CLOSE_EVT reason code to 'connection failure' */
 
         p_hcon->conn_state = HID_CONN_STATE_SECURITY;
-        if (!interop_match_addr(INTEROP_DISABLE_AUTH_FOR_HID_POINTING, (bt_bdaddr_t*)p_dev->addr))
+        if (!interop_addr_match(INTEROP_DISABLE_AUTH_FOR_HID_POINTING, (bt_bdaddr_t*)p_dev->addr))
         {
             if(btm_sec_mx_access_request (p_dev->addr, HID_PSM_CONTROL,
                 FALSE, BTM_SEC_PROTO_HID,
@@ -315,33 +316,24 @@ static void hidh_l2cif_connect_ind (BD_ADDR  bd_addr, UINT16 l2cap_cid, UINT16 p
                        psm, l2cap_cid);
 }
 
-void hidh_process_repage_timer_timeout(void *data)
-{
-  uint8_t dhandle = PTR_TO_UINT(data);
-  hidh_try_repage(dhandle);
-}
-
 /*******************************************************************************
 **
-** Function         hidh_try_repage
+** Function         hidh_proc_repage_timeout
 **
-** Description      This function processes timeout (to page device).
+** Description      This function handles timeout (to page device).
 **
 ** Returns          void
 **
 *******************************************************************************/
-void hidh_try_repage(UINT8 dhandle)
+void hidh_proc_repage_timeout (TIMER_LIST_ENT *p_tle)
 {
     HIDH_TRACE_DEBUG ("HID-Host Connection retry timeout fired");
-    if (HID_SUCCESS == hidh_conn_initiate(dhandle))
+    if (HID_SUCCESS == hidh_conn_initiate( (UINT8) p_tle->param ))
     {
-
-        tHID_HOST_DEV_CTB *device;
-        device = &hh_cb.devices[dhandle];
-        device->conn_tries++;
-
-        hh_cb.callback(dhandle, device->addr, HID_HDEV_EVT_RETRYING,
-                       device->conn_tries, NULL ) ;
+        hh_cb.devices[p_tle->param].conn_tries++;
+        HIDH_TRACE_DEBUG ("HID-Host Connection retrying hid connection");
+        hh_cb.callback( (UINT8) p_tle->param, hh_cb.devices[p_tle->param].addr,
+                        HID_HDEV_EVT_RETRYING, hh_cb.devices[p_tle->param].conn_tries, NULL ) ;
     }
 }
 
@@ -359,12 +351,11 @@ void hidh_sec_check_complete_orig (BD_ADDR bd_addr, tBT_TRANSPORT transport, voi
 {
     tHID_HOST_DEV_CTB *p_dev = (tHID_HOST_DEV_CTB *) p_ref_data;
     UINT8 dhandle;
+    UINT32 reason;
     UNUSED(bd_addr);
     UNUSED (transport);
 
-    // TODO(armansito): This kind of math to determine a device handle is way
-    // too dirty and unnecessary. Why can't |p_dev| store it's handle?
-    dhandle = (PTR_TO_UINT(p_dev) - PTR_TO_UINT(&(hh_cb.devices[0])))/ sizeof(tHID_HOST_DEV_CTB);
+    dhandle = ((UINT32)p_dev - (UINT32)&(hh_cb.devices[0]))/ sizeof(tHID_HOST_DEV_CTB);
     if( res == BTM_SUCCESS && p_dev->conn.conn_state == HID_CONN_STATE_SECURITY )
     {
         HIDH_TRACE_EVENT ("HID-Host Originator security pass.");
@@ -462,7 +453,7 @@ static void hidh_l2cif_connect_cfm (UINT16 l2cap_cid, UINT16 result)
         p_hcon->conn_state = HID_CONN_STATE_SECURITY;
         p_hcon->disc_reason = HID_L2CAP_CONN_FAIL;  /* In case disconnection occurs before security is completed, then set CLOSE_EVT reason code to "connection failure" */
 
-        if (!interop_match_addr(INTEROP_DISABLE_AUTH_FOR_HID_POINTING, (bt_bdaddr_t *)p_dev->addr))
+        if (!interop_addr_match(INTEROP_DISABLE_AUTH_FOR_HID_POINTING, (bt_bdaddr_t *)p_dev->addr))
         {
             btm_sec_mx_access_request (p_dev->addr, HID_PSM_CONTROL,
                 TRUE, BTM_SEC_PROTO_HID,
@@ -707,11 +698,9 @@ static void hidh_l2cif_disconnect_ind (UINT16 l2cap_cid, BOOLEAN ack_needed)
             (hh_cb.devices[dhandle].attr_mask & HID_NORMALLY_CONNECTABLE))
         {
             hh_cb.devices[dhandle].conn_tries = 0;
-            period_ms_t interval_ms = HID_HOST_REPAGE_WIN * 1000;
+            hh_cb.devices[dhandle].conn.timer_entry.param = (UINT32) dhandle;
             HIDH_TRACE_EVENT ("HID-Host: starting timer for reconnection");
-            alarm_set_on_queue(hh_cb.devices[dhandle].conn.process_repage_timer,
-                               interval_ms, hidh_process_repage_timer_timeout,
-                               UINT_TO_PTR(dhandle), btu_general_alarm_queue);
+            btu_start_timer (&(hh_cb.devices[dhandle].conn.timer_entry), BTU_TTYPE_HID_HOST_REPAGE_TO, HID_HOST_REPAGE_WIN);
             hh_cb.callback( dhandle,  hh_cb.devices[dhandle].addr, HID_HDEV_EVT_CLOSE, disc_res, NULL);
         }
         else
@@ -855,7 +844,7 @@ static void hidh_l2cif_data_ind (UINT16 l2cap_cid, BT_HDR *p_msg)
     if (p_hcon == NULL)
     {
         HIDH_TRACE_WARNING ("HID-Host Rcvd L2CAP data, unknown CID: 0x%x", l2cap_cid);
-        osi_free(p_msg);
+        GKI_freebuf (p_msg);
         return;
     }
 
@@ -873,7 +862,7 @@ static void hidh_l2cif_data_ind (UINT16 l2cap_cid, BT_HDR *p_msg)
     {
     case HID_TRANS_HANDSHAKE:
         hh_cb.callback(dhandle,  hh_cb.devices[dhandle].addr, HID_HDEV_EVT_HANDSHAKE, param, NULL);
-        osi_free(p_msg);
+        GKI_freebuf (p_msg);
         break;
 
     case HID_TRANS_CONTROL:
@@ -888,11 +877,12 @@ static void hidh_l2cif_data_ind (UINT16 l2cap_cid, BT_HDR *p_msg)
         default:
             break;
         }
-        osi_free(p_msg);
+        GKI_freebuf (p_msg);
         break;
 
 
     case HID_TRANS_DATA:
+        HIDH_TRACE_VERBOSE ("HID-Host hidh_l2cif_data_ind [l2cap_cid=0x%04x], ttype=%02x]", l2cap_cid, ttype);
         evt = (hh_cb.devices[dhandle].conn.intr_cid == l2cap_cid) ?
                     HID_HDEV_EVT_INTR_DATA : HID_HDEV_EVT_CTRL_DATA;
         hh_cb.callback(dhandle, hh_cb.devices[dhandle].addr, evt, rep_type, p_msg);
@@ -905,9 +895,10 @@ static void hidh_l2cif_data_ind (UINT16 l2cap_cid, BT_HDR *p_msg)
         break;
 
     default:
-        osi_free(p_msg);
+        GKI_freebuf (p_msg);
         break;
     }
+
 }
 
 /*******************************************************************************
@@ -929,20 +920,22 @@ tHID_STATUS hidh_conn_snd_data (UINT8 dhandle, UINT8 trans_type, UINT8 param,
     BOOLEAN     seg_req = FALSE;
     UINT16      data_size;
     UINT16      cid;
-    UINT16      buf_size;
+    UINT8       pool_id;
     UINT8       use_data = 0 ;
     BOOLEAN     blank_datc = FALSE;
 
     if (!BTM_IsAclConnectionUp(hh_cb.devices[dhandle].addr, BT_TRANSPORT_BR_EDR))
     {
-        osi_free(buf);
-        return HID_ERR_NO_CONNECTION;
+        if (buf)
+            GKI_freebuf ((void *)buf);
+        return( HID_ERR_NO_CONNECTION );
     }
 
     if (p_hcon->conn_flags & HID_CONN_FLAGS_CONGESTED)
     {
-        osi_free(buf);
-        return HID_ERR_CONGESTED;
+        if (buf)
+            GKI_freebuf ((void *)buf);
+        return( HID_ERR_CONGESTED );
     }
 
     switch( trans_type )
@@ -955,11 +948,11 @@ tHID_STATUS hidh_conn_snd_data (UINT8 dhandle, UINT8 trans_type, UINT8 param,
     case HID_TRANS_GET_IDLE:
     case HID_TRANS_SET_IDLE:
         cid = p_hcon->ctrl_cid;
-        buf_size = HID_CONTROL_BUF_SIZE;
+        pool_id = HID_CONTROL_POOL_ID;
         break;
     case HID_TRANS_DATA:
         cid = p_hcon->intr_cid;
-        buf_size = HID_INTERRUPT_BUF_SIZE;
+        pool_id = HID_INTERRUPT_POOL_ID;
         break;
     default:
         return (HID_ERR_INVALID_PARAM) ;
@@ -974,7 +967,8 @@ tHID_STATUS hidh_conn_snd_data (UINT8 dhandle, UINT8 trans_type, UINT8 param,
     {
         if ( buf == NULL || blank_datc )
         {
-            p_buf = (BT_HDR *)osi_malloc(buf_size);
+            if((p_buf = (BT_HDR *)GKI_getpoolbuf (pool_id)) == NULL)
+                return (HID_ERR_NO_RESOURCES);
 
             p_buf->offset = L2CAP_MIN_OFFSET;
             seg_req = FALSE;
@@ -984,7 +978,8 @@ tHID_STATUS hidh_conn_snd_data (UINT8 dhandle, UINT8 trans_type, UINT8 param,
         }
         else if ( (buf->len > (p_hcon->rem_mtu_size - 1)))
         {
-            p_buf = (BT_HDR *)osi_malloc(buf_size);
+            if((p_buf = (BT_HDR *)GKI_getpoolbuf (pool_id)) == NULL)
+                return (HID_ERR_NO_RESOURCES);
 
             p_buf->offset = L2CAP_MIN_OFFSET;
             seg_req = TRUE;
@@ -1143,14 +1138,12 @@ static void hidh_conn_retry(  UINT8 dhandle )
     tHID_HOST_DEV_CTB *p_dev = &hh_cb.devices[dhandle];
 
     p_dev->conn.conn_state = HID_CONN_STATE_UNUSED;
+    p_dev->conn.timer_entry.param = (UINT32) dhandle;
 #if (HID_HOST_REPAGE_WIN > 0)
-    period_ms_t interval_ms = HID_HOST_REPAGE_WIN * 1000;
-    HIDH_TRACE_DEBUG ("HID-Host starting timer of %d sec", interval_ms);
-    alarm_set_on_queue(p_dev->conn.process_repage_timer,
-                       interval_ms, hidh_process_repage_timer_timeout,
-                       UINT_TO_PTR(dhandle), btu_general_alarm_queue);
+    HIDH_TRACE_DEBUG ("HID-Host starting timer of %d sec", BTU_TTYPE_HID_HOST_REPAGE_TO);
+    btu_start_timer (&(p_dev->conn.timer_entry), BTU_TTYPE_HID_HOST_REPAGE_TO, HID_HOST_REPAGE_WIN);
 #else
     HIDH_TRACE_DEBUG ("HID-Host calling timeout function");
-    hidh_try_repage(dhandle);
+    hidh_proc_repage_timeout( &(p_dev->conn.timer_entry) );
 #endif
 }

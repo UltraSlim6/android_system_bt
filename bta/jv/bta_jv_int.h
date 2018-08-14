@@ -29,7 +29,6 @@
 #include "bta_jv_api.h"
 #include "rfcdefs.h"
 #include "port_api.h"
-#include "osi/include/alarm.h"
 
 /*****************************************************************************
 **  Constants
@@ -55,6 +54,7 @@ enum
     BTA_JV_API_RFCOMM_CLOSE_EVT,
     BTA_JV_API_RFCOMM_START_SERVER_EVT,
     BTA_JV_API_RFCOMM_STOP_SERVER_EVT,
+    BTA_JV_API_RFCOMM_READ_EVT,
     BTA_JV_API_RFCOMM_WRITE_EVT,
     BTA_JV_API_SET_PM_PROFILE_EVT,
     BTA_JV_API_PM_STATE_CHANGE_EVT,
@@ -103,7 +103,8 @@ typedef struct
     UINT8           state;      /* state: see above enum */
     tBTA_JV_PM_ID   app_id;     /* JV app specific id indicating power table to use */
     BD_ADDR         peer_bd_addr;    /* Peer BD address */
-    alarm_t         *idle_timer; /* intermediate idle timer for paricular scb */
+    BOOLEAN         is_idle_timer_started; /* intermediate idle timer running status */
+    TIMER_LIST_ENT  idle_tle; /* intermediate idle timer for paricular scb */
 } tBTA_JV_PM_CB;
 
 enum
@@ -165,7 +166,6 @@ typedef struct
 typedef struct
 {
     BT_HDR              hdr;
-    INT32               type;       /* One of BTA_JV_CONN_TYPE_ */
     tBTA_SEC            sec_mask;
     tBTA_JV_ROLE        role;
     union {
@@ -186,7 +186,6 @@ typedef struct
 typedef struct
 {
     BT_HDR              hdr;
-    INT32               type;       /* One of BTA_JV_CONN_TYPE_ */
     tBTA_SEC            sec_mask;
     tBTA_JV_ROLE        role;
     union {
@@ -271,6 +270,18 @@ typedef struct
     tBTA_JV_RFCOMM_CBACK *p_cback;
     void            *user_data;
 } tBTA_JV_API_RFCOMM_SERVER;
+
+/* data type for BTA_JV_API_RFCOMM_READ_EVT */
+typedef struct
+{
+    BT_HDR          hdr;
+    UINT32          handle;
+    UINT32          req_id;
+    UINT8           *p_data;
+    UINT16          len;
+    tBTA_JV_RFC_CB  *p_cb;
+    tBTA_JV_PCB     *p_pcb;
+} tBTA_JV_API_RFCOMM_READ;
 
 /* data type for BTA_JV_API_SET_PM_PROFILE_EVT */
 typedef struct
@@ -361,6 +372,7 @@ typedef union
     tBTA_JV_API_L2CAP_CLOSE         l2cap_close;
     tBTA_JV_API_L2CAP_SERVER        l2cap_server;
     tBTA_JV_API_RFCOMM_CONNECT      rfcomm_connect;
+    tBTA_JV_API_RFCOMM_READ         rfcomm_read;
     tBTA_JV_API_RFCOMM_WRITE        rfcomm_write;
     tBTA_JV_API_SET_PM_PROFILE      set_pm;
     tBTA_JV_API_PM_STATE_CHANGE     change_pm_state;
@@ -437,6 +449,6 @@ extern void bta_jv_l2cap_start_server_le (tBTA_JV_MSG *p_data);
 extern void bta_jv_l2cap_stop_server_le (tBTA_JV_MSG *p_data);
 extern void bta_jv_l2cap_write_fixed (tBTA_JV_MSG *p_data);
 extern void bta_jv_l2cap_close_fixed (tBTA_JV_MSG *p_data);
-extern void bta_jv_idle_timeout_handler(void *tle);
+extern void bta_jv_idle_timeout_handler(TIMER_LIST_ENT *tle);
 
 #endif /* BTA_JV_INT_H */

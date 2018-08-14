@@ -27,7 +27,7 @@
 #define BTM_BLE_INT_H
 
 #include "bt_target.h"
-#include "bt_common.h"
+#include "gki.h"
 #include "hcidefs.h"
 #include "btm_ble_api.h"
 #include "btm_int.h"
@@ -61,7 +61,7 @@
 #define BTM_BLE_GAP_DISC_SCAN_INT      18         /* Interval(scan_int) = 11.25 ms= 0x0010 * 0.625 ms */
 #define BTM_BLE_GAP_DISC_SCAN_WIN      18         /* scan_window = 11.25 ms= 0x0010 * 0.625 ms */
 #define BTM_BLE_GAP_ADV_INT            512        /* Tgap(gen_disc) = 1.28 s= 512 * 0.625 ms */
-#define BTM_BLE_GAP_LIM_TIMEOUT_MS     (180 * 1000) /* Tgap(lim_timeout) = 180s max */
+#define BTM_BLE_GAP_LIM_TOUT           180        /* Tgap(lim_timeout) = 180s max */
 #define BTM_BLE_LOW_LATENCY_SCAN_INT   8000       /* Interval(scan_int) = 5s= 8000 * 0.625 ms */
 #define BTM_BLE_LOW_LATENCY_SCAN_WIN   8000       /* scan_window = 5s= 8000 * 0.625 ms */
 
@@ -72,7 +72,7 @@
 #define BTM_BLE_GAP_ADV_DIR_MAX_INT        800         /* Tgap(dir_conn_adv_int_max) = 500 ms = 800 * 0.625 ms */
 #define BTM_BLE_GAP_ADV_DIR_MIN_INT        400         /* Tgap(dir_conn_adv_int_min) = 250 ms = 400 * 0.625 ms */
 
-#define BTM_BLE_GAP_FAST_ADV_TIMEOUT_MS    (30 * 1000)
+#define BTM_BLE_GAP_FAST_ADV_TOUT          30
 
 #define BTM_BLE_SEC_REQ_ACT_NONE           0
 #define BTM_BLE_SEC_REQ_ACT_ENCRYPT        1 /* encrypt the link using current key or key refresh */
@@ -84,10 +84,6 @@ typedef UINT8   tBTM_BLE_SEC_REQ_ACT;
 #define BLE_RESOLVE_ADDR_MSB                 0x40   /*  most significant bit, bit7, bit6 is 01 to be resolvable random */
 #define BLE_RESOLVE_ADDR_MASK                0xc0   /* bit 6, and bit7 */
 #define BTM_BLE_IS_RESOLVE_BDA(x)           ((x[0] & BLE_RESOLVE_ADDR_MASK) == BLE_RESOLVE_ADDR_MSB)
-
-#define BLE_PUBLIC_ADDR_MSB_MASK            0xC0
-#define BLE_PUBLIC_ADDR_MSB                 0x80   /*  most significant bit, bit7, bit6 is 10 to be public address*/
-#define BTM_IS_PUBLIC_BDA(x)               ((x[0]  & BLE_PUBLIC_ADDR_MSB) == BLE_PUBLIC_ADDR_MSB_MASK)
 
 /* LE scan activity bit mask, continue with LE inquiry bits */
 #define BTM_LE_SELECT_CONN_ACTIVE      0x40     /* selection connection is in progress */
@@ -128,8 +124,7 @@ typedef struct
 
 #define BTM_BLE_ISVALID_PARAM(x, min, max)  (((x) >= (min) && (x) <= (max)) || ((x) == BTM_BLE_CONN_PARAM_UNDEF))
 
-/* 15 minutes minimum for random address refreshing */
-#define BTM_BLE_PRIVATE_ADDR_INT_MS     (15 * 60 * 1000)
+#define BTM_BLE_PRIVATE_ADDR_INT    900  /* 15 minutes minimum for random address refreshing */
 
 typedef struct
 {
@@ -150,7 +145,7 @@ typedef struct
     tBLE_BD_ADDR direct_bda;
     tBTM_BLE_EVT directed_conn;
     BOOLEAN fast_adv_on;
-    alarm_t *fast_adv_timer;
+    TIMER_LIST_ENT fast_adv_timer;
 
     UINT8 adv_len;
     UINT8 adv_data_cache[BTM_BLE_CACHE_ADV_DATA_MAX];
@@ -161,7 +156,7 @@ typedef struct
     tBTM_BLE_LOCAL_ADV_DATA adv_data;
     tBTM_BLE_ADV_CHNL_MAP adv_chnl_map;
 
-    alarm_t *inquiry_timer;
+    TIMER_LIST_ENT inq_timer_ent;
     BOOLEAN scan_rsp;
     UINT8 state; /* Current state that the inquiry process is in */
     INT8 tx_power;
@@ -180,9 +175,11 @@ typedef struct
     BD_ADDR                     private_addr;
     BD_ADDR                     random_bda;
     BOOLEAN                     busy;
+    UINT16                       index;
+    tBTM_BLE_RESOLVE_CBACK      *p_resolve_cback;
     tBTM_BLE_ADDR_CBACK         *p_generate_cback;
     void                        *p;
-    alarm_t                     *refresh_raddr_timer;
+    TIMER_LIST_ENT              raddr_timer_ent;
 } tBTM_LE_RANDOM_CB;
 
 #define BTM_BLE_MAX_BG_CONN_DEV_NUM    10
@@ -307,7 +304,7 @@ typedef struct
     /* observer callback and timer */
     tBTM_INQ_RESULTS_CB *p_obs_results_cb;
     tBTM_CMPL_CB *p_obs_cmpl_cb;
-    alarm_t *observer_timer;
+    TIMER_LIST_ENT obs_timer_ent;
 
     /* background connection procedure cb value */
     tBTM_BLE_CONN_TYPE bg_conn_type;
@@ -319,7 +316,7 @@ typedef struct
     UINT8 white_list_avail_size;
     tBTM_BLE_WL_STATE wl_state;
 
-    fixed_queue_t *conn_pending_q;
+    BUFFER_Q conn_pending_q;
     tBTM_BLE_CONN_ST conn_state;
 
     /* random address management control block */
@@ -348,8 +345,7 @@ typedef struct
 extern "C" {
 #endif
 
-extern void btm_ble_adv_raddr_timer_timeout(void *data);
-extern void btm_ble_refresh_raddr_timer_timeout(void *data);
+extern void btm_ble_timeout(TIMER_LIST_ENT *p_tle);
 extern void btm_ble_process_adv_pkt (UINT8 *p);
 extern void btm_ble_proc_scan_rsp_rpt (UINT8 *p);
 extern tBTM_STATUS btm_ble_read_remote_name(BD_ADDR remote_bda, tBTM_INQ_INFO *p_cur, tBTM_CMPL_CB *p_cb);
@@ -386,7 +382,7 @@ extern void btm_ble_create_ll_conn_complete (UINT8 status);
 extern void btm_ble_link_sec_check(BD_ADDR bd_addr, tBTM_LE_AUTH_REQ auth_req, tBTM_BLE_SEC_REQ_ACT *p_sec_req_act);
 extern void btm_ble_ltk_request_reply(BD_ADDR bda,  BOOLEAN use_stk, BT_OCTET16 stk);
 extern UINT8 btm_proc_smp_cback(tSMP_EVT event, BD_ADDR bd_addr, tSMP_EVT_DATA *p_data);
-extern tBTM_STATUS btm_ble_set_encryption (BD_ADDR bd_addr, tBTM_BLE_SEC_ACT sec_act, UINT8 link_role);
+extern tBTM_STATUS btm_ble_set_encryption (BD_ADDR bd_addr, void *p_ref_data, UINT8 link_role);
 extern void btm_ble_ltk_request(UINT16 handle, UINT8 rand[8], UINT16 ediv);
 extern tBTM_STATUS btm_ble_start_encrypt(BD_ADDR bda, BOOLEAN use_stk, BT_OCTET16 stk);
 extern void btm_ble_link_encrypted(BD_ADDR bd_addr, UINT8 encr_enable);
@@ -433,7 +429,6 @@ extern void btm_ble_update_link_topology_mask(UINT8 role, BOOLEAN increase);
 /* direct connection utility */
 extern BOOLEAN btm_send_pending_direct_conn(void);
 extern void btm_ble_enqueue_direct_conn_req(void *p_param);
-extern void btm_ble_dequeue_direct_conn_req(BD_ADDR rem_bda);
 
 /* BLE address management */
 extern void btm_gen_resolvable_private_addr (void *p_cmd_cplt_cback);
@@ -474,6 +469,8 @@ extern void btm_ble_adv_filter_cleanup(void);
 extern BOOLEAN btm_ble_topology_check(tBTM_BLE_STATE_MASK request);
 extern BOOLEAN btm_ble_clear_topology_mask(tBTM_BLE_STATE_MASK request_state);
 extern BOOLEAN btm_ble_set_topology_mask(tBTM_BLE_STATE_MASK request_state);
+extern void btm_ble_stop_local_rpa_timer(void);
+extern void btm_ble_stop_gap_timers(void);
 
 #if BTM_BLE_CONFORMANCE_TESTING == TRUE
 extern void btm_ble_set_no_disc_if_pair_fail (BOOLEAN disble_disc);

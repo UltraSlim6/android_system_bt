@@ -104,7 +104,7 @@ static void bt_rfc_send_data ( UINT16 handle)
 
     ALOGI("bt_rfc_send_data %d", handle);
     memset(buffer , 0x01 ,10000); //RFC data
-    PORT_WriteData (handle, buffer, 10000, &length);
+    int ret = PORT_WriteData (handle, buffer, 10000, &length);
 }
 
 static void bt_rfc_mmt_server_cback (UINT32 code, UINT16 handle)

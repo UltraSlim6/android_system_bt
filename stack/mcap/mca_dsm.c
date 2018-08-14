@@ -183,12 +183,12 @@ tMCA_DCB *mca_dcb_alloc(tMCA_CCB*p_ccb, tMCA_DEP dep)
         i = mca_ccb_to_hdl(p_ccb)-1;
         if( i*MCA_NUM_MDLS < MCA_NUM_DCBS)
         {
-            p_dcb_tmp = &mca_cb.dcb[i*MCA_NUM_MDLS];
+             p_dcb_tmp = &mca_cb.dcb[i*MCA_NUM_MDLS];
         }
         else
         {
-            MCA_TRACE_WARNING("dcb index out of range");
-            return NULL;
+             MCA_TRACE_WARNING("dcb index out of range");
+             return 0;
         }
         /* make sure p_cs->max_mdl is smaller than MCA_NUM_MDLS at MCA_CreateDep */
         max = p_cs->max_mdl;
@@ -237,8 +237,8 @@ UINT8 mca_dep_free_mdl(tMCA_CCB *p_ccb, tMCA_DEP dep)
         }
         else
         {
-            MCA_TRACE_WARNING("dcb index out of range");
-            return 0;
+             MCA_TRACE_WARNING("dcb index out of range");
+             return 0;
         }
         /* make sure p_cs->max_mdl is smaller than MCA_NUM_MDLS at MCA_CreateDep */
         max = p_cs->max_mdl;
@@ -276,7 +276,7 @@ void mca_dcb_dealloc(tMCA_DCB *p_dcb, tMCA_DCB_EVT *p_data)
     tMCA_CTRL   evt_data;
 
     MCA_TRACE_DEBUG("mca_dcb_dealloc");
-    osi_free_and_reset((void **)&p_dcb->p_data);
+    mca_free_buf ((void **)&p_dcb->p_data);
     if (p_data)
     {
         /* non-NULL -> an action function -> report disconnect event */
@@ -339,18 +339,18 @@ tMCA_DCB *mca_dcb_by_hdl(tMCA_DL hdl)
 void mca_dcb_close_by_mdl_id(tMCA_CCB*p_ccb, UINT16 mdl_id)
 {
     tMCA_DCB *p_dcb;
-    int       i;
+    unsigned int i;
 
     MCA_TRACE_DEBUG("mca_dcb_close_by_mdl_id mdl_id=%d", mdl_id);
     i = mca_ccb_to_hdl(p_ccb)-1;
-    if( i*MCA_NUM_MDLS < MCA_NUM_DCBS)
+    if(i*MCA_NUM_MDLS < MCA_NUM_DCBS)
     {
-        p_dcb = &mca_cb.dcb[i * MCA_NUM_MDLS];
+        p_dcb = &mca_cb.dcb[i*MCA_NUM_MDLS];
     }
     else
     {
         MCA_TRACE_WARNING("dcb index out of range");
-        return;
+        return 0;
     }
     for (i=0; i<MCA_NUM_MDLS; i++, p_dcb++)
     {

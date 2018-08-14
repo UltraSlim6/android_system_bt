@@ -24,8 +24,6 @@
 #include "stack/smp/smp_int.h"
 #include "utils/include/bt_utils.h"
 
-extern fixed_queue_t *btu_general_alarm_queue;
-
 #if SMP_INCLUDED == TRUE
 const UINT8 smp_association_table[2][SMP_IO_CAP_MAX][SMP_IO_CAP_MAX] =
 {
@@ -63,42 +61,6 @@ static bool lmp_version_below(BD_ADDR bda, uint8_t version)
     }
     SMP_TRACE_WARNING("%s LMP version %d < %d", __func__, acl->lmp_version, version);
     return acl->lmp_version < version;
-}
-
-static bool pts_test_send_authentication_complete_failure(tSMP_CB *p_cb)
-{
-    uint8_t reason = 0;
-
-    if (p_cb->cert_failure < 2 || p_cb->cert_failure > 6)
-        return false;
-
-    SMP_TRACE_ERROR("%s failure case = %d", __func__, p_cb->cert_failure);
-
-    switch (p_cb->cert_failure)
-    {
-        case 2:
-            reason = SMP_PAIR_AUTH_FAIL;
-            smp_sm_event(p_cb, SMP_AUTH_CMPL_EVT, &reason);
-            break;
-        case 3:
-            reason = SMP_PAIR_FAIL_UNKNOWN;
-            smp_sm_event(p_cb, SMP_AUTH_CMPL_EVT, &reason);
-            break;
-        case 4:
-            reason = SMP_PAIR_NOT_SUPPORT;
-            smp_sm_event(p_cb, SMP_AUTH_CMPL_EVT, &reason);
-            break;
-        case 5:
-            reason = SMP_PASSKEY_ENTRY_FAIL;
-            smp_sm_event(p_cb, SMP_AUTH_CMPL_EVT, &reason);
-            break;
-        case 6:
-            reason = SMP_REPEATED_ATTEMPTS;
-            smp_sm_event(p_cb, SMP_AUTH_CMPL_EVT, &reason);
-            break;
-    }
-
-    return true;;
 }
 
 /*******************************************************************************
@@ -222,10 +184,22 @@ void smp_send_app_cback(tSMP_CB *p_cb, tSMP_INT_DATA *p_data)
                         p_cb->loc_auth_req |= SMP_SC_SUPPORT_BIT;
                     }
 
+                    /* check the adv flag if present */
+                    UINT8 adv_flag = 0;
+                    BOOLEAN le_only = false;
+                    if(btm_ble_get_adv_flag(&adv_flag, p_cb->pairing_bda) == BTM_SUCCESS)
+                    {
+                        if(adv_flag & BTM_BLE_BREDR_NOT_SPT)
+                        {
+                            le_only = true;
+                            SMP_TRACE_DEBUG("%s skipping crosskey based on adv flag", __func__);
+                        }
+                    }
+
                     if (!(p_cb->loc_auth_req & SMP_SC_SUPPORT_BIT)
                         || lmp_version_below(p_cb->pairing_bda, HCI_PROTO_VERSION_4_2)
-                        || interop_match_addr(INTEROP_DISABLE_LE_SECURE_CONNECTIONS,
-                            (const bt_bdaddr_t *)&p_cb->pairing_bda))
+                        || interop_addr_match(INTEROP_DISABLE_LE_SECURE_CONNECTIONS,
+                            (const bt_bdaddr_t *)&p_cb->pairing_bda) || le_only)
                     {
                         p_cb->loc_auth_req &= ~SMP_KP_SUPPORT_BIT;
                         p_cb->local_i_key &= ~SMP_SEC_KEY_TYPE_LK;
@@ -555,9 +529,6 @@ void smp_proc_pair_fail(tSMP_CB *p_cb, tSMP_INT_DATA *p_data)
 {
     SMP_TRACE_DEBUG("%s", __func__);
     p_cb->status = *(UINT8 *)p_data;
-
-    /* Cancel pending auth complete timer if set */
-    alarm_cancel(p_cb->delayed_auth_timer_ent);
 }
 
 /*******************************************************************************
@@ -590,10 +561,6 @@ void smp_proc_pair_cmd(tSMP_CB *p_cb, tSMP_INT_DATA *p_data)
         smp_sm_event(p_cb, SMP_AUTH_CMPL_EVT, &reason);
         return;
     }
-
-    // PTS Testing failure modes
-    if (pts_test_send_authentication_complete_failure(p_cb))
-        return;
 
     if (p_cb->role == HCI_ROLE_SLAVE)
     {
@@ -847,7 +814,7 @@ void smp_br_process_pairing_command(tSMP_CB *p_cb, tSMP_INT_DATA *p_data)
 
     SMP_TRACE_DEBUG("%s", __func__);
     /* rejecting BR pairing request over non-SC BR link */
-    if (!p_dev_rec->new_encryption_key_is_p256 && p_cb->role == HCI_ROLE_SLAVE)
+    if (p_dev_rec != NULL && !p_dev_rec->new_encryption_key_is_p256 && p_cb->role == HCI_ROLE_SLAVE)
     {
         reason = SMP_XTRANS_DERIVE_NOT_ALLOW;
         smp_br_state_machine_event(p_cb, SMP_BR_AUTH_CMPL_EVT, &reason);
@@ -879,7 +846,7 @@ void smp_br_process_pairing_command(tSMP_CB *p_cb, tSMP_INT_DATA *p_data)
     p_cb->local_i_key = p_cb->peer_i_key;
     p_cb->local_r_key = p_cb->peer_r_key;
 
-    if (p_cb->role == HCI_ROLE_SLAVE)
+    if (p_dev_rec && (p_cb->role == HCI_ROLE_SLAVE))
     {
         p_dev_rec->new_encryption_key_is_p256 = FALSE;
         /* shortcut to skip Security Grant step */
@@ -1292,6 +1259,7 @@ void smp_key_pick_key(tSMP_CB *p_cb, tSMP_INT_DATA *p_data)
 *******************************************************************************/
 void smp_key_distribution(tSMP_CB *p_cb, tSMP_INT_DATA *p_data)
 {
+    UINT8   reason = SMP_SUCCESS;
     SMP_TRACE_DEBUG("%s role=%d (0-master) r_keys=0x%x i_keys=0x%x",
                       __func__, p_cb->role, p_cb->local_r_key, p_cb->local_i_key);
 
@@ -1313,22 +1281,9 @@ void smp_key_distribution(tSMP_CB *p_cb, tSMP_INT_DATA *p_data)
             }
 
             if (p_cb->total_tx_unacked == 0)
-            {
-                /*
-                 * Instead of declaring authorization complete immediately,
-                 * delay the event from being sent by SMP_DELAYED_AUTH_TIMEOUT_MS.
-                 * This allows the slave to send over Pairing Failed if the
-                 * last key is rejected.  During this waiting window, the
-                 * state should remain in SMP_STATE_BOND_PENDING.
-                 */
-                if (!alarm_is_scheduled(p_cb->delayed_auth_timer_ent)) {
-                    SMP_TRACE_DEBUG("%s delaying auth complete.", __func__);
-                    alarm_set_on_queue(p_cb->delayed_auth_timer_ent, SMP_DELAYED_AUTH_TIMEOUT_MS,
-                                       smp_delayed_auth_complete_timeout, NULL, btu_general_alarm_queue);
-                }
-            } else {
+                smp_sm_event(p_cb, SMP_AUTH_CMPL_EVT, &reason);
+            else
                 p_cb->wait_for_authorization_complete = TRUE;
-            }
         }
     }
 }
@@ -1460,11 +1415,6 @@ void smp_process_io_response(tSMP_CB *p_cb, tSMP_INT_DATA *p_data)
         {
             if (smp_request_oob_data(p_cb)) return;
         }
-
-        // PTS Testing failure modes
-        if (pts_test_send_authentication_complete_failure(p_cb))
-            return;
-
         smp_send_pair_rsp(p_cb, NULL);
     }
 }
@@ -1502,6 +1452,8 @@ void smp_pairing_cmpl(tSMP_CB *p_cb, tSMP_INT_DATA *p_data)
 {
     if (p_cb->total_tx_unacked == 0)
     {
+        /* update connection parameter to remote preferred */
+        L2CA_EnableUpdateBleConnParams(p_cb->pairing_bda, TRUE);
         /* process the pairing complete */
         smp_proc_pairing_cmpl(p_cb);
     }
@@ -1540,11 +1492,8 @@ void smp_idle_terminate(tSMP_CB *p_cb, tSMP_INT_DATA *p_data)
 *******************************************************************************/
 void smp_fast_conn_param(tSMP_CB *p_cb, tSMP_INT_DATA *p_data)
 {
-    /* Disable L2CAP connection parameter updates while bonding since
-       some peripherals are not able to revert to fast connection parameters
-       during the start of service discovery. Connection paramter updates
-       get enabled again once service discovery completes. */
-    L2CA_EnableUpdateBleConnParams(p_cb->pairing_bda, false);
+    /* disable connection parameter update */
+    L2CA_EnableUpdateBleConnParams(p_cb->pairing_bda, FALSE);
 }
 
 /*******************************************************************************
@@ -1701,14 +1650,6 @@ void smp_process_peer_nonce(tSMP_CB *p_cb, tSMP_INT_DATA *p_data)
 
     SMP_TRACE_DEBUG("%s start ", __func__);
 
-    // PTS Testing failure modes
-    if (p_cb->cert_failure == 1) {
-        SMP_TRACE_ERROR("%s failure case = %d", __func__, p_cb->cert_failure);
-        reason = p_cb->failure = SMP_CONFIRM_VALUE_ERR;
-        smp_sm_event(p_cb, SMP_AUTH_CMPL_EVT, &reason);
-        return;
-    }
-
     switch(p_cb->selected_association_model)
     {
         case SMP_MODEL_SEC_CONN_JUSTWORKS:
@@ -1742,7 +1683,7 @@ void smp_process_peer_nonce(tSMP_CB *p_cb, tSMP_INT_DATA *p_data)
             break;
         case SMP_MODEL_SEC_CONN_PASSKEY_ENT:
         case SMP_MODEL_SEC_CONN_PASSKEY_DISP:
-            if (!smp_check_commitment(p_cb) && p_cb->cert_failure != 9)
+            if (!smp_check_commitment(p_cb))
             {
                 reason = p_cb->failure = SMP_CONFIRM_VALUE_ERR;
                 smp_sm_event(p_cb, SMP_AUTH_CMPL_EVT, &reason);

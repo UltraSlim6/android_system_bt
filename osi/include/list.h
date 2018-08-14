@@ -10,12 +10,7 @@ struct list_t;
 typedef struct list_t list_t;
 
 typedef void (*list_free_cb)(void *data);
-
-// Iterator callback prototype used for |list_foreach|.
-// |data| represents the list item currently being iterated, |context| is a
-// user defined value passed into |list_foreach|.
-// Callback must return true to continue iterating or false to stop iterating.
-typedef bool (*list_iter_cb)(void *data, void *context);
+typedef bool (*list_iter_cb)(void *data);
 typedef bool (*list_iter_cb_ext)(void *data, void *cb_data);
 
 // Returns a new, empty list. Returns NULL if not enough memory could be allocated
@@ -49,10 +44,6 @@ void *list_front(const list_t *list);
 // be NULL or empty.
 void *list_back(const list_t *list);
 
-// Returns the last node in the list without removing it. |list| may not
-// be NULL or empty.
-list_node_t *list_back_node(const list_t *list);
-
 // Inserts |data| after |prev_node| in |list|. |data|, |list|, and |prev_node|
 // may not be NULL. This function does not make a copy of |data| so the pointer
 // must remain valid at least until the element is removed from the list or the
@@ -83,15 +74,12 @@ bool list_remove(list_t *list, void *data);
 // same state it was in after |list_new|. |list| may not be NULL.
 void list_clear(list_t *list);
 
-// Iterates through the |list| and calls |callback| for each data element. Iteration
-// continues until |callback| returns false. The function returns the pointer to last
-// processed element, or NULL if the list is empty, or all calls to |callback| returned
-// true. |context| is passed to |callback| on each iteration.
+// Iterates through the entire |list| and calls |callback| for each data element.
 // If the list is empty, |callback| will never be called. It is safe to mutate the
 // list inside the callback. If an element is added before the node being visited,
 // there will be no callback for the newly-inserted node. Neither |list| nor
 // |callback| may be NULL.
-list_node_t *list_foreach(const list_t *list, list_iter_cb callback, void *context);
+void list_foreach(const list_t *list, list_iter_cb callback);
 void list_foreach_ext(const list_t *list, list_iter_cb_ext callback, void *cb_data);
 
 // Returns an iterator to the first element in |list|. |list| may not be NULL.

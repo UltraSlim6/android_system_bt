@@ -27,9 +27,10 @@
 #if defined(BTA_PAN_INCLUDED) && (BTA_PAN_INCLUDED == TRUE)
 
 #include <string.h>
+#include "btu.h"
 #include "bta_api.h"
 #include "bta_sys.h"
-#include "bt_common.h"
+#include "gki.h"
 #include "pan_api.h"
 #include "bta_pan_api.h"
 #include "bta_pan_int.h"
@@ -171,7 +172,10 @@ tBTA_PAN_SCB *bta_pan_scb_alloc(void)
         if (!p_scb->in_use)
         {
             p_scb->in_use = TRUE;
-            APPL_TRACE_DEBUG("bta_pan_scb_alloc %d", i);
+            p_scb->is_idle_timer_started = FALSE;
+            p_scb->idle_tle.param = (UINT32) bta_pan_idle_timeout_handler;
+            p_scb->idle_tle.data = (UINT32) p_scb;
+            APPL_TRACE_DEBUG("bta_pan_scb_alloc: %d, scb: %p", i, p_scb);
             break;
         }
     }
@@ -214,13 +218,12 @@ static void bta_pan_sm_execute(tBTA_PAN_SCB *p_scb, UINT16 event, tBTA_PAN_DATA 
     /* execute action functions */
     for (i = 0; i < BTA_PAN_ACTIONS; i++)
     {
-        if ((action = state_table[event][i]) < BTA_PAN_IGNORE)
+        if ((action = state_table[event][i]) != BTA_PAN_IGNORE)
         {
             (*bta_pan_action[action])(p_scb, p_data);
         }
         else
         {
-            APPL_TRACE_EVENT("action: %d", action);
             break;
         }
     }
@@ -305,7 +308,11 @@ static void bta_pan_api_open(tBTA_PAN_DATA *p_data)
 void bta_pan_scb_dealloc(tBTA_PAN_SCB *p_scb)
 {
     APPL_TRACE_DEBUG("bta_pan_scb_dealloc %d", bta_pan_scb_to_idx(p_scb));
-    fixed_queue_free(p_scb->data_queue, NULL);
+    if (p_scb->is_idle_timer_started == TRUE)
+    {
+        /* Ensure that timer is stopped */
+        btu_stop_timer (&p_scb->idle_tle);
+    }
     memset(p_scb, 0, sizeof(tBTA_PAN_SCB));
 }
 

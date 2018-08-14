@@ -78,6 +78,11 @@ const tL2CAP_APPL_INFO avct_l2c_appl = {
     avct_l2c_data_ind_cback,
     avct_l2c_congestion_ind_cback,
     NULL                                /* tL2CA_TX_COMPLETE_CB */
+#if (defined(LE_L2CAP_CFC_INCLUDED) && (LE_L2CAP_CFC_INCLUDED == TRUE))
+    ,
+    NULL,
+    NULL
+#endif
 };
 
 #if (AVCT_BROWSE_INCLUDED == TRUE)
@@ -230,6 +235,7 @@ void avct_l2c_br_connect_ind_cback(BD_ADDR bd_addr, UINT16 lcid, UINT16 psm, UIN
     tAVCT_BCB       *p_bcb = &avct_cb.bcb[0] ;
     tAVCT_LCB       *p_lcb = NULL;
     UINT16          result = L2CAP_CONN_OK;
+    tAVCT_CCB       *p_ccb = &avct_cb.ccb[0];
     tL2CAP_ERTM_INFO ertm_info;
     tL2CAP_ERTM_INFO *p_ertm_info = NULL;
     tL2CAP_CFG_INFO cfg;
@@ -288,10 +294,10 @@ void avct_l2c_br_connect_ind_cback(BD_ADDR bd_addr, UINT16 lcid, UINT16 psm, UIN
             p_bcb->ch_lcid =   lcid;     /*Updadate LCID so that on config associated bcb could be found*/
             ertm_info.preferred_mode    = L2CAP_FCR_ERTM_MODE;
             ertm_info.allowed_modes     = L2CAP_FCR_CHAN_OPT_ERTM;
-            ertm_info.user_rx_buf_size   = AVCT_BR_USER_RX_BUF_SIZE;
-            ertm_info.user_tx_buf_size   = AVCT_BR_USER_TX_BUF_SIZE;
-            ertm_info.fcr_rx_buf_size    = AVCT_BR_FCR_RX_BUF_SIZE;
-            ertm_info.fcr_tx_buf_size    = AVCT_BR_FCR_TX_BUF_SIZE;
+            ertm_info.user_rx_pool_id   = HCI_ACL_POOL_ID;
+            ertm_info.user_tx_pool_id   = HCI_ACL_POOL_ID;
+            ertm_info.fcr_rx_pool_id    = HCI_ACL_POOL_ID;
+            ertm_info.fcr_tx_pool_id    = HCI_ACL_POOL_ID;
             p_ertm_info                 = &ertm_info;
             L2CA_ErtmConnectRsp (bd_addr, id, lcid, result, L2CAP_CONN_OK, p_ertm_info);
         }
@@ -556,11 +562,6 @@ void avct_l2c_config_ind_cback(UINT16 lcid, tL2CAP_CFG_INFO *p_cfg)
         }
         AVCT_TRACE_DEBUG("ch_state cfi: %d ", p_lcb->ch_state);
     }
-    else
-    {
-        AVCT_TRACE_ERROR("%s: p_lcb is null",__func__);
-        L2CA_DisconnectReq(lcid);
-    }
 }
 
 #if (AVCT_BROWSE_INCLUDED == TRUE)
@@ -813,7 +814,7 @@ void avct_l2c_data_ind_cback(UINT16 lcid, BT_HDR *p_buf)
     else /* prevent buffer leak */
     {
         AVCT_TRACE_WARNING("ERROR -> avct_l2c_data_ind_cback drop buffer");
-        osi_free(p_buf);
+        GKI_freebuf(p_buf);
     }
 }
 
@@ -841,7 +842,7 @@ void avct_l2c_br_data_ind_cback(UINT16 lcid, BT_HDR *p_buf)
     else /* prevent buffer leak */
     {
         AVCT_TRACE_WARNING("avct_l2c_br_data_ind_cback drop buffer");
-        osi_free_and_reset((void**)&p_buf);
+        GKI_freebuf(p_buf);
     }
 
 }

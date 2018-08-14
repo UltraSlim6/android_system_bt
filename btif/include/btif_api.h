@@ -30,8 +30,6 @@
 #ifndef BTIF_API_H
 #define BTIF_API_H
 
-#include <hardware/bluetooth.h>
-
 #include "btif_common.h"
 #include "btif_dm.h"
 
@@ -76,15 +74,16 @@ bt_status_t btif_disable_bluetooth(void);
 
 /*******************************************************************************
 **
-** Function         btif_cleanup_bluetooth
+** Function         btif_shutdown_bluetooth
 **
-** Description      Cleanup BTIF state.
+** Description      Finalizes BT scheduler shutdown and terminates BTIF
+**                  task.
 **
 **
 ** Returns          void
 **
 *******************************************************************************/
-bt_status_t btif_cleanup_bluetooth(void);
+bt_status_t btif_shutdown_bluetooth(void);
 
 /*******************************************************************************
 **
@@ -225,18 +224,6 @@ bt_status_t btif_dm_cancel_discovery(void);
 **
 *******************************************************************************/
 bt_status_t btif_dm_create_bond(const bt_bdaddr_t *bd_addr, int transport);
-
-/*******************************************************************************
-**
-** Function         btif_dm_create_bond_out_of_band
-**
-** Description      Initiate bonding with the specified device using OOB data.
-**
-** Returns          bt_status_t
-**
-*******************************************************************************/
-bt_status_t btif_dm_create_bond_out_of_band(const bt_bdaddr_t *bd_addr, int transport,
-                                    const bt_out_of_band_data_t *oob_data);
 
 /*******************************************************************************
 **
@@ -420,15 +407,4 @@ void btif_dm_read_energy_info();
 **
 *******************************************************************************/
 bt_status_t btif_config_hci_snoop_log(uint8_t enable);
-
-/*******************************************************************************
-**
-** Function         btif_debug_bond_event_dump
-**
-** Description     Dump bond event information
-**
-** Returns          void
-**
-*******************************************************************************/
-void btif_debug_bond_event_dump(int fd);
 #endif /* BTIF_API_H */

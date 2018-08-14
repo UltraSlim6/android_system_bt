@@ -26,9 +26,9 @@ extern "C" {
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include "osi/include/osi.h"
-#include "osi/include/semaphore.h"
 #include "hci_hal.h"
+#include "osi.h"
+#include "semaphore.h"
 #include "test_stubs.h"
 #include "vendor.h"
 }
@@ -67,7 +67,7 @@ static void expect_packet_synchronous(serial_data_type_t type, char *packet_data
   int length = strlen(packet_data);
   for (int i = 0; i < length; i++) {
     uint8_t byte;
-    EXPECT_EQ((size_t)1, hal->read_data(type, &byte, 1));
+    EXPECT_EQ((size_t)1, hal->read_data(type, &byte, 1, true));
     EXPECT_EQ(packet_data[i], byte);
   }
 
@@ -116,7 +116,7 @@ STUB_FUNCTION(void, data_ready_callback, (serial_data_type_t type))
 
     uint8_t byte;
     size_t bytes_read;
-    while ((bytes_read = hal->read_data(type, &byte, 1)) != 0) {
+    while ((bytes_read = hal->read_data(type, &byte, 1, false)) != 0) {
       EXPECT_EQ(sample_data3[reentry_i], byte);
       semaphore_post(reentry_semaphore);
       reentry_i++;
@@ -183,27 +183,26 @@ static void expect_socket_data(int fd, char first_byte, char *data) {
     fd_set read_fds;
     FD_ZERO(&read_fds);
     FD_SET(fd, &read_fds);
-    select(fd + 1, &read_fds, NULL, NULL, NULL);
+    TEMP_FAILURE_RETRY(select(fd + 1, &read_fds, NULL, NULL, NULL));
 
     char byte;
-    read(fd, &byte, 1);
+    TEMP_FAILURE_RETRY(read(fd, &byte, 1));
 
     EXPECT_EQ(i == 0 ? first_byte : data[i - 1], byte);
   }
 }
 
-static void write_packet(int fd, char first_byte, const void *data,
-                         size_t datalen) {
-  write(fd, &first_byte, 1);
-  write(fd, data, datalen);
+static void write_packet(int fd, char first_byte, char *data) {
+  TEMP_FAILURE_RETRY(write(fd, &first_byte, 1));
+  TEMP_FAILURE_RETRY(write(fd, data, strlen(data)));
 }
 
-static void write_packet_reentry(int fd, char first_byte, const void *data,
-                                 size_t datalen) {
-  write(fd, &first_byte, 1);
+static void write_packet_reentry(int fd, char first_byte, char *data) {
+  TEMP_FAILURE_RETRY(write(fd, &first_byte, 1));
 
-  for (size_t i = 0; i < datalen; i++) {
-    write(fd, static_cast<const uint8_t *>(data) + i, 1);
+  int length = strlen(data);
+  for (int i = 0; i < length; i++) {
+    TEMP_FAILURE_RETRY(write(fd, &data[i], 1));
     semaphore_wait(reentry_semaphore);
   }
 }
@@ -227,11 +226,10 @@ TEST_F(HciHalH4Test, test_transmit) {
 TEST_F(HciHalH4Test, test_read_synchronous) {
   reset_for(read_synchronous);
 
-  write_packet(sockfd[1], DATA_TYPE_ACL, acl_data, strlen(acl_data));
-  write_packet(sockfd[1], HCI_BLE_EVENT, corrupted_data,
-               sizeof(corrupted_data));
-  write_packet(sockfd[1], DATA_TYPE_SCO, sco_data, strlen(sco_data));
-  write_packet(sockfd[1], DATA_TYPE_EVENT, event_data, strlen(event_data));
+  write_packet(sockfd[1], DATA_TYPE_ACL, acl_data);
+  write_packet(sockfd[1], HCI_BLE_EVENT, corrupted_data);
+  write_packet(sockfd[1], DATA_TYPE_SCO, sco_data);
+  write_packet(sockfd[1], DATA_TYPE_EVENT, event_data);
 
   // Wait for all data to be received before calling the test good
   semaphore_wait(done);
@@ -244,8 +242,7 @@ TEST_F(HciHalH4Test, test_read_async_reentry) {
   reentry_semaphore = semaphore_new(0);
   reentry_i = 0;
 
-  write_packet_reentry(sockfd[1], DATA_TYPE_ACL, sample_data3,
-                       strlen(sample_data3));
+  write_packet_reentry(sockfd[1], DATA_TYPE_ACL, sample_data3);
 
   // write_packet_reentry ensures the data has been received
   semaphore_free(reentry_semaphore);
@@ -255,7 +252,7 @@ TEST_F(HciHalH4Test, test_type_byte_only_must_not_signal_data_ready) {
   reset_for(type_byte_only);
 
   char byte = DATA_TYPE_ACL;
-  write(sockfd[1], &byte, 1);
+  TEMP_FAILURE_RETRY(write(sockfd[1], &byte, 1));
 
   fd_set read_fds;
 
@@ -268,6 +265,6 @@ TEST_F(HciHalH4Test, test_type_byte_only_must_not_signal_data_ready) {
     timeout.tv_sec = 0;
     timeout.tv_usec = 0;
 
-    select(sockfd[0] + 1, &read_fds, NULL, NULL, &timeout);
+    TEMP_FAILURE_RETRY(select(sockfd[0] + 1, &read_fds, NULL, NULL, &timeout));
   } while(FD_ISSET(sockfd[0], &read_fds));
 }

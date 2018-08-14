@@ -28,7 +28,7 @@
 
 #include "bt_target.h"
 #include "bt_utils.h"
-#include "bt_common.h"
+#include "gki.h"
 #include "l2cdefs.h"
 #include "hcidefs.h"
 #include "hcimsgs.h"
@@ -37,8 +37,7 @@
 #include "sdp_api.h"
 #include "sdpint.h"
 #include "btu.h"
-
-#include "osi/include/osi.h"
+#include <cutils/properties.h>
 
 /**********************************************************************
 **   C L I E N T    F U N C T I O N    P R O T O T Y P E S            *
@@ -76,7 +75,7 @@ BOOLEAN SDP_InitDiscoveryDb (tSDP_DISCOVERY_DB *p_db, UINT32 len, UINT16 num_uui
         num_attr > SDP_MAX_ATTR_FILTERS || num_uuid > SDP_MAX_UUID_FILTERS)
     {
         SDP_TRACE_ERROR("SDP_InitDiscoveryDb Illegal param: p_db 0x%x, len %d, num_uuid %d, num_attr %d",
-                        PTR_TO_UINT(p_db), len, num_uuid, num_attr);
+                         (UINT32)p_db, len, num_uuid, num_attr);
 
         return(FALSE);
     }
@@ -429,14 +428,16 @@ BOOLEAN SDP_FindServiceUUIDInRec(tSDP_DISC_REC *p_rec, tBT_UUID * p_uuid)
 BOOLEAN SDP_FindServiceUUIDInRec_128bit(tSDP_DISC_REC *p_rec, tBT_UUID * p_uuid)
 {
 #if SDP_CLIENT_ENABLED == TRUE
-    tSDP_DISC_ATTR  *p_attr = p_rec->p_first_attr;
+    tSDP_DISC_ATTR  *p_attr, *p_sattr;
+
+    p_attr = p_rec->p_first_attr;
+
     while (p_attr)
     {
         if ((p_attr->attr_id == ATTR_ID_SERVICE_CLASS_ID_LIST)
             && (SDP_DISC_ATTR_TYPE(p_attr->attr_len_type) == DATA_ELE_SEQ_DESC_TYPE))
         {
-            tSDP_DISC_ATTR *p_sattr = p_attr->attr_value.v.p_sub_attr;
-            while (p_sattr)
+            for (p_sattr = p_attr->attr_value.v.p_sub_attr; p_sattr; p_sattr = p_sattr->p_next_attr)
             {
                 if (SDP_DISC_ATTR_TYPE(p_sattr->attr_len_type) == UUID_DESC_TYPE)
                 {
@@ -449,8 +450,6 @@ BOOLEAN SDP_FindServiceUUIDInRec_128bit(tSDP_DISC_REC *p_rec, tBT_UUID * p_uuid)
                     }
                     return(TRUE);
                 }
-
-                p_sattr = p_sattr->p_next_attr;
             }
             break;
         }
@@ -1290,8 +1289,14 @@ UINT8 SDP_SetTraceLevel (UINT8 new_level)
 BOOLEAN SDP_Dev_Blacklisted_For_Avrcp15 (BD_ADDR addr)
 {
     int ver;
+    char a2dp_role[PROPERTY_VALUE_MAX] = "false";
     BOOLEAN ret = sdp_dev_blacklisted_for_avrcp15(addr);
+
     SDP_TRACE_ERROR("%s", __func__);
+    property_get("persist.service.bt.a2dp.sink", a2dp_role, "false");
+    if (!strncmp("true", a2dp_role, 4)) {
+        return ret;
+    }
     if (ret != TRUE)
     {
         ver = sdp_get_stored_avrc_tg_version (addr);

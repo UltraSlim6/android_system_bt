@@ -25,12 +25,11 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <stdlib.h>
-#include <string.h>
 
 #include "osi/include/allocator.h"
 #include "btu.h"
 #include "bt_types.h"
-#include "bt_common.h"
+#include "gki.h"
 #include "utl.h"
 #include "bta_sys.h"
 #include "bta_api.h"
@@ -42,15 +41,14 @@
 #include "sdp_api.h"
 #include "l2c_api.h"
 #include "port_api.h"
+#include <string.h>
 #include "rfcdefs.h"
 #include "avct_api.h"
 #include "avdt_api.h"
 #include "gap_api.h"
 #include "l2c_api.h"
 
-#include "osi/include/osi.h"
 
-extern fixed_queue_t *btu_general_alarm_queue;
 /* one of these exists for each client */
 struct fc_client {
     struct fc_client    *next_all_list;
@@ -78,6 +76,21 @@ struct fc_channel {
 static struct fc_client *fc_clients;
 static struct fc_channel *fc_channels;
 static uint32_t fc_next_id;
+static pthread_once_t fc_init_once = PTHREAD_ONCE_INIT;
+
+static void fc_init_work(void)
+{
+    fc_clients = NULL;
+    fc_channels = NULL;
+    fc_next_id = 0;
+
+    //more init here if needed...
+}
+
+static void fc_init(void)
+{
+    pthread_once(&fc_init_once,  fc_init_work);
+}
 
 
 static void fcchan_conn_chng_cbk(UINT16 chan, BD_ADDR bd_addr, BOOLEAN connected,
@@ -418,8 +431,12 @@ static void bta_jv_clear_pm_cb(tBTA_JV_PM_CB *p_pm_cb, BOOLEAN close_conn)
     if (close_conn)
         bta_sys_conn_close(BTA_ID_JV, p_pm_cb->app_id, p_pm_cb->peer_bd_addr);
 
-    /* Ensure that timer is stopped */
-    alarm_cancel(p_pm_cb->idle_timer);
+    if (p_pm_cb->is_idle_timer_started == TRUE)
+    {
+        /* Ensure that timer is stopped */
+        btu_stop_timer (&p_pm_cb->idle_tle);
+        p_pm_cb->is_idle_timer_started = FALSE;
+    }
     p_pm_cb->state = BTA_JV_PM_FREE_ST;
     p_pm_cb->app_id = BTA_JV_PM_ALL;
     p_pm_cb->handle = BTA_JV_PM_HANDLE_CLEAR;
@@ -537,6 +554,8 @@ static tBTA_JV_PM_CB *bta_jv_alloc_set_pm_profile_cb(UINT32 jv_handle, tBTA_JV_P
             /* rfc handle bd addr retrieval requires core stack handle */
             if (bRfcHandle)
             {
+                UINT32 hi = ((jv_handle & BTA_JV_RFC_HDL_MASK) & ~BTA_JV_RFCOMM_MASK) - 1;
+                UINT32 si = BTA_JV_RFC_HDL_TO_SIDX(jv_handle);
                 for (j = 0; j < BTA_JV_MAX_RFC_CONN; j++)
                 {
                     if (jv_handle == bta_jv_cb.port_cb[j].handle)
@@ -580,8 +599,9 @@ static tBTA_JV_PM_CB *bta_jv_alloc_set_pm_profile_cb(UINT32 jv_handle, tBTA_JV_P
         bta_jv_cb.pm_cb[i].app_id = app_id;
         bdcpy(bta_jv_cb.pm_cb[i].peer_bd_addr, peer_bd_addr);
         bta_jv_cb.pm_cb[i].state = BTA_JV_PM_IDLE_ST;
-
-        bta_jv_cb.pm_cb[i].idle_timer = alarm_new("bta.jv_idle_timer");
+        bta_jv_cb.pm_cb[i].is_idle_timer_started = FALSE;
+        bta_jv_cb.pm_cb[i].idle_tle.param = (UINT32) bta_jv_idle_timeout_handler;
+        bta_jv_cb.pm_cb[i].idle_tle.data = (UINT32) &bta_jv_cb.pm_cb[i];
         APPL_TRACE_DEBUG("bta_jv_alloc_set_pm_profile_cb: %d, PM_cb: %p", i, &bta_jv_cb.pm_cb[i]);
         return &bta_jv_cb.pm_cb[i];
     }
@@ -864,6 +884,7 @@ static inline tBT_UUID shorten_sdp_uuid(const tBT_UUID* u)
 static void bta_jv_start_discovery_cback(UINT16 result, void * user_data)
 {
     tBTA_JV_STATUS status;
+    UINT8          old_sdp_act = bta_jv_cb.sdp_active;
 
     APPL_TRACE_DEBUG("bta_jv_start_discovery_cback res: 0x%x", result);
 
@@ -996,6 +1017,7 @@ static void bta_jv_l2cap_client_cback(UINT16 gap_handle, UINT16 event)
 {
     tBTA_JV_L2C_CB  *p_cb = &bta_jv_cb.l2c_cb[gap_handle];
     tBTA_JV     evt_data;
+    UINT8 *p_bd_addr;
 
     if (gap_handle >= BTA_JV_MAX_L2C_CONN && !p_cb->p_cback)
         return;
@@ -1007,7 +1029,9 @@ static void bta_jv_l2cap_client_cback(UINT16 gap_handle, UINT16 event)
     switch (event)
     {
     case GAP_EVT_CONN_OPENED:
-        bdcpy(evt_data.l2c_open.rem_bda, GAP_ConnGetRemoteAddr(gap_handle));
+        p_bd_addr = GAP_ConnGetRemoteAddr(gap_handle);
+        if (NULL != p_bd_addr)
+            bdcpy(evt_data.l2c_open.rem_bda, p_bd_addr);
         evt_data.l2c_open.tx_mtu = GAP_ConnGetRemMtuSize(gap_handle);
         p_cb->state = BTA_JV_ST_CL_OPEN;
         p_cb->p_cback(BTA_JV_L2CAP_OPEN_EVT, &evt_data, p_cb->user_data);
@@ -1026,10 +1050,6 @@ static void bta_jv_l2cap_client_cback(UINT16 gap_handle, UINT16 event)
         /* Reset idle timer to avoid requesting sniff mode while receiving data */
         bta_jv_pm_conn_busy(p_cb->p_pm_cb);
         p_cb->p_cback(BTA_JV_L2CAP_DATA_IND_EVT, &evt_data, p_cb->user_data);
-        bta_jv_pm_conn_idle(p_cb->p_pm_cb);
-        break;
-
-    case GAP_EVT_TX_EMPTY:
         bta_jv_pm_conn_idle(p_cb->p_pm_cb);
         break;
 
@@ -1094,12 +1114,11 @@ void bta_jv_l2cap_connect(tBTA_JV_MSG *p_data)
 
     if (sec_id)
     {
-        /* PSM checking is not required for LE COC */
-        if ((cc->type != BTA_JV_CONN_TYPE_L2CAP) || (bta_jv_check_psm(cc->remote_psm))) /* allowed */
+        if (bta_jv_check_psm(cc->remote_psm)) /* allowed */
         {
             if ((handle = GAP_ConnOpen("", sec_id, 0, cc->peer_bd_addr, cc->remote_psm,
                 &cfg, ertm_info, cc->sec_mask, chan_mode_mask,
-                bta_jv_l2cap_client_cback, cc->type)) != GAP_INVALID_HANDLE )
+                bta_jv_l2cap_client_cback)) != GAP_INVALID_HANDLE )
             {
                 evt_data.status = BTA_JV_SUCCESS;
             }
@@ -1122,8 +1141,7 @@ void bta_jv_l2cap_connect(tBTA_JV_MSG *p_data)
     }
 
     evt_data.handle = handle;
-    if(cc->p_cback)
-        cc->p_cback(BTA_JV_L2CAP_CL_INIT_EVT, (tBTA_JV *)&evt_data, cc->user_data);
+    cc->p_cback(BTA_JV_L2CAP_CL_INIT_EVT, (tBTA_JV *)&evt_data, cc->user_data);
 }
 
 
@@ -1166,6 +1184,7 @@ static void bta_jv_l2cap_server_cback(UINT16 gap_handle, UINT16 event)
     tBTA_JV evt_data;
     tBTA_JV_L2CAP_CBACK *p_cback;
     void *user_data;
+    UINT8 *p_bd_addr;
 
     if (gap_handle >= BTA_JV_MAX_L2C_CONN && !p_cb->p_cback)
         return;
@@ -1177,7 +1196,9 @@ static void bta_jv_l2cap_server_cback(UINT16 gap_handle, UINT16 event)
     switch (event)
     {
     case GAP_EVT_CONN_OPENED:
-        bdcpy(evt_data.l2c_open.rem_bda, GAP_ConnGetRemoteAddr(gap_handle));
+        p_bd_addr = GAP_ConnGetRemoteAddr(gap_handle);
+        if (NULL != p_bd_addr)
+            bdcpy(evt_data.l2c_open.rem_bda, p_bd_addr);
         evt_data.l2c_open.tx_mtu = GAP_ConnGetRemMtuSize(gap_handle);
         p_cb->state = BTA_JV_ST_SR_OPEN;
         p_cb->p_cback(BTA_JV_L2CAP_OPEN_EVT, &evt_data, p_cb->user_data);
@@ -1197,10 +1218,6 @@ static void bta_jv_l2cap_server_cback(UINT16 gap_handle, UINT16 event)
         /* Reset idle timer to avoid requesting sniff mode while receiving data */
         bta_jv_pm_conn_busy(p_cb->p_pm_cb);
         p_cb->p_cback(BTA_JV_L2CAP_DATA_IND_EVT, &evt_data, p_cb->user_data);
-        bta_jv_pm_conn_idle(p_cb->p_pm_cb);
-        break;
-
-    case GAP_EVT_TX_EMPTY:
         bta_jv_pm_conn_idle(p_cb->p_pm_cb);
         break;
 
@@ -1233,6 +1250,7 @@ void bta_jv_l2cap_start_server(tBTA_JV_MSG *p_data)
     tL2CAP_CFG_INFO cfg;
     tBTA_JV_L2CAP_START evt_data;
     tBTA_JV_API_L2CAP_SERVER *ls = &(p_data->l2cap_server);
+    INT32   use_etm = FALSE;
     UINT8 chan_mode_mask = GAP_FCR_CHAN_OPT_BASIC;
     tL2CAP_ERTM_INFO    *ertm_info = NULL;
 
@@ -1266,10 +1284,9 @@ void bta_jv_l2cap_start_server(tBTA_JV_MSG *p_data)
     */
 
     sec_id = bta_jv_alloc_sec_id();
-    /* PSM checking is not required for LE COC */
-    if (0 == sec_id || ((ls->type == BTA_JV_CONN_TYPE_L2CAP) && (FALSE == bta_jv_check_psm(ls->local_psm))) ||
+    if (0 == sec_id || (FALSE == bta_jv_check_psm(ls->local_psm)) ||
         (handle = GAP_ConnOpen("JV L2CAP", sec_id, 1, 0, ls->local_psm, &cfg, ertm_info,
-            ls->sec_mask, chan_mode_mask, bta_jv_l2cap_server_cback, ls->type)) == GAP_INVALID_HANDLE)
+            ls->sec_mask, chan_mode_mask, bta_jv_l2cap_server_cback)) == GAP_INVALID_HANDLE)
     {
         bta_jv_free_sec_id(&sec_id);
         evt_data.status = BTA_JV_FAILURE;
@@ -1288,8 +1305,7 @@ void bta_jv_l2cap_start_server(tBTA_JV_MSG *p_data)
         p_cb->psm = ls->local_psm;
     }
 
-    if(ls->p_cback)
-        ls->p_cback(BTA_JV_L2CAP_START_EVT, (tBTA_JV *)&evt_data, ls->user_data);
+    ls->p_cback(BTA_JV_L2CAP_START_EVT, (tBTA_JV *)&evt_data, ls->user_data);
 }
 
 /*******************************************************************************
@@ -1318,8 +1334,7 @@ void bta_jv_l2cap_stop_server(tBTA_JV_MSG *p_data)
             evt_data.handle = p_cb->handle;
             evt_data.status = bta_jv_free_l2c_cb(p_cb);
             evt_data.async = FALSE;
-            if(p_cback)
-                p_cback(BTA_JV_L2CAP_CLOSE_EVT, (tBTA_JV *)&evt_data, ls->user_data);
+            p_cback(BTA_JV_L2CAP_CLOSE_EVT, (tBTA_JV *)&evt_data, user_data);
             break;
         }
     }
@@ -1396,6 +1411,7 @@ void bta_jv_l2cap_write(tBTA_JV_MSG *p_data)
            evt_data.status = BTA_JV_SUCCESS;
         }
         ls->p_cb->p_cback(BTA_JV_L2CAP_WRITE_EVT, (tBTA_JV *)&evt_data, ls->user_data);
+        bta_jv_pm_conn_idle(ls->p_cb->p_pm_cb);
     } else {
         /* As this pointer is checked in the API function, this occurs only when the channel is
          * disconnected after the API function is called, but before the message is handled. */
@@ -1416,8 +1432,12 @@ void bta_jv_l2cap_write_fixed(tBTA_JV_MSG *p_data)
 {
     tBTA_JV_L2CAP_WRITE_FIXED evt_data;
     tBTA_JV_API_L2CAP_WRITE_FIXED *ls = &(p_data->l2cap_write_fixed);
-    BT_HDR *msg = (BT_HDR *)osi_malloc(sizeof(BT_HDR) + ls->len + L2CAP_MIN_OFFSET);
-
+    BT_HDR *msg = (BT_HDR *)GKI_getbuf(sizeof(BT_HDR) + ls->len + L2CAP_MIN_OFFSET);
+    if (!msg)
+    {
+      APPL_TRACE_ERROR("%s() could not allocate msg buffer",__func__);
+        return;
+    }
     evt_data.status  = BTA_JV_FAILURE;
     evt_data.channel = ls->channel;
     memcpy(evt_data.addr, ls->addr, sizeof(evt_data.addr));
@@ -1491,11 +1511,12 @@ static void bta_jv_port_mgmt_cl_cback(UINT32 code, UINT16 port_handle)
     tBTA_JV_RFCOMM_CBACK *p_cback;  /* the callback function */
 
     APPL_TRACE_DEBUG( "bta_jv_port_mgmt_cl_cback:code:%d, port_handle%d", code, port_handle);
-    /* Fix for below Klockwork issue
-     * Pointer 'p_pcb' returned from call to function 'bta_jv_rfc_port_to_pcb' at line 1490
-     * may be NULL and may be dereferenced at line 1500*/
     if(NULL == p_cb || NULL == p_cb->p_cback || NULL == p_pcb)
+    {
+        APPL_TRACE_ERROR( "bta_jv_port_mgmt_cl_cback, p_cb:%p, p_cb->p_cback:%p, p_pcb",
+                         p_cb, p_cb ? p_cb->p_cback : NULL, p_pcb);
         return;
+    }
 
     APPL_TRACE_DEBUG( "bta_jv_port_mgmt_cl_cback code=%d port_handle:%d handle:%d",
         code, port_handle, p_cb->handle);
@@ -1545,11 +1566,12 @@ static void bta_jv_port_event_cl_cback(UINT32 code, UINT16 port_handle)
     tBTA_JV evt_data;
 
     APPL_TRACE_DEBUG( "bta_jv_port_event_cl_cback:%d", port_handle);
-    /* Fix for below Klockwork issue
-     * Pointer 'p_pcb' returned from call to function 'bta_jv_rfc_port_to_pcb' at line 1547
-     * may be NULL and may be dereferenced at line 1554*/
     if (NULL == p_cb || NULL == p_cb->p_cback || NULL == p_pcb)
-          return;
+    {
+        APPL_TRACE_ERROR( "bta_jv_port_event_cl_cback, p_cb:%p, p_cb->p_cback:%p, p_pcb",
+                        p_cb, p_cb ? p_cb->p_cback : NULL, p_pcb);
+        return;
+    }
 
     APPL_TRACE_DEBUG( "bta_jv_port_event_cl_cback code=x%x port_handle:%d handle:%d",
         code, port_handle, p_cb->handle);
@@ -1592,14 +1614,13 @@ void bta_jv_rfcomm_connect(tBTA_JV_MSG *p_data)
     tBTA_JV_RFC_CB  *p_cb = NULL;
     tBTA_JV_PCB     *p_pcb;
     tBTA_JV_API_RFCOMM_CONNECT *cc = &(p_data->rfcomm_connect);
-    tBTA_JV_RFCOMM_CL_INIT evt_data;
+    tBTA_JV_RFCOMM_CL_INIT      evt_data = {0};
 
     /* TODO DM role manager
     L2CA_SetDesireRole(cc->role);
     */
 
     sec_id = bta_jv_alloc_sec_id();
-    memset(&evt_data, 0, sizeof(evt_data));
     evt_data.sec_id = sec_id;
     evt_data.status = BTA_JV_SUCCESS;
     if (0 == sec_id ||
@@ -1678,7 +1699,7 @@ static int find_rfc_pcb(void* user_data, tBTA_JV_RFC_CB **cb, tBTA_JV_PCB **pcb)
             return 1;
         }
     }
-    APPL_TRACE_DEBUG("find_rfc_pcb: cannot find rfc_cb from user data: %u", PTR_TO_UINT(user_data));
+    APPL_TRACE_DEBUG("find_rfc_pcb: cannot find rfc_cb from user data:%d", (UINT32)user_data);
     return 0;
 }
 
@@ -1713,6 +1734,38 @@ void bta_jv_rfcomm_close(tBTA_JV_MSG *p_data)
 
 /*******************************************************************************
 **
+** Function     bta_jv_get_num_rfc_listen
+**
+** Description  when a RFCOMM connection goes down, make sure that there's only
+**              one port stays listening on this scn.
+**
+** Returns
+**
+*******************************************************************************/
+static UINT8 bta_jv_get_num_rfc_listen(tBTA_JV_RFC_CB *p_cb)
+{
+    UINT8   listen=1;
+
+    if (p_cb->max_sess > 1)
+    {
+        listen = 0;
+        for (UINT8 i=0; i<p_cb->max_sess; i++)
+        {
+            if (p_cb->rfc_hdl[i] != 0)
+            {
+                const tBTA_JV_PCB *p_pcb = &bta_jv_cb.port_cb[p_cb->rfc_hdl[i] - 1];
+                if (BTA_JV_ST_SR_LISTEN == p_pcb->state)
+                {
+                    listen++;
+                }
+            }
+        }
+    }
+    return listen;
+}
+
+/*******************************************************************************
+**
 ** Function     bta_jv_port_mgmt_sr_cback
 **
 ** Description  callback for port mamangement function of rfcomm
@@ -1729,12 +1782,12 @@ static void bta_jv_port_mgmt_sr_cback(UINT32 code, UINT16 port_handle)
     BD_ADDR rem_bda;
     UINT16 lcid;
     APPL_TRACE_DEBUG("bta_jv_port_mgmt_sr_cback, code:%d, port_handle:%d", code, port_handle);
-    /* Fix for below Klockwork issue
-     * Pointer 'p_pcb' returned from call to function 'bta_jv_rfc_port_to_pcb' at line 1729
-     * may be NULL and may be dereferenced at line 1738*/
     if (NULL == p_cb || NULL == p_cb->p_cback || NULL == p_pcb)
+    {
+        APPL_TRACE_ERROR("bta_jv_port_mgmt_sr_cback, p_cb:%p, p_cb->p_cback%p",
+                p_cb, p_cb ? p_cb->p_cback : NULL);
         return;
-
+    }
     void *user_data = p_pcb->user_data;
     APPL_TRACE_DEBUG( "bta_jv_port_mgmt_sr_cback code=%d port_handle:0x%x handle:0x%x, p_pcb:%p, user:%d",
         code, port_handle, p_cb->handle, p_pcb, p_pcb->user_data);
@@ -1798,7 +1851,11 @@ static void bta_jv_port_event_sr_cback(UINT32 code, UINT16 port_handle)
     tBTA_JV evt_data;
 
     if (NULL == p_cb || NULL == p_cb->p_cback || NULL == p_pcb)
+    {
+        APPL_TRACE_ERROR( "bta_jv_port_event_sr_cback, p_cb:%p, p_cb->p_cback:%p, p_pcb:%p",
+           p_cb, p_cb ? p_cb->p_cback : NULL, p_pcb);
         return;
+    }
 
     APPL_TRACE_DEBUG( "bta_jv_port_event_sr_cback code=x%x port_handle:%d handle:%d",
         code, port_handle, p_cb->handle);
@@ -1929,12 +1986,10 @@ void bta_jv_rfcomm_start_server(tBTA_JV_MSG *p_data)
     tBTA_JV_RFC_CB  *p_cb = NULL;
     tBTA_JV_PCB     *p_pcb;
     tBTA_JV_API_RFCOMM_SERVER *rs = &(p_data->rfcomm_server);
-    tBTA_JV_RFCOMM_START evt_data;
-
+    tBTA_JV_RFCOMM_START        evt_data = {0};
     /* TODO DM role manager
     L2CA_SetDesireRole(rs->role);
     */
-    memset(&evt_data, 0, sizeof(evt_data));
     evt_data.status = BTA_JV_FAILURE;
     APPL_TRACE_DEBUG("bta_jv_rfcomm_start_server: sec id in use:%d, rfc_cb in use:%d",
                 get_sec_id_used(), get_rfc_cb_used());
@@ -2030,6 +2085,35 @@ void bta_jv_rfcomm_stop_server(tBTA_JV_MSG *p_data)
     bta_jv_free_rfc_cb(p_cb, p_pcb);
     APPL_TRACE_DEBUG("bta_jv_rfcomm_stop_server: sec id in use:%d, rfc_cb in use:%d",
                 get_sec_id_used(), get_rfc_cb_used());
+}
+
+/*******************************************************************************
+**
+** Function     bta_jv_rfcomm_read
+**
+** Description  Read data from an RFCOMM connection
+**
+** Returns      void
+**
+*******************************************************************************/
+void bta_jv_rfcomm_read(tBTA_JV_MSG *p_data)
+{
+    tBTA_JV_API_RFCOMM_READ *rc = &(p_data->rfcomm_read);
+    tBTA_JV_RFC_CB  *p_cb = rc->p_cb;
+    tBTA_JV_PCB     *p_pcb = rc->p_pcb;
+    tBTA_JV_RFCOMM_READ    evt_data;
+
+    evt_data.status = BTA_JV_FAILURE;
+    evt_data.handle = p_cb->handle;
+    evt_data.req_id = rc->req_id;
+    evt_data.p_data = rc->p_data;
+    if (PORT_ReadData(rc->p_pcb->port_handle, (char *)rc->p_data, rc->len, &evt_data.len) ==
+        PORT_SUCCESS)
+    {
+        evt_data.status = BTA_JV_SUCCESS;
+    }
+
+    p_cb->p_cback(BTA_JV_RFCOMM_READ_EVT, (tBTA_JV *)&evt_data, p_pcb->user_data);
 }
 
 /*******************************************************************************
@@ -2153,21 +2237,24 @@ void bta_jv_change_pm_state(tBTA_JV_MSG *p_data)
 tBTA_JV_STATUS bta_jv_set_pm_conn_state(tBTA_JV_PM_CB *p_cb, const tBTA_JV_CONN_STATE
         new_st)
 {
-    if (p_cb == NULL)
-        return BTA_JV_FAILURE;
+    tBTA_JV_STATUS status = BTA_JV_FAILURE;
+    tBTA_JV_API_PM_STATE_CHANGE *p_msg;
 
-    APPL_TRACE_API("%s: handle:0x%x, state: %d", __func__, p_cb->handle,
-                   new_st);
+    if (NULL == p_cb)
+        return status;
 
-    tBTA_JV_API_PM_STATE_CHANGE *p_msg =
-        (tBTA_JV_API_PM_STATE_CHANGE *)osi_malloc(sizeof(tBTA_JV_API_PM_STATE_CHANGE));
-    p_msg->hdr.event = BTA_JV_API_PM_STATE_CHANGE_EVT;
-    p_msg->p_cb = p_cb;
-    p_msg->state = new_st;
-
-    bta_sys_sendmsg(p_msg);
-
-    return BTA_JV_SUCCESS;
+    APPL_TRACE_API("bta_jv_set_pm_conn_state(handle:0x%x, state: %d)", p_cb->handle,
+            new_st);
+    if ((p_msg = (tBTA_JV_API_PM_STATE_CHANGE *)GKI_getbuf(
+            sizeof(tBTA_JV_API_PM_STATE_CHANGE))) != NULL)
+    {
+        p_msg->hdr.event = BTA_JV_API_PM_STATE_CHANGE_EVT;
+        p_msg->p_cb = p_cb;
+        p_msg->state = new_st;
+        bta_sys_sendmsg(p_msg);
+        status = BTA_JV_SUCCESS;
+    }
+    return (status);
 }
 
 /*******************************************************************************
@@ -2193,8 +2280,6 @@ static void bta_jv_pm_conn_busy(tBTA_JV_PM_CB *p_cb)
                 p_cb->state = BTA_JV_PM_BUSY_ST;
                 APPL_TRACE_DEBUG("bta_jv_pm_conn_busy:power mode: %d", mode);
             }
-        } else {
-          bta_jv_pm_state_change(p_cb, BTA_JV_CONN_BUSY);
         }
     }
 }
@@ -2213,12 +2298,14 @@ static void bta_jv_pm_conn_busy(tBTA_JV_PM_CB *p_cb)
 static void bta_jv_pm_conn_idle(tBTA_JV_PM_CB *p_cb)
 {
     if ((NULL != p_cb) && (BTA_JV_PM_IDLE_ST != p_cb->state)) {
-        APPL_TRACE_DEBUG("bta_jv_pm_conn_idle, p_cb: %p", p_cb);
+        APPL_TRACE_DEBUG("bta_jv_pm_conn_idle, p_cb->is_idle_timer_started: %d, p_cb: %p",
+                p_cb->is_idle_timer_started, p_cb);
         p_cb->state = BTA_JV_PM_IDLE_ST;
+        if (p_cb->is_idle_timer_started == FALSE) {
             // start intermediate idle timer for 1s
-        if (!alarm_is_scheduled(p_cb->idle_timer)) {
-            alarm_set_on_queue(p_cb->idle_timer, BTA_JV_IDLE_TIMEOUT_MS,
-                   bta_jv_idle_timeout_handler, p_cb, btu_general_alarm_queue);
+            btu_start_timer(&p_cb->idle_tle, BTU_TTYPE_USER_FUNC,
+                    BTA_JV_IDLE_TIMEOUT);
+            p_cb->is_idle_timer_started = TRUE;
         }
     }
 }
@@ -2310,6 +2397,9 @@ static struct fc_channel *fcchan_get(uint16_t chan, char create)
         return NULL; /* we cannot alloc a struct if not asked to */
 
     t = osi_calloc(sizeof(*t));
+    if (!t)
+        return NULL;
+
     t->chan = chan;
 
     if (!L2CA_RegisterFixedChannel(chan, &fcr)) {
@@ -2373,29 +2463,32 @@ static struct fc_client *fcclient_alloc(uint16_t chan, char server, const uint8_
         sec_id = bta_jv_alloc_sec_id();
 
     t = osi_calloc(sizeof(*t));
-    // Allocate it a unique ID
-    do {
-        t->id = ++fc_next_id;
-    } while (!t->id || fcclient_find_by_id(t->id));
+    if (t) {
+        //allocate it a unique ID
+        do {
+           t->id = ++fc_next_id;
+        } while (!t->id || fcclient_find_by_id(t->id));
 
-    // Populate some params
-    t->chan = chan;
-    t->server = server;
+        //populate some params
+        t->chan = chan;
+        t->server = server;
 
-    // Get a security id
-    t->sec_id = sec_id;
+        //get a security id
+        t->sec_id = sec_id;
 
-    // Link it in to global list
-    t->next_all_list = fc_clients;
-    fc_clients = t;
+        //link it in to global list
+        t->next_all_list = fc_clients;
+        fc_clients = t;
 
-    // Link it in to channel list
-    t->next_chan_list = fc->clients;
-    fc->clients = t;
+        //link it in to channel list
+        t->next_chan_list = fc->clients;
+        fc->clients = t;
 
-    // Update channel if needed
-    if (server)
-        fc->has_server = TRUE;
+        //update channel if needed
+        if (server)
+            fc->has_server = TRUE;
+    } else if (!sec_id_to_use)
+       bta_jv_free_sec_id(&sec_id);
 
     return t;
 }
@@ -2521,6 +2614,7 @@ static void fcchan_conn_chng_cbk(UINT16 chan, BD_ADDR bd_addr, BOOLEAN connected
 static void fcchan_data_cbk(UINT16 chan, BD_ADDR bd_addr, BT_HDR *p_buf)
 {
     tBTA_JV evt_data;
+    tBTA_JV evt_open;
     struct fc_channel *tc;
     struct fc_client *t = NULL;
     tBTA_JV_L2CAP_CBACK *sock_cback = NULL;
@@ -2534,15 +2628,10 @@ static void fcchan_data_cbk(UINT16 chan, BD_ADDR bd_addr, BT_HDR *p_buf)
             return;
         }
     }
-    /* Fix for below klockwork issue
-     * Null pointer 't' that comes from line 2508
-     * may be dereferenced at line 2525*/
-    if (t)
-    {
-       sock_cback = t->p_cback;
-       sock_user_data = t->user_data;
-       evt_data.le_data_ind.handle = t->id;
-    }
+
+    sock_cback = t->p_cback;
+    sock_user_data = t->user_data;
+    evt_data.le_data_ind.handle = t->id;
     evt_data.le_data_ind.p_buf = p_buf;
 
     if (sock_cback)
@@ -2598,8 +2687,7 @@ void bta_jv_l2cap_connect_le(tBTA_JV_MSG *p_data)
     }
     if (call_init_f)
         cc->p_cback(BTA_JV_L2CAP_CL_INIT_EVT, &evt, cc->user_data);
-    if (t)
-        t->init_called = TRUE;
+    t->init_called = TRUE;
 }
 
 
@@ -2657,6 +2745,7 @@ void bta_jv_l2cap_start_server_le(tBTA_JV_MSG *p_data)
     tBTA_JV_API_L2CAP_SERVER *ss = &(p_data->l2cap_server);
     tBTA_JV_L2CAP_START evt_data;
     struct fc_client *t;
+    uint16_t handle;
 
     evt_data.handle = GAP_INVALID_HANDLE;
     evt_data.status = BTA_JV_FAILURE;
@@ -2707,20 +2796,21 @@ extern void bta_jv_l2cap_close_fixed (tBTA_JV_MSG *p_data)
 ** Returns          void
 **
 *******************************************************************************/
-void bta_jv_idle_timeout_handler(void *tle) {
-    tBTA_JV_PM_CB *p_cb = (tBTA_JV_PM_CB *)tle;;
+void bta_jv_idle_timeout_handler(TIMER_LIST_ENT *tle) {
+    tBTA_JV_PM_CB *p_cb = (tBTA_JV_PM_CB *)tle->data;;
     APPL_TRACE_DEBUG("%s p_cb: %p", __func__, p_cb);
 
     if (NULL != p_cb) {
+        p_cb->is_idle_timer_started = FALSE;
 
         tBTM_PM_MODE    mode = BTM_PM_MD_ACTIVE;
         if (BTM_ReadPowerMode(p_cb->peer_bd_addr, &mode) == BTM_SUCCESS) {
             if (mode == BTM_PM_MD_SNIFF) {
                 APPL_TRACE_WARNING("%s: %d", __func__, mode)
                 return;
+            } else {
+                APPL_TRACE_DEBUG("%s: %d", __func__, mode);
             }
-        } else {
-            APPL_TRACE_DEBUG("%s: Read power mode failed %d", __func__, mode);
         }
         bta_jv_pm_state_change(p_cb, BTA_JV_CONN_IDLE);
     }

@@ -36,9 +36,9 @@
 #define BTA_HF_CLIENT_ACP       0       /* accepted connection */
 #define BTA_HF_CLIENT_INT       1       /* initiating connection */
 
-/* Time (in milliseconds) to wait for retry in case of collision */
-#ifndef BTA_HF_CLIENT_COLLISION_TIMER_MS
-#define BTA_HF_CLIENT_COLLISION_TIMER_MS        2411
+/* Timer to wait for retry in case of collision */
+#ifndef BTA_HF_CLIENT_COLLISION_TIMER
+#define BTA_HF_CLIENT_COLLISION_TIMER  2411
 #endif
 
 enum
@@ -160,7 +160,8 @@ typedef struct
     tBTA_HF_CLIENT_AT_CB at_cb;         /* AT Parser control block */
     UINT8               state;          /* state machine state */
     tBTM_SCO_CODEC_TYPE negotiated_codec; /* negotiated codec */
-    alarm_t             *collision_timer; /* Collision timer */
+    TIMER_LIST_ENT      colli_timer;    /* Collision timer */
+    BOOLEAN             colli_tmr_on;   /* TRUE if collision timer is active */
 } tBTA_HF_CLIENT_SCB;
 
 /* sco states */

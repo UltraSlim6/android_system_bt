@@ -21,9 +21,8 @@
 #define GAP_INT_H
 
 #include "bt_target.h"
-#include "osi/include/fixed_queue.h"
 #include "gap_api.h"
-#include "bt_common.h"
+#include "gki.h"
 #include "gatt_api.h"
 #define GAP_MAX_BLOCKS 2        /* Concurrent GAP commands pending at a time*/
 /* Define the Generic Access Profile control structure */
@@ -75,8 +74,8 @@ typedef struct
     UINT16            rem_mtu_size;
 
     BOOLEAN           is_congested;
-    fixed_queue_t     *tx_queue;            /* Queue of buffers waiting to be sent  */
-    fixed_queue_t     *rx_queue;            /* Queue of buffers waiting to be read  */
+    BUFFER_Q          tx_queue;             /* Queue of buffers waiting to be sent  */
+    BUFFER_Q          rx_queue;             /* Queue of buffers waiting to be read  */
 
     UINT32            rx_queue_size;        /* Total data count in rx_queue         */
 
@@ -84,9 +83,6 @@ typedef struct
 
     tL2CAP_CFG_INFO   cfg;                  /* Configuration                        */
     tL2CAP_ERTM_INFO  ertm_info;            /* Pools and modes for ertm */
-    tBT_TRANSPORT     transport;            /* Transport channel BR/EDR or BLE */
-    tL2CAP_LE_CFG_INFO local_coc_cfg;       /* local configuration for LE Coc */
-    tL2CAP_LE_CFG_INFO peer_coc_cfg;        /* local configuration for LE Coc */
 } tGAP_CCB;
 
 typedef struct
@@ -130,7 +126,7 @@ typedef struct
     UINT16                  cl_op_uuid;
     BOOLEAN                 in_use;
     BOOLEAN                 connected;
-    fixed_queue_t           *pending_req_q;
+    BUFFER_Q                pending_req_q;
 
 }tGAP_CLCB;
 

@@ -24,8 +24,6 @@
 #ifndef _AVRC_DEFS_H
 #define _AVRC_DEFS_H
 
-#include "stack/include/bt_types.h"
-
 /*****************************************************************************
 **  constants
 *****************************************************************************/
@@ -36,7 +34,6 @@
 #define AVRC_REV_1_3        0x0103
 #define AVRC_REV_1_4        0x0104
 #define AVRC_REV_1_5        0x0105
-#define AVRC_REV_1_6        0x0106
 
 #define AVRC_PACKET_LEN             512 /* Per the spec, you must support 512 byte RC packets */
 
@@ -206,7 +203,7 @@
 #define AVRC_PDU_REGISTER_NOTIFICATION          0x31
 #define AVRC_PDU_REQUEST_CONTINUATION_RSP       0x40
 #define AVRC_PDU_ABORT_CONTINUATION_RSP         0x41
-/* added in 1.4 and above*/
+/* added in 1.4 */
 #define AVRC_PDU_SET_ABSOLUTE_VOLUME            0x50
 #define AVRC_PDU_SET_ADDRESSED_PLAYER           0x60
 #define AVRC_PDU_SET_BROWSED_PLAYER             0x70
@@ -214,7 +211,6 @@
 #define AVRC_PDU_CHANGE_PATH                    0x72
 #define AVRC_PDU_GET_ITEM_ATTRIBUTES            0x73
 #define AVRC_PDU_PLAY_ITEM                      0x74
-#define AVRC_PDU_GET_TOTAL_NUMBER_OF_ITEMS      0x75
 #define AVRC_PDU_SEARCH                         0x80
 #define AVRC_PDU_ADD_TO_NOW_PLAYING             0x90
 #define AVRC_PDU_GENERAL_REJECT                 0xA0
@@ -253,6 +249,7 @@
 #define AVRC_STS_NO_AVAL_PLAYER 0x15    /* No available players ALL */
 #define AVRC_STS_ADDR_PLAYER_CHG 0x16   /* Addressed Player Changed - Register Notification */
 typedef UINT8 tAVRC_STS;
+
 
 /* Define the Capability IDs
 */
@@ -303,8 +300,7 @@ typedef UINT8 tAVRC_BATTERY_STATUS;
 #define AVRC_MEDIA_ATTR_ID_NUM_TRACKS            0x00000005
 #define AVRC_MEDIA_ATTR_ID_GENRE                 0x00000006
 #define AVRC_MEDIA_ATTR_ID_PLAYING_TIME          0x00000007        /* in miliseconds */
-#define AVRC_MEDIA_ATTR_ID_COVER_ART             0x00000008
-#define AVRC_MAX_NUM_MEDIA_ATTR_ID               8
+#define AVRC_MAX_NUM_MEDIA_ATTR_ID               7
 
 /* Define the possible values of play state
 */
@@ -851,7 +847,7 @@ typedef union
 					      (a >= AVRC_PLAYER_SETTING_LOW_MENU_EXT)) ? TRUE : FALSE)
 
 #define AVRC_IS_VALID_MEDIA_ATTRIBUTE(a)    ((a >= AVRC_MEDIA_ATTR_ID_TITLE) && \
-                                             (a <= AVRC_MEDIA_ATTR_ID_COVER_ART) ? TRUE : FALSE)
+                                             (a <= AVRC_MEDIA_ATTR_ID_PLAYING_TIME) ? TRUE : FALSE)
 
 #define AVRC_IS_VALID_BATTERY_STATUS(a)    ((a <= AVRC_BATTERY_STATUS_FULL_CHARGE) ? TRUE : FALSE)
 
@@ -870,6 +866,7 @@ typedef union
 #define AVRC_MAX_CHARSET_SIZE       16
 #define AVRC_MAX_ELEM_ATTR_SIZE     8
 
+
 /*****************************************************************************
 **  Metadata transfer Building/Parsing definitions
 *****************************************************************************/
@@ -884,6 +881,7 @@ typedef struct {
     UINT16              str_len;
     UINT8               *p_str;
 } tAVRC_NAME;
+
 
 #ifndef AVRC_CAP_MAX_NUM_COMP_ID
 #define AVRC_CAP_MAX_NUM_COMP_ID    4
@@ -1162,14 +1160,6 @@ typedef struct
     UINT8       pdu;
     tAVRC_STS   status;
     UINT8       opcode;         /* Op Code (assigned by AVRC_BldCommand according to pdu) */
-    UINT8       scope;
-} tAVRC_GET_TOTAL_ITEM_CMD;
-
-typedef struct
-{
-    UINT8       pdu;
-    tAVRC_STS   status;
-    UINT8       opcode;         /* Op Code (assigned by AVRC_BldCommand according to pdu) */
 } tAVRC_CMD;
 
 /* Continue and Abort */
@@ -1209,7 +1199,6 @@ typedef union
     tAVRC_SEARCH_CMD            search;                 /* Search */
     tAVRC_PLAY_ITEM_CMD         play_item;              /* PlayItem */
     tAVRC_ADD_TO_PLAY_CMD       add_to_play;            /* AddToNowPlaying */
-    tAVRC_GET_TOTAL_ITEM_CMD    get_tot_item;           /* GetTotalNumberOfItems*/
 } tAVRC_COMMAND;
 
 /* GetCapability */
@@ -1389,15 +1378,6 @@ typedef struct
     UINT32              num_items;
 } tAVRC_SEARCH_RSP;
 
-/* GetTotItems*/
-typedef struct
-{
-    UINT8               pdu;
-    tAVRC_STS           status;
-    UINT8               opcode;         /* Op Code (copied from avrc_cmd.opcode by AVRC_BldResponse user. invalid one to generate according to pdu) */
-    UINT16              uid_counter;
-    UINT32              num_items;
-} tAVRC_GET_TOT_ITEMS_RSP;
 
 typedef struct
 {
@@ -1434,7 +1414,7 @@ typedef union
     tAVRC_SEARCH_RSP                search;                 /* Search */
     tAVRC_RSP                       play_item;              /* PlayItem */
     tAVRC_RSP                       add_to_play;            /* AddToNowPlaying */
-    tAVRC_GET_TOT_ITEMS_RSP         get_tot_items;          /* GetTotalItems */
 } tAVRC_RESPONSE;
+
 
 #endif

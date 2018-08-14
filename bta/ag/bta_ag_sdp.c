@@ -23,9 +23,6 @@
  *
  ******************************************************************************/
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <errno.h>
 #include <string.h>
 #include "bta_api.h"
 #include "bta_sys.h"
@@ -33,9 +30,8 @@
 #include "bta_ag_int.h"
 #include "sdp_api.h"
 #include "btm_api.h"
-#include "bt_common.h"
+#include "gki.h"
 #include "utl.h"
-#include "bt_utils.h"
 
 /* Number of protocol elements in protocol element list. */
 #define BTA_AG_NUM_PROTO_ELEMS      2
@@ -45,7 +41,7 @@
 
 /* size of database for service discovery */
 #ifndef BTA_AG_DISC_BUF_SIZE
-#define BTA_AG_DISC_BUF_SIZE        BT_DEFAULT_BUFFER_SIZE
+#define BTA_AG_DISC_BUF_SIZE        GKI_MAX_BUF_SIZE
 #endif
 
 /* declare sdp callback functions */
@@ -74,6 +70,7 @@ const tBTA_AG_SDP_CBACK bta_ag_sdp_cback_tbl[] =
 *******************************************************************************/
 static void bta_ag_sdp_cback(UINT16 status, UINT8 idx)
 {
+    tBTA_AG_DISC_RESULT *p_buf;
     UINT16              event;
     tBTA_AG_SCB         *p_scb;
 
@@ -91,12 +88,13 @@ static void bta_ag_sdp_cback(UINT16 status, UINT8 idx)
             event = BTA_AG_DISC_INT_RES_EVT;
         }
 
-        tBTA_AG_DISC_RESULT *p_buf =
-            (tBTA_AG_DISC_RESULT *)osi_malloc(sizeof(tBTA_AG_DISC_RESULT));
-        p_buf->hdr.event = event;
-        p_buf->hdr.layer_specific = idx;
-        p_buf->status = status;
-        bta_sys_sendmsg(p_buf);
+        if ((p_buf = (tBTA_AG_DISC_RESULT *) GKI_getbuf(sizeof(tBTA_AG_DISC_RESULT))) != NULL)
+        {
+            p_buf->hdr.event = event;
+            p_buf->hdr.layer_specific = idx;
+            p_buf->status = status;
+            bta_sys_sendmsg(p_buf);
+        }
     }
 }
 
@@ -163,7 +161,7 @@ BOOLEAN bta_ag_add_record(UINT16 service_uuid, char *p_service_name, UINT8 scn,
     if (service_uuid == UUID_SERVCLASS_AG_HANDSFREE)
     {
         profile_uuid = UUID_SERVCLASS_HF_HANDSFREE;
-        version = HFP_VERSION_1_6;
+        version = HFP_VERSION_1_7;
     }
     else
     {
@@ -326,8 +324,7 @@ BOOLEAN bta_ag_sdp_find_attr(tBTA_AG_SCB *p_scb, tBTA_SERVICE_MASK service)
     }
     else
     {
-        uuid = UUID_SERVCLASS_HEADSET_HS;
-        p_scb->peer_version = 0x0100;   /* Default version */
+        return result;
     }
 
     /* loop through all records we found */
@@ -393,20 +390,6 @@ BOOLEAN bta_ag_sdp_find_attr(tBTA_AG_SCB *p_scb, tBTA_SERVICE_MASK service)
                 if (p_scb->peer_features == 0)
                     p_scb->peer_features = p_attr->attr_value.v.u16;
 #endif
-            }
-
-            /* Remote supports 1.7, store it in the file */
-            if (p_scb->peer_version == HFP_VERSION_1_7)
-            {
-                bool ret = FALSE;
-                /* Check if the device is already part of the list, if not store it */
-                ret = is_device_present(IOT_HFP_1_7_BLACKLIST, p_scb->peer_addr);
-
-                if (ret == FALSE)
-                {
-                   add_iot_device(IOT_DEV_CONF_FILE, IOT_HFP_1_7_BLACKLIST,
-                                  p_scb->peer_addr, METHOD_BD);
-                }
             }
         }
         else    /* HSP */
@@ -482,30 +465,23 @@ void bta_ag_do_disc(tBTA_AG_SCB *p_scb, tBTA_SERVICE_MASK service)
             num_uuid = 2;
         }
     }
-    /* HSP acceptor; get features */
+    /* HSP acceptor; no discovery */
     else
     {
-       attr_list[0] = ATTR_ID_SERVICE_CLASS_ID_LIST;
-       attr_list[1] = ATTR_ID_PROTOCOL_DESC_LIST;
-       attr_list[2] = ATTR_ID_BT_PROFILE_DESC_LIST;
-       attr_list[3] = ATTR_ID_REMOTE_AUDIO_VOLUME_CONTROL;
-       num_attr = 4;
-
-       uuid_list[0].uu.uuid16 = UUID_SERVCLASS_HEADSET;        /* Legacy from HSP v1.0 */
-       if (p_scb->hsp_version >= HSP_VERSION_1_2)
-       {
-           uuid_list[1].uu.uuid16 = UUID_SERVCLASS_HEADSET_HS;
-           num_uuid = 2;
-       }
+        return;
     }
 
     /* allocate buffer for sdp database */
-    p_scb->p_disc_db = (tSDP_DISCOVERY_DB *)osi_malloc(BTA_AG_DISC_BUF_SIZE);
-    /* set up service discovery database; attr happens to be attr_list len */
-    uuid_list[0].len = LEN_UUID_16;
-    uuid_list[1].len = LEN_UUID_16;
-    db_inited = SDP_InitDiscoveryDb(p_scb->p_disc_db, BTA_AG_DISC_BUF_SIZE,
-                                    num_uuid, uuid_list, num_attr, attr_list);
+    p_scb->p_disc_db = (tSDP_DISCOVERY_DB *) GKI_getbuf(BTA_AG_DISC_BUF_SIZE);
+
+    if(p_scb->p_disc_db)
+    {
+        /* set up service discovery database; attr happens to be attr_list len */
+        uuid_list[0].len = LEN_UUID_16;
+        uuid_list[1].len = LEN_UUID_16;
+        db_inited = SDP_InitDiscoveryDb(p_scb->p_disc_db, BTA_AG_DISC_BUF_SIZE, num_uuid,
+                            uuid_list, num_attr, attr_list);
+    }
 
     if(db_inited)
     {
@@ -540,5 +516,10 @@ void bta_ag_do_disc(tBTA_AG_SCB *p_scb, tBTA_SERVICE_MASK service)
 void bta_ag_free_db(tBTA_AG_SCB *p_scb, tBTA_AG_DATA *p_data)
 {
     UNUSED(p_data);
-    osi_free_and_reset((void **)&p_scb->p_disc_db);
+
+    if (p_scb->p_disc_db != NULL)
+    {
+        GKI_freebuf(p_scb->p_disc_db);
+        p_scb->p_disc_db = NULL;
+    }
 }

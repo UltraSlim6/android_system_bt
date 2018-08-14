@@ -116,7 +116,10 @@ static void leftshift_onebit(UINT8 *input, UINT8 *output)
 *******************************************************************************/
 static void cmac_aes_cleanup(void)
 {
-    osi_free(cmac_cb.text);
+    if (cmac_cb.text != NULL)
+    {
+        GKI_freebuf(cmac_cb.text);
+    }
     memset(&cmac_cb, 0, sizeof(tCMAC_CB));
 }
 
@@ -155,7 +158,7 @@ static BOOLEAN cmac_aes_k_calculate(BT_OCTET16 key, UINT8 *p_signature, UINT16 t
     if (!err)
     {
         if (tlen > BT_OCTET16_LEN)
-           tlen = BT_OCTET16_LEN;
+            tlen = BT_OCTET16_LEN;
         p_mac = output.param_buf + (BT_OCTET16_LEN - tlen);
         memcpy(p_signature, p_mac, tlen);
 
@@ -304,24 +307,35 @@ BOOLEAN aes_cipher_msg_auth_code(BT_OCTET16 key, UINT8 *input, UINT16 length,
 
     SMP_TRACE_WARNING("AES128_CMAC started, allocate buffer size = %d", len);
     /* allocate a memory space of multiple of 16 bytes to hold text  */
-    cmac_cb.text = (UINT8 *)osi_calloc(len);
-    cmac_cb.round = n;
-    diff = len - length;
+    if ((cmac_cb.text = (UINT8 *)GKI_getbuf(len)) != NULL)
+    {
+        cmac_cb.round = n;
 
-    if (input != NULL && length > 0) {
-        memcpy(&cmac_cb.text[diff] , input, (int)length);
-        cmac_cb.len = length;
-    } else {
-        cmac_cb.len = 0;
-    }
+        memset(cmac_cb.text, 0, len);
+        diff = len - length;
 
-    /* prepare calculation for subkey s and last block of data */
-    if (cmac_generate_subkey(key)) {
-        /* start calculation */
-        ret = cmac_aes_k_calculate(key, p_signature, tlen);
+        if (input != NULL && length > 0)
+        {
+            memcpy(&cmac_cb.text[diff] , input, (int)length);
+            cmac_cb.len = length;
+        }
+        else
+            cmac_cb.len = 0;
+
+        /* prepare calculation for subkey s and last block of data */
+        if (cmac_generate_subkey(key))
+        {
+            /* start calculation */
+            ret = cmac_aes_k_calculate(key, p_signature, tlen);
+        }
+        /* clean up */
+        cmac_aes_cleanup();
     }
-    /* clean up */
-    cmac_aes_cleanup();
+    else
+    {
+        ret = FALSE;
+        SMP_TRACE_ERROR("No resources");
+    }
 
     return ret;
 }

@@ -21,20 +21,21 @@
 #include <assert.h>
 #include <errno.h>
 #include <string.h>
-#include <unistd.h>
 
 #include "bt_vendor_lib.h"
-#include "hci_hal.h"
 #include "osi/include/eager_reader.h"
-#include "osi/include/log.h"
+#include "hci_hal.h"
 #include "osi/include/osi.h"
+#include "osi/include/log.h"
 #include "osi/include/reactor.h"
 #include "vendor.h"
 
 #define HCI_HAL_SERIAL_BUFFER_SIZE 1026
 
+#ifdef QCOM_WCN_SSR
 #include <termios.h>
 #include <sys/ioctl.h>
+#endif
 
 // Our interface and modules we import
 static const hci_hal_t interface;
@@ -73,36 +74,36 @@ static bool hal_init(const hci_hal_callbacks_t *upper_callbacks, thread_t *upper
 }
 
 static bool hal_open() {
-  LOG_INFO(LOG_TAG, "%s", __func__);
+  LOG_INFO("%s", __func__);
   // TODO(zachoverflow): close if already open / or don't reopen (maybe at the hci layer level)
 
   int number_of_ports = vendor->send_command(VENDOR_OPEN_USERIAL, &uart_fds);
 
   if (number_of_ports != 2 && number_of_ports != 4) {
-    LOG_ERROR(LOG_TAG, "%s opened the wrong number of ports: got %d, expected 2 or 4.", __func__, number_of_ports);
+    LOG_ERROR("%s opened the wrong number of ports: got %d, expected 2 or 4.", __func__, number_of_ports);
     goto error;
   }
 
-  LOG_INFO(LOG_TAG, "%s got uart fds: CMD=%d, EVT=%d, ACL_OUT=%d, ACL_IN=%d",
+  LOG_INFO("%s got uart fds: CMD=%d, EVT=%d, ACL_OUT=%d, ACL_IN=%d",
       __func__, uart_fds[CH_CMD], uart_fds[CH_EVT], uart_fds[CH_ACL_OUT], uart_fds[CH_ACL_IN]);
 
   if (uart_fds[CH_CMD] == INVALID_FD) {
-    LOG_ERROR(LOG_TAG, "%s unable to open the command uart serial port.", __func__);
+    LOG_ERROR("%s unable to open the command uart serial port.", __func__);
     goto error;
   }
 
   if (uart_fds[CH_EVT] == INVALID_FD) {
-    LOG_ERROR(LOG_TAG, "%s unable to open the event uart serial port.", __func__);
+    LOG_ERROR("%s unable to open the event uart serial port.", __func__);
     goto error;
   }
 
   if (uart_fds[CH_ACL_OUT] == INVALID_FD) {
-    LOG_ERROR(LOG_TAG, "%s unable to open the acl-out uart serial port.", __func__);
+    LOG_ERROR("%s unable to open the acl-out uart serial port.", __func__);
     goto error;
   }
 
   if (uart_fds[CH_ACL_IN] == INVALID_FD) {
-    LOG_ERROR(LOG_TAG, "%s unable to open the acl-in uart serial port.", __func__);
+    LOG_ERROR("%s unable to open the acl-in uart serial port.", __func__);
     goto error;
   }
 
@@ -123,13 +124,13 @@ static bool hal_open() {
 #else
   event_stream = eager_reader_new(uart_fds[CH_EVT], &allocator_malloc, HCI_HAL_SERIAL_BUFFER_SIZE, SIZE_MAX, "hci_mct");
   if (!event_stream) {
-    LOG_ERROR(LOG_TAG, "%s unable to create eager reader for the event uart serial port.", __func__);
+    LOG_ERROR("%s unable to create eager reader for the event uart serial port.", __func__);
     goto error;
   }
 
   acl_stream = eager_reader_new(uart_fds[CH_ACL_IN], &allocator_malloc, HCI_HAL_SERIAL_BUFFER_SIZE, SIZE_MAX, "hci_mct");
   if (!acl_stream) {
-    LOG_ERROR(LOG_TAG, "%s unable to create eager reader for the acl-in uart serial port.", __func__);
+    LOG_ERROR("%s unable to create eager reader for the acl-in uart serial port.", __func__);
     goto error;
   }
 
@@ -146,19 +147,14 @@ error:;
 }
 
 static void hal_close() {
-  LOG_INFO(LOG_TAG, "%s", __func__);
+  LOG_INFO("%s", __func__);
 
 #if (defined(REMOVE_EAGER_THREADS) && (REMOVE_EAGER_THREADS == TRUE))
   hci_reader_free(event_stream);
-  event_stream = NULL;
   hci_reader_free(acl_stream);
-  acl_stream = NULL;
 #else
   eager_reader_free(event_stream);
-  event_stream = NULL;
-
   eager_reader_free(acl_stream);
-  acl_stream = NULL;
 #endif
 
   vendor->send_command(VENDOR_CLOSE_USERIAL, NULL);
@@ -167,6 +163,7 @@ static void hal_close() {
     uart_fds[i] = INVALID_FD;
 }
 
+#ifdef QCOM_WCN_SSR
 static bool hal_dev_in_reset()
 {
   volatile int serial_bits;
@@ -175,7 +172,7 @@ static bool hal_dev_in_reset()
   ioctl(uart_fds[CH_EVT], TIOCMGET, &serial_bits);
   if (serial_bits & TIOCM_OUT2) {
     while(serial_bits & TIOCM_OUT1) {
-      LOG_WARN(LOG_TAG,"userial_device in reset \n");
+      LOG_WARN("userial_device in reset \n");
       sleep(2);
       retry_count++;
       ioctl(uart_fds[CH_EVT], TIOCMGET, &serial_bits);
@@ -183,18 +180,15 @@ static bool hal_dev_in_reset()
         dev_reset_done = 0;
       else
         dev_reset_done = 1;
-      if(retry_count == 6) {
-        //treat it as ssr completed to kill the bt
-        // process
-        dev_reset_done = 1;
+      if(retry_count == 6)
         break;
-      }
     }
   }
   return dev_reset_done;
 }
+#endif
 
-static size_t read_data(serial_data_type_t type, uint8_t *buffer, size_t max_size) {
+static size_t read_data(serial_data_type_t type, uint8_t *buffer, size_t max_size, bool block) {
 #if (defined(REMOVE_EAGER_THREADS) && (REMOVE_EAGER_THREADS == TRUE))
   if (type == DATA_TYPE_ACL) {
     return hci_reader_read(acl_stream, buffer, max_size);
@@ -203,13 +197,13 @@ static size_t read_data(serial_data_type_t type, uint8_t *buffer, size_t max_siz
   }
 #else
   if (type == DATA_TYPE_ACL) {
-    return eager_reader_read(acl_stream, buffer, max_size);
+    return eager_reader_read(acl_stream, buffer, max_size, block);
   } else if (type == DATA_TYPE_EVENT) {
-    return eager_reader_read(event_stream, buffer, max_size);
+    return eager_reader_read(event_stream, buffer, max_size, block);
   }
 #endif
 
-  LOG_ERROR(LOG_TAG, "%s invalid data type: %d", __func__, type);
+  LOG_ERROR("%s invalid data type: %d", __func__, type);
   return 0;
 }
 
@@ -243,7 +237,7 @@ static uint16_t transmit_data(serial_data_type_t type, uint8_t *data, uint16_t l
     return transmit_data_on(uart_fds[CH_CMD], data, length);
   }
 
-  LOG_ERROR(LOG_TAG, "%s invalid data type: %d", __func__, type);
+  LOG_ERROR("%s invalid data type: %d", __func__, type);
   return 0;
 }
 
@@ -255,11 +249,10 @@ static uint16_t transmit_data_on(int fd, uint8_t *data, uint16_t length) {
 
   uint16_t transmitted_length = 0;
   while (length > 0) {
-    ssize_t ret;
-    OSI_NO_INTR(ret = write(fd, data + transmitted_length, length));
+    ssize_t ret = TEMP_FAILURE_RETRY(write(fd, data + transmitted_length, length));
     switch (ret) {
       case -1:
-        LOG_ERROR(LOG_TAG, "In %s, error writing to the serial port with fd %d: %s", __func__, fd, strerror(errno));
+        LOG_ERROR("In %s, error writing to the serial port with fd %d: %s", __func__, fd, strerror(errno));
         return transmitted_length;
       case 0:
         // If we wrote nothing, don't loop more because we
@@ -277,7 +270,7 @@ static uint16_t transmit_data_on(int fd, uint8_t *data, uint16_t length) {
 
 #if (defined(REMOVE_EAGER_THREADS) && (REMOVE_EAGER_THREADS == TRUE))
 static void event_event_stream_has_bytes(void *context) {
-  int bytes_read;
+  size_t bytes_read;
   hci_reader_t *reader = (hci_reader_t *) context;
   bytes_read = read(reader->inbound_fd, reader->data_buffer+reader->wr_ptr,
                                     reader->buffer_size - reader->wr_ptr);
@@ -297,7 +290,7 @@ static void event_event_stream_has_bytes(UNUSED_ATTR eager_reader_t *reader, UNU
 #if (defined(REMOVE_EAGER_THREADS) && (REMOVE_EAGER_THREADS == TRUE))
 static void event_acl_stream_has_bytes(void *context) {
   // No real concept of incoming SCO typed data, just ACL
-  int bytes_read;
+  size_t bytes_read;
   hci_reader_t *reader = (hci_reader_t *) context;
   bytes_read = read(reader->inbound_fd, reader->data_buffer+reader->wr_ptr,
                                   reader->buffer_size - reader->wr_ptr);
@@ -324,7 +317,9 @@ static const hci_hal_t interface = {
   read_data,
   packet_finished,
   transmit_data,
+#ifdef QCOM_WCN_SSR
   hal_dev_in_reset
+#endif
 };
 
 const hci_hal_t *hci_hal_mct_get_interface() {

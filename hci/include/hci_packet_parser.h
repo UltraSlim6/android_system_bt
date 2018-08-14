@@ -20,7 +20,7 @@
 
 #include <stdint.h>
 
-#include "osi/include/allocator.h"
+#include "allocator.h"
 #include "bdaddr.h"
 #include "bt_types.h"
 #include "device_features.h"
@@ -94,7 +94,7 @@ typedef struct {
 
   void (*parse_read_local_supported_codecs_response)(
     BT_HDR *response,
-    uint8_t *number_of_local_supported_codecs, uint8_t *local_supported_codecs);
+    uint8_t *no_of_local_supported_codecs, uint8_t *local_supported_codecs);
 
   void (*parse_ble_read_offload_features_response)(
     BT_HDR *response,

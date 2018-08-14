@@ -22,30 +22,27 @@
  *
  ******************************************************************************/
 
-#define LOG_TAG "bt_port_api"
-
 #include <string.h>
-
-#include "osi/include/log.h"
-#include "osi/include/mutex.h"
-
-#include "btm_api.h"
-#include "btm_int.h"
-#include "bt_common.h"
-#include "l2c_api.h"
+#include "bt_target.h"
+#include "btcore/include/counter.h"
+#include "gki.h"
+#include "rfcdefs.h"
 #include "port_api.h"
 #include "port_int.h"
+#include "btm_int.h"
+#include "btm_api.h"
 #include "rfc_int.h"
-#include "rfcdefs.h"
+#include "l2c_api.h"
 #include "sdp_api.h"
+#include "osi/include/log.h"
 
 /* duration of break in 200ms units */
 #define PORT_BREAK_DURATION     1
 
-#define info(fmt, ...)  LOG_INFO(LOG_TAG, "%s: " fmt,__FUNCTION__,  ## __VA_ARGS__)
-#define debug(fmt, ...) LOG_DEBUG(LOG_TAG, "%s: " fmt,__FUNCTION__,  ## __VA_ARGS__)
-#define error(fmt, ...) LOG_ERROR(LOG_TAG, "## ERROR : %s: " fmt "##",__FUNCTION__,  ## __VA_ARGS__)
-#define asrt(s) if(!(s)) LOG_ERROR(LOG_TAG, "## %s assert %s failed at line:%d ##",__FUNCTION__, #s, __LINE__)
+#define info(fmt, ...)  LOG_INFO ("%s: " fmt,__FUNCTION__,  ## __VA_ARGS__)
+#define debug(fmt, ...) LOG_DEBUG ("%s: " fmt,__FUNCTION__,  ## __VA_ARGS__)
+#define error(fmt, ...) LOG_ERROR ("## ERROR : %s: " fmt "##",__FUNCTION__,  ## __VA_ARGS__)
+#define asrt(s) if(!(s)) LOG_ERROR ("## %s assert %s failed at line:%d ##",__FUNCTION__, #s, __LINE__)
 
 /* Mapping from PORT_* result codes to human readable strings. */
 static const char *result_code_strings[] = {
@@ -119,6 +116,7 @@ int RFCOMM_CreateConnection (UINT16 uuid, UINT8 scn, BOOLEAN is_server,
     tRFC_MCB   *p_mcb = port_find_mcb (bd_addr);
     UINT16     rfcomm_mtu;
 
+    counter_add("rfcomm.conn.created", 1);
 
     RFCOMM_TRACE_API ("RFCOMM_CreateConnection()  BDA: %02x-%02x-%02x-%02x-%02x-%02x",
                        bd_addr[0], bd_addr[1], bd_addr[2], bd_addr[3], bd_addr[4], bd_addr[5]);
@@ -150,7 +148,6 @@ int RFCOMM_CreateConnection (UINT16 uuid, UINT8 scn, BOOLEAN is_server,
         {
             RFCOMM_TRACE_ERROR ("RFCOMM_CreateConnection - already opened state:%d, RFC state:%d, MCB state:%d",
                 p_port->state, p_port->rfc.state, p_port->rfc.p_mcb ? p_port->rfc.p_mcb->state : 0);
-            *p_handle = p_port->inx;
             return (PORT_ALREADY_OPENED);
         }
     }
@@ -232,6 +229,7 @@ int RFCOMM_CreateConnection (UINT16 uuid, UINT8 scn, BOOLEAN is_server,
     return port_open_continue (p_port);
 }
 
+
 /*******************************************************************************
 **
 ** Function         RFCOMM_RemoveConnection
@@ -245,6 +243,7 @@ int RFCOMM_RemoveConnection (UINT16 handle)
 {
     tPORT      *p_port;
 
+    counter_add("rfcomm.conn.destroyed", 1);
 
     RFCOMM_TRACE_API ("RFCOMM_RemoveConnection() handle:%d", handle);
 
@@ -446,6 +445,8 @@ int PORT_SetDataCOCallback (UINT16 port_handle, tPORT_DATA_CO_CALLBACK *p_port_c
     return (PORT_SUCCESS);
 }
 
+
+
 /*******************************************************************************
 **
 ** Function         PORT_SetEventMask
@@ -479,6 +480,7 @@ int PORT_SetEventMask (UINT16 port_handle, UINT32 mask)
 
     return (PORT_SUCCESS);
 }
+
 
 /*******************************************************************************
 **
@@ -715,6 +717,7 @@ int PORT_GetState (UINT16 handle, tPORT_STATE *p_settings)
     return (PORT_SUCCESS);
 }
 
+
 /*******************************************************************************
 **
 ** Function         PORT_Control
@@ -799,6 +802,7 @@ int PORT_Control (UINT16 handle, UINT8 signal)
 
     return (PORT_SUCCESS);
 }
+
 
 /*******************************************************************************
 **
@@ -957,6 +961,7 @@ int PORT_FlowControl_MaxCredit (UINT16 handle, BOOLEAN enable)
     return (PORT_SUCCESS);
 }
 
+
 /*******************************************************************************
 **
 ** Function         PORT_GetModemStatus
@@ -992,6 +997,7 @@ int PORT_GetModemStatus (UINT16 handle, UINT8 *p_signal)
 
     return (PORT_SUCCESS);
 }
+
 
 /*******************************************************************************
 **
@@ -1037,6 +1043,7 @@ int PORT_ClearError (UINT16 handle, UINT16 *p_errors, tPORT_STATUS *p_status)
     return (PORT_SUCCESS);
 }
 
+
 /*******************************************************************************
 **
 ** Function         PORT_SendError
@@ -1073,6 +1080,7 @@ int PORT_SendError (UINT16 handle, UINT8 errors)
     RFCOMM_LineStatusReq (p_port->rfc.p_mcb, p_port->dlci, errors);
     return (PORT_SUCCESS);
 }
+
 
 /*******************************************************************************
 **
@@ -1122,6 +1130,7 @@ int PORT_GetQueueStatus (UINT16 handle, tPORT_STATUS *p_status)
     return (PORT_SUCCESS);
 }
 
+
 /*******************************************************************************
 **
 ** Function         PORT_Purge
@@ -1157,16 +1166,16 @@ int PORT_Purge (UINT16 handle, UINT8 purge_flags)
 
     if (purge_flags & PORT_PURGE_RXCLEAR)
     {
-        mutex_global_lock();    /* to prevent missing credit */
+        PORT_SCHEDULE_LOCK;  /* to prevent missing credit */
 
-        count = fixed_queue_length(p_port->rx.queue);
+        count = GKI_queue_length(&p_port->rx.queue);
 
-        while ((p_buf = (BT_HDR *)fixed_queue_try_dequeue(p_port->rx.queue)) != NULL)
-            osi_free(p_buf);
+        while ((p_buf = (BT_HDR *)GKI_dequeue (&p_port->rx.queue)) != NULL)
+            GKI_freebuf (p_buf);
 
         p_port->rx.queue_size = 0;
 
-        mutex_global_unlock();
+        PORT_SCHEDULE_UNLOCK;
 
         /* If we flowed controlled peer based on rx_queue size enable data again */
         if (count)
@@ -1175,14 +1184,14 @@ int PORT_Purge (UINT16 handle, UINT8 purge_flags)
 
     if (purge_flags & PORT_PURGE_TXCLEAR)
     {
-        mutex_global_lock(); /* to prevent tx.queue_size from being negative */
+        PORT_SCHEDULE_LOCK;  /* to prevent tx.queue_size from being negative */
 
-        while ((p_buf = (BT_HDR *)fixed_queue_try_dequeue(p_port->tx.queue)) != NULL)
-            osi_free(p_buf);
+        while ((p_buf = (BT_HDR *)GKI_dequeue (&p_port->tx.queue)) != NULL)
+            GKI_freebuf (p_buf);
 
         p_port->tx.queue_size = 0;
 
-        mutex_global_unlock();
+        PORT_SCHEDULE_UNLOCK;
 
         events = PORT_EV_TXEMPTY;
 
@@ -1196,6 +1205,7 @@ int PORT_Purge (UINT16 handle, UINT8 purge_flags)
 
     return (PORT_SUCCESS);
 }
+
 
 /*******************************************************************************
 **
@@ -1239,17 +1249,14 @@ int PORT_ReadData (UINT16 handle, char *p_data, UINT16 max_len, UINT16 *p_len)
         return (PORT_LINE_ERR);
     }
 
-    if (fixed_queue_is_empty(p_port->rx.queue))
+    p_buf = (BT_HDR *)GKI_getfirst (&p_port->rx.queue);
+    if (!p_buf)
         return (PORT_SUCCESS);
 
     count = 0;
 
-    while (max_len)
+    while (max_len && p_buf)
     {
-        p_buf = (BT_HDR *)fixed_queue_try_peek_first(p_port->rx.queue);
-        if (p_buf == NULL)
-            break;
-
         if (p_buf->len > max_len)
         {
             memcpy (p_data, (UINT8 *)(p_buf + 1) + p_buf->offset, max_len);
@@ -1258,11 +1265,11 @@ int PORT_ReadData (UINT16 handle, char *p_data, UINT16 max_len, UINT16 *p_len)
 
             *p_len += max_len;
 
-            mutex_global_lock();
+            PORT_SCHEDULE_LOCK;
 
             p_port->rx.queue_size -= max_len;
 
-            mutex_global_unlock();
+            PORT_SCHEDULE_UNLOCK;
 
             break;
         }
@@ -1273,18 +1280,19 @@ int PORT_ReadData (UINT16 handle, char *p_data, UINT16 max_len, UINT16 *p_len)
             *p_len  += p_buf->len;
             max_len -= p_buf->len;
 
-            mutex_global_lock();
+            PORT_SCHEDULE_LOCK;
 
             p_port->rx.queue_size -= p_buf->len;
 
             if (max_len)
             {
                 p_data  += p_buf->len;
+                p_buf = (BT_HDR *)GKI_getnext (p_buf);
             }
 
-            osi_free(fixed_queue_try_dequeue(p_port->rx.queue));
+            GKI_freebuf (GKI_dequeue (&p_port->rx.queue));
 
-            mutex_global_unlock();
+            PORT_SCHEDULE_UNLOCK;
 
             count++;
         }
@@ -1305,6 +1313,7 @@ int PORT_ReadData (UINT16 handle, char *p_data, UINT16 max_len, UINT16 *p_len)
 
     return (PORT_SUCCESS);
 }
+
 
 /*******************************************************************************
 **
@@ -1341,14 +1350,14 @@ int PORT_Read (UINT16 handle, BT_HDR **pp_buf)
         return (PORT_LINE_ERR);
     }
 
-    mutex_global_lock();
+    PORT_SCHEDULE_LOCK;
 
-    p_buf = (BT_HDR *)fixed_queue_try_dequeue(p_port->rx.queue);
+    p_buf = (BT_HDR *)GKI_dequeue (&p_port->rx.queue);
     if (p_buf)
     {
         p_port->rx.queue_size -= p_buf->len;
 
-        mutex_global_unlock();
+        PORT_SCHEDULE_UNLOCK;
 
         /* If rfcomm suspended traffic from the peer based on the rx_queue_size */
         /* check if it can be resumed now */
@@ -1356,12 +1365,13 @@ int PORT_Read (UINT16 handle, BT_HDR **pp_buf)
     }
     else
     {
-        mutex_global_unlock();
+        PORT_SCHEDULE_UNLOCK;
     }
 
     *pp_buf = p_buf;
     return (PORT_SUCCESS);
 }
+
 
 /*******************************************************************************
 **
@@ -1379,7 +1389,7 @@ static int port_write (tPORT *p_port, BT_HDR *p_buf)
     /* We should not allow to write data in to server port when connection is not opened */
     if (p_port->is_server && (p_port->rfc.state != RFC_STATE_OPENED))
     {
-        osi_free(p_buf);
+        GKI_freebuf (p_buf);
         return (PORT_CLOSED);
     }
 
@@ -1394,12 +1404,12 @@ static int port_write (tPORT *p_port, BT_HDR *p_buf)
                               (PORT_CTRL_REQ_SENT | PORT_CTRL_IND_RECEIVED)))
     {
         if ((p_port->tx.queue_size  > PORT_TX_CRITICAL_WM)
-         || (fixed_queue_length(p_port->tx.queue) > PORT_TX_BUF_CRITICAL_WM))
+         || (GKI_queue_length(&p_port->tx.queue) > PORT_TX_BUF_CRITICAL_WM))
         {
             RFCOMM_TRACE_WARNING ("PORT_Write: Queue size: %d",
                                    p_port->tx.queue_size);
 
-            osi_free(p_buf);
+            GKI_freebuf (p_buf);
 
             if ((p_port->p_callback != NULL) && (p_port->ev_mask & PORT_EV_ERR))
                   p_port->p_callback (PORT_EV_ERR, p_port->inx);
@@ -1413,7 +1423,7 @@ static int port_write (tPORT *p_port, BT_HDR *p_buf)
                              p_port->rfc.state,
                              p_port->port_ctrl);
 
-        fixed_queue_enqueue(p_port->tx.queue, p_buf);
+        GKI_enqueue (&p_port->tx.queue, p_buf);
         p_port->tx.queue_size += p_buf->len;
 
         return (PORT_CMD_PENDING);
@@ -1449,7 +1459,7 @@ int PORT_Write (UINT16 handle, BT_HDR *p_buf)
     /* Check if handle is valid to avoid crashing */
     if ((handle == 0) || (handle > MAX_RFC_PORTS))
     {
-        osi_free(p_buf);
+        GKI_freebuf (p_buf);
         return (PORT_BAD_HANDLE);
     }
 
@@ -1457,7 +1467,7 @@ int PORT_Write (UINT16 handle, BT_HDR *p_buf)
 
     if (!p_port->in_use || (p_port->state == PORT_STATE_CLOSED))
     {
-        osi_free(p_buf);
+        GKI_freebuf (p_buf);
         return (PORT_NOT_OPENED);
     }
 
@@ -1465,7 +1475,7 @@ int PORT_Write (UINT16 handle, BT_HDR *p_buf)
     {
         RFCOMM_TRACE_WARNING ("PORT_Write: Data dropped line_status:0x%x",
                                p_port->line_status);
-        osi_free(p_buf);
+        GKI_freebuf (p_buf);
         return (PORT_LINE_ERR);
     }
 
@@ -1544,14 +1554,14 @@ int PORT_WriteDataCO (UINT16 handle, int* p_len)
     if(available == 0)
         return PORT_SUCCESS;
     /* Length for each buffer is the smaller of GKI buffer, peer MTU, or max_len */
-    length = RFCOMM_DATA_BUF_SIZE -
+    length = RFCOMM_DATA_POOL_BUF_SIZE -
             (UINT16)(sizeof(BT_HDR) + L2CAP_MIN_OFFSET + RFCOMM_DATA_OVERHEAD);
 
     /* If there are buffers scheduled for transmission check if requested */
     /* data fits into the end of the queue */
-    mutex_global_lock();
+    PORT_SCHEDULE_LOCK;
 
-    if (((p_buf = (BT_HDR *)fixed_queue_try_peek_last(p_port->tx.queue)) != NULL)
+    if (((p_buf = (BT_HDR *)GKI_getlast(&p_port->tx.queue)) != NULL)
      && (((int)p_buf->len + available) <= (int)p_port->peer_mtu)
      && (((int)p_buf->len + available) <= (int)length))
     {
@@ -1561,7 +1571,7 @@ int PORT_WriteDataCO (UINT16 handle, int* p_len)
 
         {
             error("p_data_co_callback DATA_CO_CALLBACK_TYPE_OUTGOING failed, available:%d", available);
-            mutex_global_unlock();
+            PORT_SCHEDULE_UNLOCK;
             return (PORT_UNKNOWN_ERROR);
         }
         //memcpy ((UINT8 *)(p_buf + 1) + p_buf->offset + p_buf->len, p_data, max_len);
@@ -1570,12 +1580,12 @@ int PORT_WriteDataCO (UINT16 handle, int* p_len)
         *p_len = available;
         p_buf->len += (UINT16)available;
 
-        mutex_global_unlock();
+        PORT_SCHEDULE_UNLOCK;
 
         return (PORT_SUCCESS);
     }
 
-    mutex_global_unlock();
+    PORT_SCHEDULE_UNLOCK;
 
     //int max_read = length < p_port->peer_mtu ? length : p_port->peer_mtu;
 
@@ -1585,17 +1595,20 @@ int PORT_WriteDataCO (UINT16 handle, int* p_len)
     {
         /* if we're over buffer high water mark, we're done */
         if ((p_port->tx.queue_size  > PORT_TX_HIGH_WM)
-         || (fixed_queue_length(p_port->tx.queue) > PORT_TX_BUF_HIGH_WM))
+         || (GKI_queue_length(&p_port->tx.queue) > PORT_TX_BUF_HIGH_WM))
         {
             port_flow_control_user(p_port);
             event |= PORT_EV_FC;
             RFCOMM_TRACE_EVENT ("tx queue is full,tx.queue_size:%d,tx.queue.count:%d,available:%d",
-                    p_port->tx.queue_size, fixed_queue_length(p_port->tx.queue), available);
+                    p_port->tx.queue_size, GKI_queue_length(&p_port->tx.queue), available);
             break;
          }
 
         /* continue with rfcomm data write */
-        p_buf = (BT_HDR *)osi_malloc(RFCOMM_DATA_BUF_SIZE);
+        p_buf = (BT_HDR *)GKI_getpoolbuf (RFCOMM_DATA_POOL_ID);
+        if (!p_buf)
+            break;
+
         p_buf->offset         = L2CAP_MIN_OFFSET + RFCOMM_MIN_OFFSET;
         p_buf->layer_specific = handle;
 
@@ -1614,6 +1627,7 @@ int PORT_WriteDataCO (UINT16 handle, int* p_len)
             error("p_data_co_callback DATA_CO_CALLBACK_TYPE_OUTGOING failed, length:%d", length);
             return (PORT_UNKNOWN_ERROR);
         }
+
 
         RFCOMM_TRACE_EVENT ("PORT_WriteData %d bytes", length);
 
@@ -1643,6 +1657,8 @@ int PORT_WriteDataCO (UINT16 handle, int* p_len)
 
     return (PORT_SUCCESS);
 }
+
+
 
 /*******************************************************************************
 **
@@ -1689,14 +1705,14 @@ int PORT_WriteData (UINT16 handle, char *p_data, UINT16 max_len, UINT16 *p_len)
     }
 
     /* Length for each buffer is the smaller of GKI buffer, peer MTU, or max_len */
-    length = RFCOMM_DATA_BUF_SIZE -
+    length = RFCOMM_DATA_POOL_BUF_SIZE -
             (UINT16)(sizeof(BT_HDR) + L2CAP_MIN_OFFSET + RFCOMM_DATA_OVERHEAD);
 
     /* If there are buffers scheduled for transmission check if requested */
     /* data fits into the end of the queue */
-    mutex_global_lock();
+    PORT_SCHEDULE_LOCK;
 
-    if (((p_buf = (BT_HDR *)fixed_queue_try_peek_last(p_port->tx.queue)) != NULL)
+    if (((p_buf = (BT_HDR *)GKI_getlast(&p_port->tx.queue)) != NULL)
      && ((p_buf->len + max_len) <= p_port->peer_mtu)
      && ((p_buf->len + max_len) <= length))
     {
@@ -1706,22 +1722,25 @@ int PORT_WriteData (UINT16 handle, char *p_data, UINT16 max_len, UINT16 *p_len)
         *p_len = max_len;
         p_buf->len += max_len;
 
-        mutex_global_unlock();
+        PORT_SCHEDULE_UNLOCK;
 
         return (PORT_SUCCESS);
     }
 
-    mutex_global_unlock();
+    PORT_SCHEDULE_UNLOCK;
 
     while (max_len)
     {
         /* if we're over buffer high water mark, we're done */
         if ((p_port->tx.queue_size  > PORT_TX_HIGH_WM)
-         || (fixed_queue_length(p_port->tx.queue) > PORT_TX_BUF_HIGH_WM))
+         || (GKI_queue_length(&p_port->tx.queue) > PORT_TX_BUF_HIGH_WM))
             break;
 
         /* continue with rfcomm data write */
-        p_buf = (BT_HDR *)osi_malloc(RFCOMM_DATA_BUF_SIZE);
+        p_buf = (BT_HDR *)GKI_getpoolbuf (RFCOMM_DATA_POOL_ID);
+        if (!p_buf)
+            break;
+
         p_buf->offset         = L2CAP_MIN_OFFSET + RFCOMM_MIN_OFFSET;
         p_buf->layer_specific = handle;
 
@@ -1765,6 +1784,7 @@ int PORT_WriteData (UINT16 handle, char *p_data, UINT16 max_len, UINT16 *p_len)
     return (PORT_SUCCESS);
 }
 
+
 /*******************************************************************************
 **
 ** Function         PORT_Test
@@ -1778,6 +1798,7 @@ int PORT_WriteData (UINT16 handle, char *p_data, UINT16 max_len, UINT16 *p_len)
 *******************************************************************************/
 int PORT_Test (UINT16 handle, UINT8 *p_data, UINT16 len)
 {
+    BT_HDR   *p_buf;
     tPORT    *p_port;
 
     RFCOMM_TRACE_API ("PORT_Test() len:%d", len);
@@ -1798,15 +1819,21 @@ int PORT_Test (UINT16 handle, UINT8 *p_data, UINT16 len)
         return (PORT_UNKNOWN_ERROR);
     }
 
-    BT_HDR *p_buf = (BT_HDR *)osi_malloc(RFCOMM_CMD_BUF_SIZE);
-    p_buf->offset  = L2CAP_MIN_OFFSET + RFCOMM_MIN_OFFSET + 2;
-    p_buf->len = len;
+    if ((p_buf = (BT_HDR *)GKI_getpoolbuf (RFCOMM_CMD_POOL_ID)) != NULL)
+    {
 
-    memcpy((UINT8 *)(p_buf + 1) + p_buf->offset, p_data, p_buf->len);
+        p_buf->offset  = L2CAP_MIN_OFFSET + RFCOMM_MIN_OFFSET + 2;
+        p_buf->len = len;
 
-    rfc_send_test(p_port->rfc.p_mcb, TRUE, p_buf);
+        memcpy ((UINT8 *)(p_buf + 1) + p_buf->offset, p_data, p_buf->len);
 
-    return (PORT_SUCCESS);
+        rfc_send_test (p_port->rfc.p_mcb, TRUE, p_buf);
+        return (PORT_SUCCESS);
+    }
+    else
+    {
+        return (PORT_NO_MEM);
+    }
 }
 
 /*******************************************************************************

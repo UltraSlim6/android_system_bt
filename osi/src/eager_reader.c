@@ -18,17 +18,17 @@
 
 #define LOG_TAG "bt_osi_eager_reader"
 
-#include "osi/include/eager_reader.h"
-
 #include <assert.h>
 #include <errno.h>
+#include <stddef.h>
 #include <string.h>
 #include <sys/eventfd.h>
-#include <unistd.h>
 
+#include "osi/include/allocator.h"
+#include "osi/include/eager_reader.h"
 #include "osi/include/fixed_queue.h"
-#include "osi/include/log.h"
 #include "osi/include/osi.h"
+#include "osi/include/log.h"
 #include "osi/include/reactor.h"
 
 #if !defined(EFD_SEMAPHORE)
@@ -76,13 +76,17 @@ eager_reader_t *eager_reader_new(
   assert(thread_name != NULL && *thread_name != '\0');
 
   eager_reader_t *ret = osi_calloc(sizeof(eager_reader_t));
+  if (!ret) {
+    LOG_ERROR("%s unable to allocate memory for new eager_reader.", __func__);
+    goto error;
+  }
 
   ret->allocator = allocator;
   ret->inbound_fd = fd_to_read;
 
   ret->bytes_available_fd = eventfd(0, 0);
   if (ret->bytes_available_fd == INVALID_FD) {
-    LOG_ERROR(LOG_TAG, "%s unable to create output reading semaphore.", __func__);
+    LOG_ERROR("%s unable to create output reading semaphore.", __func__);
     goto error;
   }
 
@@ -90,13 +94,13 @@ eager_reader_t *eager_reader_new(
 
   ret->buffers = fixed_queue_new(max_buffer_count);
   if (!ret->buffers) {
-    LOG_ERROR(LOG_TAG, "%s unable to create buffers queue.", __func__);
+    LOG_ERROR("%s unable to create buffers queue.", __func__);
     goto error;
   }
 
   ret->inbound_read_thread = thread_new(thread_name);
   if (!ret->inbound_read_thread) {
-    LOG_ERROR(LOG_TAG, "%s unable to make reading thread.", __func__);
+    LOG_ERROR("%s unable to make reading thread.", __func__);
     goto error;
   }
 
@@ -161,18 +165,19 @@ void eager_reader_unregister(eager_reader_t *reader) {
 }
 
 // SEE HEADER FOR THREAD SAFETY NOTE
-size_t eager_reader_read(eager_reader_t *reader, uint8_t *buffer, size_t max_size) {
+size_t eager_reader_read(eager_reader_t *reader, uint8_t *buffer, size_t max_size, bool block) {
   assert(reader != NULL);
   assert(buffer != NULL);
 
-  // Poll to see if we have any bytes available before reading.
-  if (!has_byte(reader))
+  // If the caller wants nonblocking behavior, poll to see if we have
+  // any bytes available before reading.
+  if (!block && !has_byte(reader))
     return 0;
 
   // Find out how many bytes we have available in our various buffers.
   eventfd_t bytes_available;
   if (eventfd_read(reader->bytes_available_fd, &bytes_available) == -1) {
-    LOG_ERROR(LOG_TAG, "%s unable to read semaphore for output data.", __func__);
+    LOG_ERROR("%s unable to read semaphore for output data.", __func__);
     return 0;
   }
 
@@ -200,7 +205,7 @@ size_t eager_reader_read(eager_reader_t *reader, uint8_t *buffer, size_t max_siz
 
   bytes_available -= bytes_consumed;
   if (eventfd_write(reader->bytes_available_fd, bytes_available) == -1) {
-    LOG_ERROR(LOG_TAG, "%s unable to write back bytes available for output data.", __func__);
+    LOG_ERROR("%s unable to write back bytes available for output data.", __func__);
   }
 
   return bytes_consumed;
@@ -215,23 +220,15 @@ static bool has_byte(const eager_reader_t *reader) {
   assert(reader != NULL);
 
   fd_set read_fds;
+  FD_ZERO(&read_fds);
+  FD_SET(reader->bytes_available_fd, &read_fds);
 
-  for (;;) {
-    FD_ZERO(&read_fds);
-    FD_SET(reader->bytes_available_fd, &read_fds);
+  // Immediate timeout
+  struct timeval timeout;
+  timeout.tv_sec = 0;
+  timeout.tv_usec = 0;
 
-    // Immediate timeout
-    struct timeval timeout;
-    timeout.tv_sec = 0;
-    timeout.tv_usec = 0;
-
-    int ret = select(reader->bytes_available_fd + 1, &read_fds, NULL, NULL,
-                     &timeout);
-    if (ret == -1 && errno == EINTR)
-      continue;
-    break;
-  }
-
+  TEMP_FAILURE_RETRY(select(reader->bytes_available_fd + 1, &read_fds, NULL, NULL, &timeout));
   return FD_ISSET(reader->bytes_available_fd, &read_fds);
 }
 
@@ -240,16 +237,14 @@ static void inbound_data_waiting(void *context) {
 
   data_buffer_t *buffer = (data_buffer_t *)reader->allocator->alloc(reader->buffer_size + sizeof(data_buffer_t));
   if (!buffer) {
-    LOG_ERROR(LOG_TAG, "%s couldn't aquire memory for inbound data buffer.", __func__);
+    LOG_ERROR("%s couldn't aquire memory for inbound data buffer.", __func__);
     return;
   }
 
   buffer->length = 0;
   buffer->offset = 0;
 
-  ssize_t bytes_read;
-  OSI_NO_INTR(bytes_read = read(reader->inbound_fd, buffer->data,
-                                reader->buffer_size));
+  int bytes_read = TEMP_FAILURE_RETRY(read(reader->inbound_fd, buffer->data, reader->buffer_size));
   if (bytes_read > 0) {
     // Save the data for later
     buffer->length = bytes_read;
@@ -260,9 +255,9 @@ static void inbound_data_waiting(void *context) {
     eventfd_write(reader->bytes_available_fd, bytes_read);
   } else {
     if (bytes_read == 0)
-      LOG_WARN(LOG_TAG, "%s fd said bytes existed, but none were found.", __func__);
+      LOG_WARN("%s fd said bytes existed, but none were found.", __func__);
     else
-      LOG_WARN(LOG_TAG, "%s unable to read from file descriptor: %s", __func__, strerror(errno));
+      LOG_WARN("%s unable to read from file descriptor: %s", __func__, strerror(errno));
 
     reader->allocator->free(buffer);
   }

@@ -16,17 +16,12 @@
  *  limitations under the License.
  *
  ******************************************************************************/
-
-#define LOG_TAG "bt_hf_client"
-
 #include <errno.h>
 #include <string.h>
 #include <stdio.h>
 
-#include "osi/include/osi.h"
 #include "bta_hf_client_api.h"
 #include "bta_hf_client_int.h"
-#include "osi/include/log.h"
 #include "port_api.h"
 
 /* Uncomment to enable AT traffic dumping */
@@ -35,10 +30,10 @@
 /* minimum length of AT event */
 #define BTA_HF_CLIENT_AT_EVENT_MIN_LEN 3
 
-/* timeout (in milliseconds) for AT response */
+/* timeout for AT response */
 #define BTA_HF_CLIENT_AT_TIMEOUT 29989
 
-/* timeout (in milliseconds) for AT hold timer */
+/* timeout for AT hold timer */
 #define BTA_HF_CLIENT_AT_HOLD_TIMEOUT 41
 
 /******************************************************************************
@@ -48,8 +43,6 @@
 *******************************************************************************/
 /* BRSF: store received values here */
 extern tBTA_HF_CLIENT_CB  bta_hf_client_cb;
-
-extern fixed_queue_t *btu_bta_alarm_queue;
 
 /******************************************************************************
 **       SUPPORTED EVENT MESSAGES
@@ -110,7 +103,7 @@ static void bta_hf_client_clear_queued_at(void)
 
     while (cur != NULL) {
         next = cur->next;
-        osi_free(cur);
+        GKI_freebuf(cur);
         cur = next;
     }
 
@@ -119,58 +112,71 @@ static void bta_hf_client_clear_queued_at(void)
 
 static void bta_hf_client_queue_at(tBTA_HF_CLIENT_AT_CMD cmd, const char *buf, UINT16 buf_len)
 {
-    tBTA_HF_CLIENT_AT_QCMD *new_cmd =
-        (tBTA_HF_CLIENT_AT_QCMD *)osi_malloc(sizeof(tBTA_HF_CLIENT_AT_QCMD));
+    tBTA_HF_CLIENT_AT_QCMD *new_cmd;
 
-    APPL_TRACE_DEBUG("%s", __func__);
+    APPL_TRACE_DEBUG("%s", __FUNCTION__);
 
-    new_cmd->cmd = cmd;
-    new_cmd->buf_len = buf_len;
-    new_cmd->next = NULL;
-    memcpy(new_cmd->buf, buf, buf_len);
+    if ((new_cmd = (tBTA_HF_CLIENT_AT_QCMD *) GKI_getbuf(sizeof(tBTA_HF_CLIENT_AT_QCMD))) != NULL)
+    {
+        new_cmd->cmd = cmd;
+        new_cmd->buf_len = buf_len;
+        new_cmd->next = NULL;
+        memcpy(new_cmd->buf, buf, buf_len);
 
-    if (bta_hf_client_cb.scb.at_cb.queued_cmd != NULL) {
-        tBTA_HF_CLIENT_AT_QCMD *qcmd = bta_hf_client_cb.scb.at_cb.queued_cmd;
+        if (bta_hf_client_cb.scb.at_cb.queued_cmd != NULL)
+        {
+            tBTA_HF_CLIENT_AT_QCMD *qcmd = bta_hf_client_cb.scb.at_cb.queued_cmd;
 
-        while (qcmd->next != NULL)
-            qcmd = qcmd->next;
+            while (qcmd->next != NULL)
+                qcmd = qcmd->next;
 
-        qcmd->next = new_cmd;
-    } else {
-        bta_hf_client_cb.scb.at_cb.queued_cmd = new_cmd;
+            qcmd->next = new_cmd;
+        }
+        else
+        {
+            bta_hf_client_cb.scb.at_cb.queued_cmd = new_cmd;
+        }
     }
 }
 
-static void bta_hf_client_at_resp_timer_cback(UNUSED_ATTR void *data)
+static void bta_hf_client_at_resp_timer_cback (TIMER_LIST_ENT *p_tle)
 {
-  if (bta_hf_client_cb.scb.at_cb.current_cmd == BTA_HF_CLIENT_AT_CNUM) {
-    LOG_INFO(LOG_TAG, "%s timed out waiting for AT+CNUM response; spoofing OK.", __func__);
-    bta_hf_client_handle_ok();
-  } else {
-    APPL_TRACE_ERROR("HFPClient: AT response timeout, disconnecting");
-    bta_hf_client_sm_execute(BTA_HF_CLIENT_API_CLOSE_EVT, NULL);
-  }
-}
+    if (p_tle)
+    {
+        bta_hf_client_cb.scb.at_cb.resp_timer_on = FALSE;
 
-static void bta_hf_client_start_at_resp_timer(void)
-{
-    alarm_set_on_queue(bta_hf_client_cb.scb.at_cb.resp_timer,
-                       BTA_HF_CLIENT_AT_TIMEOUT,
-                       bta_hf_client_at_resp_timer_cback,
-                       NULL,
-                       btu_bta_alarm_queue);
+        APPL_TRACE_ERROR("HFPClient: AT response timeout, disconnecting");
+
+        bta_hf_client_sm_execute(BTA_HF_CLIENT_API_CLOSE_EVT, NULL);
+    }
 }
 
 static void bta_hf_client_stop_at_resp_timer(void)
 {
-    alarm_cancel(bta_hf_client_cb.scb.at_cb.resp_timer);
+    if (bta_hf_client_cb.scb.at_cb.resp_timer_on)
+    {
+        bta_hf_client_cb.scb.at_cb.resp_timer_on = FALSE;
+        bta_sys_stop_timer (&bta_hf_client_cb.scb.at_cb.resp_timer);
+    }
+}
+
+static void bta_hf_client_start_at_resp_timer(void)
+{
+    if (bta_hf_client_cb.scb.at_cb.resp_timer_on)
+    {
+        bta_sys_stop_timer (&bta_hf_client_cb.scb.at_cb.resp_timer);
+    }
+
+    bta_hf_client_cb.scb.at_cb.resp_timer.p_cback = (TIMER_CBACK*)&bta_hf_client_at_resp_timer_cback;
+    bta_sys_start_timer(&bta_hf_client_cb.scb.at_cb.resp_timer, 0, BTA_HF_CLIENT_AT_TIMEOUT);
+    bta_hf_client_cb.scb.at_cb.resp_timer_on = TRUE;
 }
 
 static void bta_hf_client_send_at(tBTA_HF_CLIENT_AT_CMD cmd, char *buf, UINT16 buf_len)
 {
     if ((bta_hf_client_cb.scb.at_cb.current_cmd == BTA_HF_CLIENT_AT_NONE ||
             bta_hf_client_cb.scb.svc_conn == FALSE) &&
-            !alarm_is_scheduled(bta_hf_client_cb.scb.at_cb.hold_timer))
+            bta_hf_client_cb.scb.at_cb.hold_timer_on == FALSE)
     {
         UINT16  len;
 
@@ -210,30 +216,46 @@ static void bta_hf_client_send_queued_at(void)
 
         bta_hf_client_send_at(cur->cmd, cur->buf, cur->buf_len);
 
-        osi_free(cur);
+        GKI_freebuf(cur);
     }
 }
 
-static void bta_hf_client_at_hold_timer_cback(UNUSED_ATTR void *data)
+static void bta_hf_client_at_hold_timer_cback(TIMER_LIST_ENT *p_tle)
 {
     APPL_TRACE_DEBUG("%s", __FUNCTION__);
-    bta_hf_client_send_queued_at();
+
+    if (p_tle)
+    {
+        bta_hf_client_cb.scb.at_cb.hold_timer_on = FALSE;
+        bta_hf_client_send_queued_at();
+    }
 }
 
 static void bta_hf_client_stop_at_hold_timer(void)
 {
     APPL_TRACE_DEBUG("%s", __FUNCTION__);
-    alarm_cancel(bta_hf_client_cb.scb.at_cb.hold_timer);
+
+    if (bta_hf_client_cb.scb.at_cb.hold_timer_on)
+    {
+        bta_hf_client_cb.scb.at_cb.hold_timer_on = FALSE;
+        bta_sys_stop_timer (&bta_hf_client_cb.scb.at_cb.hold_timer);
+    }
 }
 
 static void bta_hf_client_start_at_hold_timer(void)
 {
+    TIMER_LIST_ENT *timer = &bta_hf_client_cb.scb.at_cb.hold_timer;
+
     APPL_TRACE_DEBUG("%s", __FUNCTION__);
-    alarm_set_on_queue(bta_hf_client_cb.scb.at_cb.hold_timer,
-                       BTA_HF_CLIENT_AT_HOLD_TIMEOUT,
-                       bta_hf_client_at_hold_timer_cback,
-                       NULL,
-                       btu_bta_alarm_queue);
+
+    if (bta_hf_client_cb.scb.at_cb.hold_timer_on)
+    {
+        bta_sys_stop_timer (timer);
+    }
+
+    timer->p_cback = (TIMER_CBACK*)&bta_hf_client_at_hold_timer_cback;
+    bta_sys_start_timer(timer, 0, BTA_HF_CLIENT_AT_HOLD_TIMEOUT);
+    bta_hf_client_cb.scb.at_cb.hold_timer_on = TRUE;
 }
 
 /******************************************************************************
@@ -726,10 +748,9 @@ static char *bta_hf_client_parse_cind_list(char *buffer)
         bta_hf_client_handle_cind_list_item(name, min, max, index);
         if (offset == 0)
         {
-            APPL_TRACE_ERROR("%s: Format Error %s", __func__, buffer);
+            APPL_TRACE_ERROR("bta_hf_client_parse_cind_list : Format Error %s", buffer);
             return NULL;
         }
-
         buffer += offset;
         index++;
 
@@ -849,10 +870,9 @@ static char *bta_hf_client_parse_ciev(char *buffer)
 
     if (offset == 0)
     {
-        APPL_TRACE_ERROR("%s: Format Error %s", __func__, buffer);
+        APPL_TRACE_ERROR("bta_hf_client_parse_ciev : Format Error %s", buffer);
         return NULL;
     }
-
     buffer += offset;
 
     AT_CHECK_RN(buffer);
@@ -936,10 +956,9 @@ static char *bta_hf_client_parse_clip(char *buffer)
 
     if (offset == 0)
     {
-        APPL_TRACE_ERROR("%s: Format Error %s", __func__, buffer);
+        APPL_TRACE_ERROR("bta_hf_client_parse_clip: Format Error %s", buffer);
         return NULL;
     }
-
     buffer += offset;
 
     AT_SKIP_REST(buffer);
@@ -970,10 +989,9 @@ static char *bta_hf_client_parse_ccwa(char *buffer)
 
     if (offset == 0)
     {
-        APPL_TRACE_ERROR("%s: Format Error %s", __func__, buffer);
+        APPL_TRACE_ERROR("bta_hf_client_parse_ccwa : Format Error %s", buffer);
         return NULL;
     }
-
     buffer += offset;
 
     AT_SKIP_REST(buffer);
@@ -1003,10 +1021,9 @@ static char *bta_hf_client_parse_cops(char *buffer)
     /* Abort in case offset not set because of format error */
     if (offset == 0)
     {
-        APPL_TRACE_ERROR("%s: Format Error %s", __func__, buffer);
+        APPL_TRACE_ERROR("bta_hf_client_parse_cops: Format Error %s", buffer);
         return NULL;
     }
-
     buffer += offset;
 
     AT_SKIP_REST(buffer);
@@ -1042,10 +1059,9 @@ static char *bta_hf_client_parse_binp(char *buffer)
     /* Abort in case offset not set because of format error */
     if (offset == 0)
     {
-        APPL_TRACE_ERROR("%s: Format Error %s", __func__, buffer);
+        APPL_TRACE_ERROR("bta_hf_client_parse_binp: Format Error %s", buffer);
         return NULL;
     }
-
     buffer += offset;
 
     /* some phones might sent type as well, just skip it */
@@ -1068,8 +1084,8 @@ static char *bta_hf_client_parse_clcc(char *buffer)
 {
     UINT16 idx, dir, status, mode, mpty;
     char numstr[33];     /* spec forces 32 chars, plus one for \0*/
+    UINT16 type;
     int res;
-    UINT16 type = 0;
     int offset = 0;
 
     AT_CHECK_EVENT(buffer, "+CLCC:");
@@ -1084,7 +1100,7 @@ static char *bta_hf_client_parse_clcc(char *buffer)
     /* Abort in case offset not set because of format error */
     if (offset == 0)
     {
-        APPL_TRACE_ERROR("%s: Format Error %s", __func__, buffer);
+        APPL_TRACE_ERROR("bta_hf_client_parse_clcc: Format Error %s", buffer);
         return NULL;
     }
 
@@ -1094,40 +1110,48 @@ static char *bta_hf_client_parse_clcc(char *buffer)
     /* check optional part */
     if (*buffer == ',')
     {
-        int res2 = sscanf(buffer, ",\"%32[^\"]\",%hu%n", numstr, &type, &offset);
+        int res2;
+
+        res2 = sscanf(buffer, ",\"%32[^\"]\",%hu%n", numstr, &type, &offset);
         if (res2 < 0)
+        {
             return NULL;
+        }
 
         if (res2 == 0)
         {
             res2 = sscanf(buffer, ",\"\",%hu%n", &type, &offset);
             if (res < 0)
+            {
                 return NULL;
+            }
 
             /* numstr is not matched in second attempt, correct this */
             res2++;
             numstr[0] = '\0';
         }
 
-        if (res2 >= 2)
+        if (res2 < 2)
         {
-            res += res2;
-            /* Abort in case offset not set because of format error */
-            if (offset == 0)
-            {
-                APPL_TRACE_ERROR("%s: Format Error %s", __func__, buffer);
-                return NULL;
-            }
-
-            buffer += offset;
+            goto skip_extra_fields;
         }
+
+        res += res2;
+        /* Abort in case offset not set because of format error */
+        if (offset == 0)
+        {
+            APPL_TRACE_ERROR("bta_hf_client_parse_clcc: Format Error %s", buffer);
+            return NULL;
+        }
+        buffer += offset;
     }
 
+skip_extra_fields:
     /* Skip any remaing param,as they are not defined by BT HFP spec */
     AT_SKIP_REST(buffer);
     AT_CHECK_RN(buffer);
 
-    if (res > 6)
+    if(res > 6)
     {
         /* we also have last two optional parameters */
         bta_hf_client_handle_clcc(idx, dir, status, mode, mpty, numstr, type);
@@ -1183,7 +1207,7 @@ static char *bta_hf_client_parse_cnum(char *buffer)
     /* Abort in case offset not set because of format error */
     if (offset == 0)
     {
-        APPL_TRACE_ERROR("%s: Format Error %s", __func__, buffer);
+        APPL_TRACE_ERROR("bta_hf_client_parse_cnum: Format Error %s", buffer);
         return NULL;
     }
 
@@ -1314,6 +1338,7 @@ static char *bta_hf_client_skip_unknown(char *buffer)
 
 static char *bta_hf_client_parse_cgmi(char *buffer)
 {
+    UINT8 mode;
     /* 2048 chars max, plus \0 here */
     char manf_id[2049];
     int i = 0;
@@ -1344,6 +1369,7 @@ static char *bta_hf_client_parse_cgmi(char *buffer)
 
 static char *bta_hf_client_parse_cgmm(char *buffer)
 {
+    UINT8 mode;
     /* 2048 chars max, plus \0 here */
     char manf_model[2049];
     int i = 0;
@@ -1597,10 +1623,10 @@ void bta_hf_client_send_at_brsf(void)
 
     APPL_TRACE_DEBUG("%s", __FUNCTION__);
 
-    at_len = snprintf(buf, sizeof(buf), "AT+BRSF=%u\r", bta_hf_client_cb.scb.features);
+    at_len = snprintf(buf, sizeof(buf), "AT+BRSF=%lu\r", bta_hf_client_cb.scb.features);
     if (at_len < 0)
     {
-        APPL_TRACE_ERROR("%s: AT command Framing error", __func__);
+        APPL_TRACE_ERROR("HFPClient: AT command Framing error");
         return;
     }
 
@@ -1632,10 +1658,10 @@ void bta_hf_client_send_at_bcs(UINT32 codec)
 
     APPL_TRACE_DEBUG("%s", __FUNCTION__);
 
-    at_len = snprintf(buf, sizeof(buf), "AT+BCS=%u\r", codec);
+    at_len = snprintf(buf, sizeof(buf), "AT+BCS=%lu\r", codec);
     if (at_len < 0)
     {
-        APPL_TRACE_ERROR("%s: AT command Framing error", __func__);
+        APPL_TRACE_ERROR("HFPClient: AT command Framing error");
         return;
     }
 
@@ -1691,10 +1717,9 @@ void bta_hf_client_send_at_chld(char cmd, UINT32 idx)
 
     if (at_len < 0)
     {
-        APPL_TRACE_ERROR("%s: AT command Framing error", __func__);
+        APPL_TRACE_ERROR("HFPClient: AT command Framing error");
         return;
     }
-
     bta_hf_client_send_at(BTA_HF_CLIENT_AT_CHLD, buf, at_len);
 }
 
@@ -1787,10 +1812,10 @@ void bta_hf_client_send_at_vgs(UINT32 volume)
 
     APPL_TRACE_DEBUG("%s", __FUNCTION__);
 
-    at_len = snprintf(buf, sizeof(buf), "AT+VGS=%u\r", volume);
+    at_len = snprintf(buf, sizeof(buf), "AT+VGS=%lu\r", volume);
     if (at_len < 0)
     {
-        APPL_TRACE_ERROR("%s: AT command Framing error", __func__);
+        APPL_TRACE_ERROR("HFPClient: AT command Framing error");
         return;
     }
 
@@ -1804,10 +1829,10 @@ void bta_hf_client_send_at_vgm(UINT32 volume)
 
     APPL_TRACE_DEBUG("%s", __FUNCTION__);
 
-    at_len = snprintf(buf, sizeof(buf), "AT+VGM=%u\r", volume);
+    at_len = snprintf(buf, sizeof(buf), "AT+VGM=%lu\r", volume);
     if (at_len < 0)
     {
-        APPL_TRACE_ERROR("%s: AT command Framing error", __func__);
+        APPL_TRACE_ERROR("HFPClient: AT command Framing error");
         return;
     }
 
@@ -1827,16 +1852,9 @@ void bta_hf_client_send_at_atd(char *number, UINT32 memory)
         at_len = snprintf(buf, sizeof(buf), "ATD>%u;\r", memory);
     }
 
-    if (at_len < 0) {
-        APPL_TRACE_ERROR("%s: error preparing ATD command", __func__);
-        return;
-    }
-
-    at_len = MIN((size_t)at_len, sizeof(buf));
-
     if (at_len < 0)
     {
-        APPL_TRACE_ERROR("%s: AT command Framing error", __func__);
+        APPL_TRACE_ERROR("HFPClient: AT command Framing error");
         return;
     }
     bta_hf_client_send_at(BTA_HF_CLIENT_AT_ATD, buf, at_len);
@@ -1893,10 +1911,9 @@ void bta_hf_client_send_at_btrh(BOOLEAN query, UINT32 val)
 
     if (at_len < 0)
     {
-        APPL_TRACE_ERROR("%s: AT command Framing error", __func__);
+        APPL_TRACE_ERROR("HFPClient: AT command Framing error");
         return;
     }
-
     bta_hf_client_send_at(BTA_HF_CLIENT_AT_BTRH, buf, at_len);
 }
 
@@ -1911,10 +1928,9 @@ void bta_hf_client_send_at_vts(char code)
 
     if (at_len < 0)
     {
-        APPL_TRACE_ERROR("%s: AT command Framing error", __func__);
+        APPL_TRACE_ERROR("HFPClient: AT command Framing error");
         return;
     }
-
     bta_hf_client_send_at(BTA_HF_CLIENT_AT_VTS, buf, at_len);
 }
 
@@ -1968,10 +1984,9 @@ void bta_hf_client_send_at_binp(UINT32 action)
 
     if (at_len < 0)
     {
-        APPL_TRACE_ERROR("%s: AT command Framing error", __func__);
+        APPL_TRACE_ERROR("HFPClient: AT command Framing error");
         return;
     }
-
     bta_hf_client_send_at(BTA_HF_CLIENT_AT_BINP, buf, at_len);
 }
 
@@ -2001,10 +2016,9 @@ void bta_hf_client_send_at_bia(void)
 
     if (at_len < 0)
     {
-        APPL_TRACE_ERROR("%s: AT command Framing error", __func__);
+        APPL_TRACE_ERROR("HFPClient: AT command Framing error");
         return;
     }
-
     bta_hf_client_send_at(BTA_HF_CLIENT_AT_BIA, buf, at_len);
 }
 
@@ -2064,13 +2078,7 @@ void bta_hf_client_send_at_cgmm(BOOLEAN query)
 
 void bta_hf_client_at_init(void)
 {
-    alarm_free(bta_hf_client_cb.scb.at_cb.resp_timer);
-    alarm_free(bta_hf_client_cb.scb.at_cb.hold_timer);
     memset(&bta_hf_client_cb.scb.at_cb, 0, sizeof(tBTA_HF_CLIENT_AT_CB));
-    bta_hf_client_cb.scb.at_cb.resp_timer =
-      alarm_new("bta_hf_client.scb_at_resp_timer");
-    bta_hf_client_cb.scb.at_cb.hold_timer =
-      alarm_new("bta_hf_client.scb_at_hold_timer");
     bta_hf_client_at_reset();
 }
 

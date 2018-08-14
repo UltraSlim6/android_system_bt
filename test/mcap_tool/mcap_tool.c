@@ -73,6 +73,9 @@
 /************************************************************************************
 **  Local type definitions
 ************************************************************************************/
+static void register_client_cb(int status, int client_if, bt_uuid_t *app_uuid);
+static void scan_result_cb(bt_bdaddr_t* remote_bd_addr, int rssi, uint8_t* adv_data);
+
 
 /************************************************************************************
 **  Static variables
@@ -80,7 +83,6 @@
 
 static unsigned char main_done = 0;
 static bt_status_t status;
-static bool strict_mode = FALSE;
 
 /* Main API */
 static bluetooth_device_t* bt_device;
@@ -103,6 +105,7 @@ enum {
     CONNECTED,
     DISCONNECTING
 };
+static int      g_ConnectionState  = DISCONNECT;
 static int      g_AdapterState     = BT_STATE_OFF;
 static int      g_PairState     = BT_BOND_STATE_NONE;
 
@@ -127,10 +130,10 @@ tMCA_CHNL_CFG g_chnl_cfg = {
         MCA_FCR_OPT_MONITOR_TOUT,     /* Monitor timeout (12 secs) */
         MCA_FCR_OPT_MPS_SIZE          /* MPS segment size */
     },
-    BT_DEFAULT_BUFFER_SIZE,
-    BT_DEFAULT_BUFFER_SIZE,
-    BT_DEFAULT_BUFFER_SIZE,
-    BT_DEFAULT_BUFFER_SIZE,
+    HCI_ACL_POOL_ID,
+    HCI_ACL_POOL_ID,
+    L2CAP_FCR_RX_POOL_ID,
+    L2CAP_FCR_TX_POOL_ID,
     MCA_FCS_NONE,
     572
 };
@@ -146,6 +149,7 @@ tMCA_CL  g_Mcl  = 0;
 ************************************************************************************/
 
 static void process_cmd(char *p, unsigned char is_job);
+static void job_handler(void *param);
 static void bdt_log(const char *fmt_str, ...);
 
 int GetBdAddr(char *p, bt_bdaddr_t *pbd_addr);
@@ -244,7 +248,7 @@ static void bdt_shutdown(void)
 static void config_permissions(void)
 {
     struct __user_cap_header_struct header;
-    struct __user_cap_data_struct cap[2];
+    struct __user_cap_data_struct cap;
 
     bdt_log("set_aid_and_cap : pid %d, uid %d gid %d", getpid(), getuid(), getgid());
 
@@ -255,25 +259,17 @@ static void config_permissions(void)
     setuid(AID_BLUETOOTH);
     setgid(AID_BLUETOOTH);
 
-    header.version = _LINUX_CAPABILITY_VERSION_3;
+    header.version = _LINUX_CAPABILITY_VERSION;
 
-    cap[CAP_TO_INDEX(CAP_NET_RAW)].permitted |= CAP_TO_MASK(CAP_NET_RAW);
-    cap[CAP_TO_INDEX(CAP_NET_ADMIN)].permitted |= CAP_TO_MASK(CAP_NET_ADMIN);
-    cap[CAP_TO_INDEX(CAP_NET_BIND_SERVICE)].permitted |= CAP_TO_MASK(CAP_NET_BIND_SERVICE);
-    cap[CAP_TO_INDEX(CAP_SYS_RAWIO)].permitted |= CAP_TO_MASK(CAP_SYS_RAWIO);
-    cap[CAP_TO_INDEX(CAP_SYS_NICE)].permitted |= CAP_TO_MASK(CAP_SYS_NICE);
-    cap[CAP_TO_INDEX(CAP_SETGID)].permitted |= CAP_TO_MASK(CAP_SETGID);
-    cap[CAP_TO_INDEX(CAP_WAKE_ALARM)].permitted |= CAP_TO_MASK(CAP_WAKE_ALARM);
+    cap.effective = cap.permitted =  cap.inheritable =
+                    1 << CAP_NET_RAW |
+                    1 << CAP_NET_ADMIN |
+                    1 << CAP_NET_BIND_SERVICE |
+                    1 << CAP_SYS_RAWIO |
+                    1 << CAP_SYS_NICE |
+                    1 << CAP_SETGID;
 
-    cap[CAP_TO_INDEX(CAP_NET_RAW)].effective |= CAP_TO_MASK(CAP_NET_RAW);
-    cap[CAP_TO_INDEX(CAP_NET_ADMIN)].effective |= CAP_TO_MASK(CAP_NET_ADMIN);
-    cap[CAP_TO_INDEX(CAP_NET_BIND_SERVICE)].effective |= CAP_TO_MASK(CAP_NET_BIND_SERVICE);
-    cap[CAP_TO_INDEX(CAP_SYS_RAWIO)].effective |= CAP_TO_MASK(CAP_SYS_RAWIO);
-    cap[CAP_TO_INDEX(CAP_SYS_NICE)].effective |= CAP_TO_MASK(CAP_SYS_NICE);
-    cap[CAP_TO_INDEX(CAP_SETGID)].effective |= CAP_TO_MASK(CAP_SETGID);
-    cap[CAP_TO_INDEX(CAP_WAKE_ALARM)].effective |= CAP_TO_MASK(CAP_WAKE_ALARM);
-
-    capset(&header, &cap[0]);
+    capset(&header, &cap);
     setgroups(sizeof(groups)/sizeof(groups[0]), groups);
 }
 
@@ -313,7 +309,7 @@ static const char* dump_bt_status(bt_status_t status)
             return "unknown status code";
     }
 }
-#if 0
+
 static void hex_dump(char *msg, void *data, int size, int trunc)
 {
     unsigned char *p = data;
@@ -368,7 +364,6 @@ static void hex_dump(char *msg, void *data, int size, int trunc)
         bdt_log("[%4.4s]   %-50.50s  %s\n", addrstr, hexstr, charstr);
     }
 }
-#endif
 
 /*******************************************************************************
  ** Console helper functions
@@ -530,7 +525,7 @@ static int create_cmdjob(char *cmd)
     job_cmd = malloc(strlen(cmd)+1); /* freed in job handler */
     if(job_cmd)
     {
-        strlcpy(job_cmd, cmd, strlen(job_cmd)+1);
+        strlcpy(job_cmd, cmd, strlen(cmd)+1);
 
         if (pthread_create(&thread_id, NULL,
                        (void*)cmdjob_handler, (void*)job_cmd)!=0)
@@ -657,9 +652,11 @@ static void discovery_state_changed(bt_discovery_state_t state)
 }
 
 
-static void pin_request_cb(bt_bdaddr_t *remote_bd_addr, bt_bdname_t *bd_name, uint32_t cod, bool min_16_digit)
+static void pin_request_cb(bt_bdaddr_t *remote_bd_addr, bt_bdname_t *bd_name, uint32_t cod, uint8_t secure)
 {
+    int ret = 0;
     bt_pin_code_t pincode = {{ 0x31, 0x32, 0x33, 0x34}};
+    printf("%s:: %s, Pin=1234, cod=0x%x, secure=%d\n", __FUNCTION__, bd_name->name, cod, secure);
 
     if(BT_STATUS_SUCCESS != sBtInterface->pin_reply(remote_bd_addr, TRUE, 4, &pincode))
     {
@@ -697,12 +694,12 @@ static void dut_mode_recv(uint16_t opcode, uint8_t *buf, uint8_t len)
 {
     bdt_log("DUT MODE RECV : NOT IMPLEMENTED");
 }
-#if BLE_INCLUDED == TRUE
+
 static void le_test_mode(bt_status_t status, uint16_t packet_count)
 {
     bdt_log("LE TEST MODE END status:%s number_of_packets:%d", dump_bt_status(status), packet_count);
 }
-#endif
+
 static bt_callbacks_t bt_callbacks = {
     sizeof(bt_callbacks_t),
     adapter_state_changed,
@@ -723,7 +720,6 @@ static bt_callbacks_t bt_callbacks = {
 #else
     NULL,
 #endif
-    NULL,
     NULL
 };
 
@@ -783,7 +779,7 @@ void bdt_enable(void)
         bdt_log("Bluetooth is already enabled");
         return;
     }
-    status = sBtInterface->enable(strict_mode);
+    status = sBtInterface->enable(false);
 
     check_return_status(status);
 }
@@ -883,6 +879,7 @@ void bdt_cleanup(void)
 void do_help(char *p)
 {
     int i = 0;
+    int max = 0;
     char line[128];
     int pos = 0;
 
@@ -952,10 +949,8 @@ void do_mcap_create_dep(char *p)
 {
     tMCA_RESULT  Ret  = 0;
     int         type  = 0;
-    tMCA_CS     Mca_cs ;
+    tMCA_CS     Mca_cs  = {0};
     type    = get_int(&p, -1);  // arg1
-
-    memset ((void*)&Mca_cs ,0 ,sizeof(tMCA_CS));
     Mca_cs.type   = (0 == type) ? MCA_TDEP_ECHO :MCA_TDEP_DATA;
     Mca_cs.max_mdl  = MCA_NUM_MDLS;
     Mca_cs.p_data_cback = mcap_data_cb;
@@ -1092,6 +1087,10 @@ static void process_cmd(char *p, unsigned char is_job)
 
 int main (int argc, char * argv[])
 {
+    int opt;
+    char cmd[2048];
+    int args_processed = 0;
+    int pid = -1;
 
     config_permissions();
     bdt_log("\n:::::::::::::::::::::::::::::::::::::::::::::::::::");
@@ -1153,6 +1152,7 @@ int GetBdAddr(char *p, bt_bdaddr_t *pbd_addr)
     UINT8 k1 = 0;
     UINT8 k2 = 0;
     int i;
+    char *t = NULL;
 
     if(12 != strlen(p))
     {
@@ -1167,7 +1167,7 @@ int GetBdAddr(char *p, bt_bdaddr_t *pbd_addr)
     for(i=0; i<6; i++)
     {
         k1 = (UINT8) ( (Arr[i*2] >= 'a') ? ( 10 + (UINT8)( Arr[i*2] - 'a' )) : (Arr[i*2] - '0') );
-        k2 = (UINT8) ( (Arr[(i*2)+1] >= 'a') ? ( 10 + (UINT8)( Arr[(i*2)+1] - 'a' )) : (Arr[(i*2)+1] - '0') );
+        k2 = (UINT8) ( (Arr[i*2] >= 'a') ? ( 10 + (UINT8)( Arr[i*2] - 'a' )) : (Arr[i*2] - '0') );
         if ( (k1>15)||(k2>15) )
         {
             return FALSE;

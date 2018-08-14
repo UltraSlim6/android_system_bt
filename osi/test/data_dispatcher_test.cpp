@@ -5,9 +5,9 @@
 #include "AllocationTestHarness.h"
 
 extern "C" {
-#include "osi/include/data_dispatcher.h"
-#include "osi/include/fixed_queue.h"
-#include "osi/include/osi.h"
+#include "data_dispatcher.h"
+#include "fixed_queue.h"
+#include "osi.h"
 }
 
 #define DUMMY_TYPE_0 34

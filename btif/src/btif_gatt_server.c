@@ -16,6 +16,7 @@
  *
  ******************************************************************************/
 
+
 /************************************************************************************
  *
  *  Filename:      btif_gatt_server.c
@@ -24,29 +25,29 @@
  *
  ***********************************************************************************/
 
-#define LOG_TAG "bt_btif_gatt"
-
-#include <errno.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
 #include <hardware/bluetooth.h>
 #include <hardware/bt_gatt.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <string.h>
+
+#define LOG_TAG "bt_btif_gatt"
 
 #include "btif_common.h"
 #include "btif_util.h"
 
 #if (defined(BLE_INCLUDED) && (BLE_INCLUDED == TRUE))
 
+#include "gki.h"
 #include "bta_api.h"
 #include "bta_gatt_api.h"
-#include "btif_config.h"
 #include "btif_dm.h"
+#include "btif_storage.h"
+#include "btif_config.h"
+
 #include "btif_gatt.h"
 #include "btif_gatt_util.h"
-#include "btif_storage.h"
-#include "bt_common.h"
 #include "osi/include/log.h"
 
 /************************************************************************************
@@ -55,11 +56,12 @@
 
 #define CHECK_BTGATT_INIT() if (bt_gatt_callbacks == NULL)\
     {\
-        LOG_WARN(LOG_TAG, "%s: BTGATT not initialized", __FUNCTION__);\
+        LOG_WARN("%s: BTGATT not initialized", __FUNCTION__);\
         return BT_STATUS_NOT_READY;\
     } else {\
-        LOG_VERBOSE(LOG_TAG, "%s", __FUNCTION__);\
+        LOG_VERBOSE("%s", __FUNCTION__);\
     }
+
 
 typedef enum {
     BTIF_GATTS_REGISTER_APP = 2000,
@@ -105,11 +107,13 @@ typedef struct
 
 } __attribute__((packed)) btif_gatts_cb_t;
 
+
 /************************************************************************************
 **  Static variables
 ************************************************************************************/
 
 extern const btgatt_callbacks_t *bt_gatt_callbacks;
+
 
 /************************************************************************************
 **  Static functions
@@ -124,7 +128,7 @@ static void btapp_gatts_copy_req_data(UINT16 event, char *p_dest, char *p_src)
         return;
 
     // Copy basic structure first
-    maybe_non_aligned_memcpy(p_dest_data, p_src_data, sizeof(*p_src_data));
+    memcpy(p_dest_data, p_src_data, sizeof(tBTA_GATTS));
 
     // Allocate buffer for request data if necessary
     switch (event)
@@ -133,9 +137,12 @@ static void btapp_gatts_copy_req_data(UINT16 event, char *p_dest, char *p_src)
         case BTA_GATTS_WRITE_EVT:
         case BTA_GATTS_EXEC_WRITE_EVT:
         case BTA_GATTS_MTU_EVT:
-            p_dest_data->req_data.p_data = osi_malloc(sizeof(tBTA_GATTS_REQ_DATA));
-            memcpy(p_dest_data->req_data.p_data, p_src_data->req_data.p_data,
-                   sizeof(tBTA_GATTS_REQ_DATA));
+            p_dest_data->req_data.p_data = GKI_getbuf(sizeof(tBTA_GATTS_REQ_DATA));
+            if (p_dest_data->req_data.p_data != NULL)
+            {
+                memcpy(p_dest_data->req_data.p_data, p_src_data->req_data.p_data,
+                    sizeof(tBTA_GATTS_REQ_DATA));
+            }
             break;
 
         default:
@@ -151,8 +158,8 @@ static void btapp_gatts_free_req_data(UINT16 event, tBTA_GATTS *p_data)
         case BTA_GATTS_WRITE_EVT:
         case BTA_GATTS_EXEC_WRITE_EVT:
         case BTA_GATTS_MTU_EVT:
-            if (p_data != NULL)
-                osi_free_and_reset((void **)&p_data->req_data.p_data);
+            if (p_data && p_data->req_data.p_data)
+                GKI_freebuf(p_data->req_data.p_data);
             break;
 
         default:
@@ -162,7 +169,7 @@ static void btapp_gatts_free_req_data(UINT16 event, tBTA_GATTS *p_data)
 
 static void btapp_gatts_handle_cback(uint16_t event, char* p_param)
 {
-    LOG_VERBOSE(LOG_TAG, "%s: Event %d", __FUNCTION__, event);
+    LOG_VERBOSE("%s: Event %d", __FUNCTION__, event);
 
     tBTA_GATTS *p_data = (tBTA_GATTS*)p_param;
     switch (event)
@@ -338,11 +345,11 @@ static void btapp_gatts_handle_cback(uint16_t event, char* p_param)
         case BTA_GATTS_OPEN_EVT:
         case BTA_GATTS_CANCEL_OPEN_EVT:
         case BTA_GATTS_CLOSE_EVT:
-            LOG_DEBUG(LOG_TAG, "%s: Empty event (%d)!", __FUNCTION__, event);
+            LOG_DEBUG("%s: Empty event (%d)!", __FUNCTION__, event);
             break;
 
         default:
-            LOG_ERROR(LOG_TAG, "%s: Unhandled event (%d)!", __FUNCTION__, event);
+            LOG_ERROR("%s: Unhandled event (%d)!", __FUNCTION__, event);
             break;
     }
 
@@ -362,7 +369,7 @@ static void btgatts_handle_event(uint16_t event, char* p_param)
     btif_gatts_cb_t* p_cb = (btif_gatts_cb_t*)p_param;
     if (!p_cb) return;
 
-    LOG_VERBOSE(LOG_TAG, "%s: Event %d", __FUNCTION__, event);
+    LOG_VERBOSE("%s: Event %d", __FUNCTION__, event);
 
     switch (event)
     {
@@ -395,12 +402,12 @@ static void btgatts_handle_event(uint16_t event, char* p_param)
             // Mark background connections
             if (!p_cb->is_direct)
                 BTA_DmBleSetBgConnType(BTM_BLE_CONN_AUTO, NULL);
+            BTIF_TRACE_DEBUG ("%s, device type: %d", __func__, device_type);
 
-            // Determine transport
-            if (p_cb->transport != GATT_TRANSPORT_AUTO)
-            {
+            if(p_cb->transport != GATT_TRANSPORT_AUTO)
                 transport = p_cb->transport;
-            } else {
+            else
+            {
                 switch(device_type)
                 {
                     case BT_DEVICE_TYPE_BREDR:
@@ -417,10 +424,6 @@ static void btgatts_handle_event(uint16_t event, char* p_param)
                         else
                             transport = BTA_GATT_TRANSPORT_BR_EDR;
                         break;
-
-                    default:
-                        BTIF_TRACE_ERROR ("%s: Invalid device type %d", __func__, device_type);
-                        return;
                 }
             }
 
@@ -442,13 +445,11 @@ static void btgatts_handle_event(uint16_t event, char* p_param)
 
         case BTIF_GATTS_CREATE_SERVICE:
         {
-            tBT_UUID uuid;
-            btif_to_bta_uuid(&uuid, &p_cb->srvc_id.id.uuid);
-
-            BTA_GATTS_CreateService(p_cb->server_if, &uuid,
-                                    p_cb->srvc_id.id.inst_id, p_cb->num_handles,
-                                    p_cb->srvc_id.is_primary);
-
+            tBTA_GATT_SRVC_ID srvc_id;
+            btif_to_bta_srvc_id(&srvc_id, &p_cb->srvc_id);
+            BTA_GATTS_CreateService(p_cb->server_if, &srvc_id.id.uuid,
+                                    srvc_id.id.inst_id, p_cb->num_handles,
+                                    srvc_id.is_primary);
             break;
         }
 
@@ -510,7 +511,7 @@ static void btgatts_handle_event(uint16_t event, char* p_param)
         }
 
         default:
-            LOG_ERROR(LOG_TAG, "%s: Unknown event (%d)!", __FUNCTION__, event);
+            LOG_ERROR("%s: Unknown event (%d)!", __FUNCTION__, event);
             break;
     }
 }

@@ -18,6 +18,6 @@
 
 #pragma once
 
-#include "osi/include/allocator.h"
+#include "allocator.h"
 
 const allocator_t *buffer_allocator_get_interface();

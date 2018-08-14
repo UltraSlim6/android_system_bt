@@ -18,8 +18,6 @@
 
 #pragma once
 
-#include <stdint.h>
-
 // Audio state definitions.
 typedef enum {
     SCO_STATE_OFF = 0,      // Audio is off.

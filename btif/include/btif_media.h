@@ -1,10 +1,4 @@
 /******************************************************************************
- *  Copyright (c) 2016, The Linux Foundation. All rights reserved.
- *
- *  Not a contribution.
- ******************************************************************************/
-
-/******************************************************************************
  *
  *  Copyright (C) 2009-2012 Broadcom Corporation
  *
@@ -36,10 +30,9 @@
 #include <stdbool.h>
 
 #include "bta_api.h"
-#include "bt_common.h"
+#include "gki.h"
 #include "btif_av_api.h"
 #include "audio_a2dp_hw.h"
-#include "a2d_aac.h"
 
 /*******************************************************************************
  **  Constants
@@ -61,8 +54,7 @@
 /* Transcoding definition for TxTranscoding and RxTranscoding */
 #define BTIF_MEDIA_TRSCD_OFF             0
 #define BTIF_MEDIA_TRSCD_PCM_2_SBC       1  /* Tx */
-#define BTIF_MEDIA_TRSCD_PCM_2_APTX      2
-#define BTIF_MEDIA_TRSCD_PCM_2_APTX_HD   3
+
 
 /*******************************************************************************
  **  Data types
@@ -80,14 +72,6 @@ typedef struct
         UINT8 NumOfBlocks; /* 4, 8, 12 or 16*/
         UINT8 AllocationMethod; /* loudness or SNR*/
         UINT16 MtuSize; /* peer mtu size */
-        UINT8 CodecType; /* SBC or Non-A2DP */
-        UINT32 BluetoothVendorID; /* Bluetooth Vendor ID */
-        UINT16 BluetoothCodecID; /* Bluetooth Codec ID */
-#if defined(AAC_ENCODER_INCLUDED) && (AAC_ENCODER_INCLUDED == TRUE)
-        UINT8 ObjectType;
-        UINT32 bit_rate;
-        UINT8 vbr;
-#endif
 } tBTIF_MEDIA_INIT_AUDIO;
 
 #if (BTA_AV_INCLUDED == TRUE)
@@ -98,9 +82,6 @@ typedef struct
         UINT16 MinMtuSize; /* Minimum peer mtu size */
         UINT8 MaxBitPool; /* Maximum peer bitpool */
         UINT8 MinBitPool; /* Minimum peer bitpool */
-        UINT8 CodecType; /* SBC or Non-A2DP */
-        UINT32 BluetoothVendorID; /* Bluetooth Vendor ID */
-        UINT16 BluetoothCodecID; /* Bluetooth Codec ID */
 } tBTIF_MEDIA_UPDATE_AUDIO;
 
 /* tBTIF_MEDIA_INIT_AUDIO_FEEDING msg structure */
@@ -120,9 +101,11 @@ typedef struct
 
 #ifdef USE_AUDIO_TRACK
 typedef enum {
-        BTIF_MEDIA_FOCUS_NOT_GRANTED = 0,
-        BTIF_MEDIA_FOCUS_GRANTED
-} btif_media_audio_focus_state;
+        BTIF_MEDIA_FOCUS_IDLE = 0,
+        BTIF_MEIDA_FOCUS_READY,
+        BTIF_MEIDA_FOCUS_REQUESTED,
+        BTIF_MEIDA_FOCUS_GRANTED
+}btif_media_audio_focus_state;
 
 typedef struct
 {
@@ -291,20 +274,13 @@ extern void dump_codec_info(unsigned char *p_codec);
 
 bool btif_a2dp_start_media_task(void);
 void btif_a2dp_stop_media_task(void);
-bool btif_a2dp_is_media_task_stopped(void);
+
 void btif_a2dp_on_init(void);
-tBTIF_STATUS btif_a2dp_setup_codec(tBTA_AV_HNDL hdl);
-void btif_a2dp_update_codec(void);
+tBTIF_STATUS btif_a2dp_setup_codec(void);
 void btif_a2dp_on_idle(void);
 void btif_a2dp_on_open(void);
-BOOLEAN btif_a2dp_on_started(tBTA_AV_START *p_av, BOOLEAN pending_start, tBTA_AV_HNDL hdl);
-#ifdef BTA_AV_SPLIT_A2DP_ENABLED
+BOOLEAN btif_a2dp_on_started(tBTA_AV_START *p_av, BOOLEAN pending_start);
 void btif_media_on_stop_vendor_command();
-void btif_media_send_reset_vendor_state();
-#else
-#define btif_media_on_stop_vendor_command() (0)
-#define btif_media_send_reset_vendor_state() (0)
-#endif
 void btif_a2dp_ack_fail(void);
 void btif_a2dp_on_stop_req(void);
 void btif_a2dp_on_stopped(tBTA_AV_SUSPEND *p_av);
@@ -314,17 +290,11 @@ void btif_a2dp_set_tx_flush(BOOLEAN enable);
 void btif_a2dp_set_rx_flush(BOOLEAN enable);
 void btif_media_check_iop_exceptions(UINT8 *peer_bda);
 void btif_reset_decoder(UINT8 *p_av);
-void btif_a2dp_on_offload_started(tBTA_AV_STATUS status);
-
 
 int btif_a2dp_get_track_frequency(UINT8 frequency);
 int btif_a2dp_get_track_channel_count(UINT8 channeltype);
 void btif_a2dp_set_peer_sep(UINT8 sep);
 #ifdef USE_AUDIO_TRACK
 void btif_a2dp_set_audio_focus_state(btif_media_audio_focus_state state);
-void btif_a2dp_set_audio_track_gain(float gain);
 #endif
-
-void btif_debug_a2dp_dump(int fd);
-void btif_update_a2dp_metrics(void);
 #endif

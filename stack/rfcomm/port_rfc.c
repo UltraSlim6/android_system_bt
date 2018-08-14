@@ -24,17 +24,15 @@
  ******************************************************************************/
 #include <string.h>
 
-#include "osi/include/mutex.h"
-
-#include "bt_common.h"
 #include "bt_target.h"
-#include "bt_utils.h"
-#include "btm_api.h"
-#include "btm_int.h"
+#include "gki.h"
+#include "rfcdefs.h"
 #include "port_api.h"
+#include "btm_int.h"
+#include "btm_api.h"
 #include "port_int.h"
 #include "rfc_int.h"
-#include "rfcdefs.h"
+#include "bt_utils.h"
 
 /*
 ** Local function definitions
@@ -228,6 +226,7 @@ void PORT_StartCnf (tRFC_MCB *p_mcb, UINT16 result)
                     p_port->error = PORT_START_FAILED;
 
                 rfc_release_multiplexer_channel (p_mcb);
+                p_port->rfc.p_mcb = NULL;
 
                 /* Send event to the application */
                 if (p_port->p_callback && (p_port->ev_mask & PORT_EV_CONNECT_ERR))
@@ -838,7 +837,7 @@ void PORT_DataInd (tRFC_MCB *p_mcb, UINT8 dlci, BT_HDR *p_buf)
                         p_buf->len, p_mcb, p_port, dlci);
     if (!p_port)
     {
-        osi_free(p_buf);
+        GKI_freebuf (p_buf);
         return;
     }
     /* If client registered callout callback with flow control we can just deliver receive data */
@@ -849,7 +848,7 @@ void PORT_DataInd (tRFC_MCB *p_mcb, UINT8 dlci, BT_HDR *p_buf)
         if(p_port->p_data_co_callback(p_port->inx, (UINT8*)p_buf, -1, DATA_CO_CALLBACK_TYPE_INCOMING))
             port_flow_control_peer(p_port, TRUE, 1);
         else port_flow_control_peer(p_port, FALSE, 0);
-        //osi_free(p_buf);
+        //GKI_freebuf (p_buf);
         return;
     }
     else RFCOMM_TRACE_ERROR("PORT_DataInd, p_port:%p, p_data_co_callback is null", p_port);
@@ -860,16 +859,16 @@ void PORT_DataInd (tRFC_MCB *p_mcb, UINT8 dlci, BT_HDR *p_buf)
         port_flow_control_peer(p_port, TRUE, 1);
 
         p_port->p_data_callback (p_port->inx, (UINT8 *)(p_buf + 1) + p_buf->offset, p_buf->len);
-        osi_free(p_buf);
+        GKI_freebuf (p_buf);
         return;
     }
 
     /* Check if rx queue exceeds the limit */
     if ((p_port->rx.queue_size + p_buf->len > PORT_RX_CRITICAL_WM)
-     || (fixed_queue_length(p_port->rx.queue) + 1 > p_port->rx_buf_critical))
+     || (GKI_queue_length(&p_port->rx.queue) + 1 > p_port->rx_buf_critical))
     {
         RFCOMM_TRACE_EVENT ("PORT_DataInd. Buffer over run. Dropping the buffer");
-        osi_free(p_buf);
+        GKI_freebuf (p_buf);
 
         RFCOMM_LineStatusReq (p_mcb, dlci, LINE_STATUS_OVERRUN);
         return;
@@ -890,12 +889,12 @@ void PORT_DataInd (tRFC_MCB *p_mcb, UINT8 dlci, BT_HDR *p_buf)
         }
     }
 
-    mutex_global_lock();
+    PORT_SCHEDULE_LOCK;
 
-    fixed_queue_enqueue(p_port->rx.queue, p_buf);
+    GKI_enqueue (&p_port->rx.queue, p_buf);
     p_port->rx.queue_size += p_buf->len;
 
-    mutex_global_unlock();
+    PORT_SCHEDULE_UNLOCK;
 
     /* perform flow control procedures if necessary */
     port_flow_control_peer(p_port, FALSE, 0);
@@ -999,13 +998,13 @@ UINT32 port_rfc_send_tx_data (tPORT *p_port)
         while (!p_port->tx.peer_fc && p_port->rfc.p_mcb && p_port->rfc.p_mcb->peer_ready)
         {
             /* get data from tx queue and send it */
-            mutex_global_lock();
+            PORT_SCHEDULE_LOCK;
 
-            if ((p_buf = (BT_HDR *)fixed_queue_try_dequeue(p_port->tx.queue)) != NULL)
+            if ((p_buf = (BT_HDR *)GKI_dequeue (&p_port->tx.queue)) != NULL)
             {
                 p_port->tx.queue_size -= p_buf->len;
 
-                mutex_global_unlock();
+                PORT_SCHEDULE_UNLOCK;
 
                 RFCOMM_TRACE_DEBUG ("Sending RFCOMM_DataReq tx.queue_size=%d", p_port->tx.queue_size);
 
@@ -1022,7 +1021,7 @@ UINT32 port_rfc_send_tx_data (tPORT *p_port)
             /* queue is empty-- all data sent */
             else
             {
-                mutex_global_unlock();
+                PORT_SCHEDULE_UNLOCK;
 
                 events |= PORT_EV_TXEMPTY;
                 break;

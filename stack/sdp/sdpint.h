@@ -26,7 +26,6 @@
 #define  SDP_INT_H
 
 #include "bt_target.h"
-#include "osi/include/alarm.h"
 #include "sdp_api.h"
 #include "l2c_api.h"
 
@@ -36,7 +35,7 @@
 #define SDP_MAX_CONTINUATION_LEN    16          /* As per the spec */
 
 /* Timeout definitions. */
-#define SDP_INACT_TIMEOUT_MS  (30 * 1000)    /* Inactivity timeout (in ms) */
+#define SDP_INACT_TIMEOUT       30              /* Inactivity timeout         */
 
 
 /* Define the Out-Flow default values. */
@@ -82,11 +81,13 @@
 #define     MAX_ATTR_PER_SEQ        16
 
 /* Max length we support for any attribute */
+// btla-specific ++
 #ifdef SDP_MAX_ATTR_LEN
 #define MAX_ATTR_LEN SDP_MAX_ATTR_LEN
 #else
 #define     MAX_ATTR_LEN            256
 #endif
+// btla-specific --
 
 /* Internal UUID sequence representation */
 typedef struct
@@ -157,7 +158,6 @@ typedef struct
     UINT16            next_attr_index; /* attr index for next continuation response */
     UINT16            next_attr_start_id;  /* attr id to start with for the attr index in next cont. response */
     tSDP_RECORD       *prev_sdp_rec; /* last sdp record that was completely sent in the response */
-    tSDP_RECORD       *curr_sdp_rec; /* sdp record that is currently being sent in the response */
     BOOLEAN           last_attr_seq_desc_sent; /* whether attr seq length has been sent previously */
     UINT16            attr_offset; /* offset within the attr to keep trak of partial attributes in the responses */
 } tSDP_CONT_INFO;
@@ -178,7 +178,7 @@ typedef struct
     UINT8             con_flags;
 
     BD_ADDR           device_address;
-    alarm_t           *sdp_conn_timer;
+    TIMER_LIST_ENT    timer_entry;
     UINT16            rem_mtu_size;
     UINT16            connection_id;
     UINT16            list_len;                 /* length of the response in the GKI buffer */
@@ -247,7 +247,6 @@ extern tSDP_CB *sdp_cb_ptr;
 
 /* Functions provided by sdp_main.c */
 extern void     sdp_init (void);
-extern void     sdp_free(void);
 extern void     sdp_disconnect (tCONN_CB*p_ccb, UINT16 reason);
 
 #if (defined(SDP_DEBUG) && SDP_DEBUG == TRUE)
@@ -265,7 +264,7 @@ extern void sdp_conn_rcv_l2e_conn_failed (BT_HDR *p_msg);
 extern void sdp_conn_rcv_l2e_connected (BT_HDR *p_msg);
 extern void sdp_conn_rcv_l2e_conn_failed (BT_HDR *p_msg);
 extern void sdp_conn_rcv_l2e_data (BT_HDR *p_msg);
-extern void sdp_conn_timer_timeout(void *data);
+extern void sdp_conn_timeout (tCONN_CB *p_ccb);
 
 extern tCONN_CB *sdp_conn_originate (UINT8 *p_bd_addr);
 
@@ -275,7 +274,6 @@ extern tCONN_CB *sdpu_find_ccb_by_cid (UINT16 cid);
 extern tCONN_CB *sdpu_find_ccb_by_db (tSDP_DISCOVERY_DB *p_db);
 extern tCONN_CB *sdpu_allocate_ccb (void);
 extern void      sdpu_release_ccb (tCONN_CB *p_ccb);
-extern void      sdpu_update_ccb_cont_info (UINT32 handle);
 
 extern UINT8    *sdpu_build_attrib_seq (UINT8 *p_out, UINT16 *p_attr, UINT16 num_attrs);
 extern UINT8    *sdpu_build_attrib_entry (UINT8 *p_out, tSDP_ATTRIBUTE *p_attr);

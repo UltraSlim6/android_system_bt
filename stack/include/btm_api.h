@@ -197,7 +197,6 @@ typedef UINT8 (tBTM_FILTER_CB) (BD_ADDR bd_addr, DEV_CLASS dc);
 #define BTM_BLE_MAX_CONNECTABLE      BTM_BLE_CONNECTABLE
 #define BTM_BLE_CONNECTABLE_MASK    (BTM_BLE_NON_CONNECTABLE | BTM_BLE_CONNECTABLE)
 
-#define BTM_BLE_ADV_STOP            2
 /* Inquiry modes
  * Note: These modes are associated with the inquiry active values (BTM_*ACTIVE) */
 #define BTM_INQUIRY_NONE            0
@@ -532,12 +531,14 @@ typedef UINT8 tBTM_EIR_SEARCH_RESULT;
 #define BTM_OOB_HASH_C_SIZE         BT_OOB_HASH_C_SIZE
 #define BTM_OOB_RAND_R_SIZE         BT_OOB_RAND_R_SIZE
 
+
+#if BLE_INCLUDED == TRUE
 #define BTM_BLE_SEC_NONE                0
 #define BTM_BLE_SEC_ENCRYPT             1 /* encrypt the link using current key */
 #define BTM_BLE_SEC_ENCRYPT_NO_MITM     2
 #define BTM_BLE_SEC_ENCRYPT_MITM        3
 typedef UINT8   tBTM_BLE_SEC_ACT;
-
+#endif
 /************************************************************************************************
 ** BTM Services MACROS handle array of UINT32 bits for more than 32 services
 *************************************************************************************************/
@@ -849,8 +850,7 @@ typedef struct
 typedef struct
 {
     tBTM_BL_EVENT   event;  /* The event reported. */
-    UINT8           busy_level;/* when paging or inquiring, level is between
-                                  17 to 21 as the max links can be 16.
+    UINT8           busy_level;/* when paging or inquiring, level is 10.
                                 * Otherwise, the number of ACL links. */
     UINT8           busy_level_flags; /* Notifies actual inquiry/page activities */
 } tBTM_BL_UPDATE_DATA;
@@ -1232,11 +1232,15 @@ typedef UINT8 tBTM_LINK_KEY_TYPE;
 #define BTM_SEC_SERVICE_HDP_SNK         48
 #define BTM_SEC_SERVICE_HDP_SRC         49
 #define BTM_SEC_SERVICE_ATT             50
+#define BTM_SEC_SERVICE_HIDD_SEC_CTRL   51
+#define BTM_SEC_SERVICE_HIDD_NOSEC_CTRL 52
+#define BTM_SEC_SERVICE_HIDD_INTR       53
 
 /* Update these as services are added */
-#define BTM_SEC_SERVICE_FIRST_EMPTY     51
+#define BTM_SEC_SERVICE_FIRST_EMPTY     54
 
 #ifndef BTM_SEC_MAX_SERVICES
+/* accomadate other new profiles also */
 #define BTM_SEC_MAX_SERVICES            75
 #endif
 
@@ -1424,6 +1428,8 @@ typedef UINT8 tBTM_IO_CAP;
 
 #define BTM_BLE_INITIATOR_KEY_SIZE 15
 #define BTM_BLE_RESPONDER_KEY_SIZE 15
+#define BTM_BLE_INITIATOR_LEGACY_KEY 7
+#define BTM_BLE_RESPONDER_LEGACY_KEY 7
 #define BTM_BLE_MAX_KEY_SIZE       16
 
 typedef UINT8 tBTM_AUTH_REQ;
@@ -1431,8 +1437,10 @@ typedef UINT8 tBTM_AUTH_REQ;
 enum
 {
     BTM_OOB_NONE,
-    BTM_OOB_PRESENT,
-    BTM_OOB_UNKNOWN
+    BTM_OOB_PRESENT
+#if BTM_OOB_INCLUDED == TRUE
+    ,BTM_OOB_UNKNOWN
+#endif
 };
 typedef UINT8 tBTM_OOB_DATA;
 
@@ -1936,17 +1944,6 @@ extern void BTM_DeviceReset (tBTM_CMPL_CB *p_cb);
 
 /*******************************************************************************
 **
-** Function         BTM_HCI_Reset
-**
-** Description      This function is called to send reset command to the controller.
-**
-** Returns          void
-**
-*******************************************************************************/
-extern void BTM_HCI_Reset (void);
-
-/*******************************************************************************
-**
 ** Function         BTM_IsDeviceUp
 **
 ** Description      This function is called to check if the device is up.
@@ -2106,6 +2103,7 @@ extern tBTM_STATUS BTM_VendorSpecificCommand(UINT16 opcode,
 *******************************************************************************/
 extern UINT8 BTM_AllocateSCN(void);
 
+// btla-specific ++
 /*******************************************************************************
 **
 ** Function         BTM_TryAllocateSCN
@@ -2116,6 +2114,7 @@ extern UINT8 BTM_AllocateSCN(void);
 **
 *******************************************************************************/
 extern BOOLEAN BTM_TryAllocateSCN(UINT8 scn);
+// btla-specific --
 
 
 /*******************************************************************************
@@ -2555,7 +2554,7 @@ extern UINT8 *BTM_ReadAllRemoteFeatures (BD_ADDR addr);
 ** Returns          pointer to entry, or NULL if not found
 **
 *******************************************************************************/
-extern tBTM_INQ_INFO *BTM_InqDbRead (const BD_ADDR p_bda);
+extern tBTM_INQ_INFO *BTM_InqDbRead (BD_ADDR p_bda);
 
 
 /*******************************************************************************
@@ -3289,6 +3288,44 @@ extern void BTM_SetPairableMode (BOOLEAN allow_pairing, BOOLEAN connect_only_pai
 *******************************************************************************/
 extern void BTM_SetSecureConnectionsOnly (BOOLEAN secure_connections_only_mode);
 
+#if (defined(LE_L2CAP_CFC_INCLUDED) && (LE_L2CAP_CFC_INCLUDED == TRUE))
+/*******************************************************************************
+**
+** Function         BTM_SetBleSecurityLevel
+**
+** Description      Register LE service security level with Security Manager
+**
+** Parameters:      is_originator - TRUE if originating the connection, FALSE if not
+**                  p_name      - Name of the service relevant only if
+**                                authorization will show this name to user. ignored
+**                                if BTM_SEC_SERVICE_NAME_LEN is 0.
+**                  service_id  - service ID for the service passed to authorization callback
+**                  sec_level   - bit mask of the security features
+**                  psm         - LE L2CAP PSM
+**
+** Returns          TRUE if registered OK, else FALSE
+**
+*******************************************************************************/
+BOOLEAN BTM_SetBleSecurityLevel (BOOLEAN is_originator, char *p_name, UINT8 service_id,
+                              UINT16 sec_level, UINT16 psm);
+
+/*******************************************************************************
+**
+** Function         BTM_SetBleEncKeySize
+**
+** Description      Register the required LE encryption key size with Security Manager
+**
+** Parameters:      p_name      - Name of the service relevant only
+**                  enc_key_size- required LE encryption key size
+**                  le_psm         - LE L2CAP PSM
+**
+** Returns          TRUE if registered OK, else FALSE
+**
+*******************************************************************************/
+BOOLEAN BTM_SetBleEncKeySize (char *p_name, UINT8 enc_key_size, UINT16 le_psm);
+#endif
+
+
 /*******************************************************************************
 **
 ** Function         BTM_SetSecurityLevel
@@ -3362,15 +3399,6 @@ extern BOOLEAN BTM_SecAddDevice (BD_ADDR bd_addr, DEV_CLASS dev_class,
 *******************************************************************************/
 extern BOOLEAN BTM_SecDeleteDevice (BD_ADDR bd_addr);
 
-/*******************************************************************************
-**
-** Function         BTM_SecClearSecurityFlags
-**
-** Description      Reset the security flags (mark as not-paired) for a given
-**                  remove device.
-**
-*******************************************************************************/
-extern void BTM_SecClearSecurityFlags (BD_ADDR bd_addr);
 
 /*******************************************************************************
 **
@@ -3485,15 +3513,13 @@ extern tBTM_STATUS BTM_SecBondCancel (BD_ADDR bd_addr);
 **                  bring up unencrypted links, then later encrypt them.
 **
 ** Parameters:      bd_addr       - Address of the peer device
-**                  transport     - Link transport
 **                  p_callback    - Pointer to callback function called if
 **                                  this function returns PENDING after required
 **                                  procedures are completed.  Can be set to NULL
 **                                  if status is not desired.
 **                  p_ref_data    - pointer to any data the caller wishes to receive
 **                                  in the callback function upon completion.
-**                                  can be set to NULL if not used.
-**                  sec_act       - LE security action, unused for BR/EDR
+*                                   can be set to NULL if not used.
 **
 ** Returns          BTM_SUCCESS   - already encrypted
 **                  BTM_PENDING   - command will be returned in the callback
@@ -3503,8 +3529,7 @@ extern tBTM_STATUS BTM_SecBondCancel (BD_ADDR bd_addr);
 **
 *******************************************************************************/
 extern tBTM_STATUS BTM_SetEncryption (BD_ADDR bd_addr, tBT_TRANSPORT transport,
-                                      tBTM_SEC_CBACK *p_callback,
-                                      void *p_ref_data, tBTM_BLE_SEC_ACT sec_act);
+                                      tBTM_SEC_CBACK *p_callback, void *p_ref_data);
 
 /*******************************************************************************
 **
@@ -3761,7 +3786,7 @@ extern tBTM_STATUS BTM_SetSsrParams (BD_ADDR remote_bda, UINT16 max_lat,
 ** Returns          the handle of the connection, or 0xFFFF if none.
 **
 *******************************************************************************/
-extern UINT16 BTM_GetHCIConnHandle (const BD_ADDR remote_bda, tBT_TRANSPORT transport);
+extern UINT16 BTM_GetHCIConnHandle (BD_ADDR remote_bda, tBT_TRANSPORT transport);
 
 /*******************************************************************************
 **

@@ -24,7 +24,7 @@
  ******************************************************************************/
 
 #include <string.h>
-#include "bt_common.h"
+#include "gki.h"
 #include "bt_types.h"
 #include "bt_utils.h"
 #include "bnep_api.h"
@@ -219,39 +219,6 @@ void pan_conn_ind_cb (UINT16 handle,
     {
         PAN_TRACE_ERROR ("PAN Connection failed because of unsupported destination UUID 0x%x", local_uuid->uu.uuid16);
         BNEP_ConnectResp (handle, BNEP_CONN_FAILED_DST_UUID);
-        return;
-    }
-
-    /* Check for valid interactions between the three PAN profile roles */
-    /*
-     * For reference, see Table 1 in PAN Profile v1.0 spec.
-     * Note: the remote is the initiator.
-     */
-    BOOLEAN is_valid_interaction = FALSE;
-    switch (remote_uuid->uu.uuid16) {
-    case UUID_SERVCLASS_NAP:
-    case UUID_SERVCLASS_GN:
-        if (local_uuid->uu.uuid16 == UUID_SERVCLASS_PANU)
-            is_valid_interaction = TRUE;
-        break;
-    case UUID_SERVCLASS_PANU:
-        is_valid_interaction = TRUE;
-        break;
-    }
-    /*
-     * Explicitly disable connections to the local PANU if the remote is
-     * not PANU.
-     */
-    if ((local_uuid->uu.uuid16 == UUID_SERVCLASS_PANU) &&
-        (remote_uuid->uu.uuid16 != UUID_SERVCLASS_PANU)) {
-        is_valid_interaction = FALSE;
-    }
-    if (!is_valid_interaction) {
-        PAN_TRACE_ERROR(
-          "PAN Connection failed because of invalid PAN profile roles "
-          "interaction: Remote UUID 0x%x Local UUID 0x%x",
-          remote_uuid->uu.uuid16, local_uuid->uu.uuid16);
-        BNEP_ConnectResp(handle, BNEP_CONN_FAILED_SRC_UUID);
         return;
     }
 
@@ -586,7 +553,7 @@ void pan_data_buf_ind_cb (UINT16 handle,
     if (!pcb)
     {
         PAN_TRACE_ERROR ("PAN Data buffer indication for wrong handle %d", handle);
-        osi_free(p_buf);
+        GKI_freebuf (p_buf);
         return;
     }
 
@@ -594,7 +561,7 @@ void pan_data_buf_ind_cb (UINT16 handle,
     {
         PAN_TRACE_ERROR ("PAN Data indication in wrong state %d for handle %d",
             pcb->con_state, handle);
-        osi_free(p_buf);
+        GKI_freebuf (p_buf);
         return;
     }
 
@@ -631,7 +598,7 @@ void pan_data_buf_ind_cb (UINT16 handle,
             else if (pan_cb.pan_data_ind_cb)
             {
                 (*pan_cb.pan_data_ind_cb) (pcb->handle, src, dst, protocol, p_data, len, ext, forward);
-                osi_free(p_buf);
+                GKI_freebuf (p_buf);
             }
 
             return;
@@ -647,7 +614,7 @@ void pan_data_buf_ind_cb (UINT16 handle,
             result = BNEP_Write (dst_pcb->handle, dst, p_data, len, protocol, src, ext);
             if (result != BNEP_SUCCESS && result != BNEP_IGNORE_CMD)
                 PAN_TRACE_ERROR ("Failed to write data for PAN connection handle %d", dst_pcb->handle);
-            osi_free(p_buf);
+            GKI_freebuf (p_buf);
             return;
         }
     }
@@ -658,10 +625,10 @@ void pan_data_buf_ind_cb (UINT16 handle,
     else if (pan_cb.pan_data_ind_cb)
     {
         (*pan_cb.pan_data_ind_cb) (pcb->handle, src, dst, protocol, p_data, len, ext, forward);
-        osi_free(p_buf);
+        GKI_freebuf (p_buf);
     }
     else
-        osi_free(p_buf);
+        GKI_freebuf (p_buf);
 
     return;
 }

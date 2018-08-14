@@ -1,10 +1,4 @@
 /******************************************************************************
- *  Copyright (c) 2016, The Linux Foundation. All rights reserved.
- *
- *  Not a contribution.
- ******************************************************************************/
-
-/******************************************************************************
  *
  *  Copyright (C) 2004-2012 Broadcom Corporation
  *
@@ -66,12 +60,10 @@ typedef UINT8 tBTA_AV_STATUS;
 #define BTA_AV_FEAT_METADATA    0x0040  /* remote control Metadata Transfer command/response */
 #define BTA_AV_FEAT_MULTI_AV    0x0080  /* use multi-av, if controller supports it */
 #define BTA_AV_FEAT_BROWSE      0x0010  /* use browsing channel */
-#define BTA_AV_FEAT_CA          0x0020  /* use cover art */
 #define BTA_AV_FEAT_MASTER      0x0100  /* stream only as master role */
 #define BTA_AV_FEAT_ADV_CTRL    0x0200  /* remote control Advanced Control command/response */
 #define BTA_AV_FEAT_DELAY_RPT   0x0400  /* allow delay reporting */
 #define BTA_AV_FEAT_ACP_START   0x0800  /* start stream when 2nd SNK was accepted   */
-#define BTA_AV_FEAT_APP_SETTING 0x2000  /* Player app setting support */
 
 /* Internal features */
 #define BTA_AV_FEAT_AVRC_UI_UPDATE 0x4000 /* Update UI to show notification for browsing capable remote*/
@@ -97,17 +89,15 @@ typedef UINT8 tBTA_AV_HNDL;
 /* offset of codec type in codec info byte array */
 #define BTA_AV_CODEC_TYPE_IDX       AVDT_CODEC_TYPE_INDEX   /* 2 */
 
+
+
 /* maximum number of streams created: 1 for audio, 1 for video */
 #ifndef BTA_AV_NUM_STRS
 #define BTA_AV_NUM_STRS         2
 #endif
 
 #ifndef BTA_AV_MAX_SEPS
-#if defined(AAC_ENCODER_INCLUDED) && (AAC_ENCODER_INCLUDED == TRUE)
-#define BTA_AV_MAX_SEPS         4
-#else
-#define BTA_AV_MAX_SEPS         3
-#endif
+#define BTA_AV_MAX_SEPS         2
 #endif
 
 #ifndef BTA_AV_MAX_A2DP_MTU
@@ -135,9 +125,6 @@ typedef UINT8 tBTA_AV_CODEC;
 
 /* Company ID in BT assigned numbers */
 #define BTA_AV_BT_VENDOR_ID     VDP_BT_VENDOR_ID        /* Broadcom Corporation */
-
-/* Offset for codec configuration in codec info */
-#define BTA_AV_CFG_START_IDX    3
 
 /* vendor specific codec ID */
 #define BTA_AV_CODEC_ID_H264    VDP_CODEC_ID_H264       /* Non-VDP codec ID - H.264 */
@@ -258,19 +245,18 @@ typedef UINT8 tBTA_AV_ERR;
 #define BTA_AV_RECONFIG_EVT     14      /* reconfigure response */
 #define BTA_AV_SUSPEND_EVT      15      /* suspend response */
 #define BTA_AV_PENDING_EVT      16      /* incoming connection pending:
-                                         * signal channel is open and stream is
-                                         * not open after
-                                         * BTA_AV_SIGNALLING_TIMEOUT_MS */
+                                         * signal channel is open and stream is not open
+                                         * after BTA_AV_SIG_TIME_VAL ms */
 #define BTA_AV_META_MSG_EVT     17      /* metadata messages */
 #define BTA_AV_REJECT_EVT       18      /* incoming connection rejected */
 #define BTA_AV_RC_FEAT_EVT      19      /* remote control channel peer supported features update */
-#define BTA_AV_MEDIA_SINK_CFG_EVT    20 /* command to configure codec */
-#define BTA_AV_MEDIA_DATA_EVT   21      /* sending data to Media Task */
-#define BTA_AV_OFFLOAD_START_RSP_EVT 22 /* a2dp offload start response */
-#define BTA_AV_BROWSE_MSG_EVT   23      /* Browse MSG EVT */
-#define BTA_AV_ROLE_CHANGED_EVT     24
+#define BTA_AV_BROWSE_MSG_EVT   20      /* Browse MSG EVT */
+#define BTA_AV_MEDIA_SINK_CFG_EVT    21      /* command to configure codec */
+#define BTA_AV_MEDIA_DATA_EVT   22      /* sending data to Media Task */
+#define BTA_AV_ROLE_CHANGED_EVT     23
+
 /* Max BTA event */
-#define BTA_AV_MAX_EVT          25
+#define BTA_AV_MAX_EVT          24
 
 typedef UINT8 tBTA_AV_EVT;
 
@@ -488,16 +474,14 @@ typedef union
     tBTA_AV_BROWSE_MSG  browse_msg;
     tBTA_AV_REJECT      reject;
     tBTA_AV_RC_FEAT     rc_feat;
-    tBTA_AV_STATUS      status;
     tBTA_AV_ROLE_CHANGED role_changed;
 } tBTA_AV;
 
 typedef struct
 {
-    UINT8 *codec_info;
-    BD_ADDR bd_addr;;
-} tBTA_AVK_CONFIG;
-
+    UINT8      *codec_info;
+    BD_ADDR         bd_addr;;
+}tBTA_AVK_CONFIG;
 /* union of data associated with AV Media callback */
 typedef union
 {
@@ -608,7 +592,7 @@ void BTA_AvDisable(void);
 **
 *******************************************************************************/
 void BTA_AvRegister(tBTA_AV_CHNL chnl, const char *p_service_name,
-                    UINT8 app_id, tBTA_AV_DATA_CBACK  *p_data_cback, UINT16 service_uuid);
+                            UINT8 app_id, tBTA_AV_DATA_CBACK  *p_data_cback, UINT16 service_uuid);
 
 /*******************************************************************************
 **
@@ -705,17 +689,6 @@ void BTA_AvEnableMultiCast(BOOLEAN state, tBTA_AV_HNDL handle);
 
 /*******************************************************************************
 **
-** Function         BTA_AvUpdateMaxAVClient
-**
-** Description      Update max simultaneous AV connections supported
-**
-** Returns          void
-**
-*******************************************************************************/
-void BTA_AvUpdateMaxAVClient(UINT8 max_clients);
-
-/*******************************************************************************
-**
 ** Function         BTA_AvReconfig
 **
 ** Description      Reconfigure the audio/video stream.
@@ -769,20 +742,6 @@ void BTA_AvProtectRsp(tBTA_AV_HNDL hndl, UINT8 error_code, UINT8 *p_data,
 *******************************************************************************/
 void BTA_AvRemoteCmd(UINT8 rc_handle, UINT8 label, tBTA_AV_RC rc_id,
                              tBTA_AV_STATE key_state);
-
-/*******************************************************************************
-**
-** Function         BTA_AvRemoteVendorUniqueCmd
-**
-** Description      Send a remote control command with Vendor Unique rc_id.
-**                  This function can only be used if AV is enabled with
-**                  feature BTA_AV_FEAT_RCCT.
-**
-** Returns          void
-**
-*******************************************************************************/
-void BTA_AvRemoteVendorUniqueCmd(UINT8 rc_handle, UINT8 label, tBTA_AV_STATE key_state,
-                                         UINT8* p_msg, UINT8 buf_len);
 
 /*******************************************************************************
 **
@@ -867,42 +826,6 @@ void BTA_AvMetaRsp(UINT8 rc_handle, UINT8 label, tBTA_AV_CODE rsp_code,
 **
 *******************************************************************************/
 void BTA_AvMetaCmd(UINT8 rc_handle, UINT8 label, tBTA_AV_CMD cmd_code, BT_HDR *p_pkt);
-
-/*******************************************************************************
-**
-** Function         BTA_AvOffloadStart
-**
-** Description      Request Starting of A2DP Offload.
-**                  This function is used to start A2DP offload if vendor lib has
-**                  the feature enabled.
-**
-** Returns          void
-**
-*******************************************************************************/
-void BTA_AvOffloadStart(tBTA_AV_HNDL hndl);
-
-/*******************************************************************************
-**
-** Function         BTA_AvOffloadStartRsp
-**
-** Description      Response from vendor library indicating response for
-**                  OffloadStart.
-**
-** Returns          void
-**
-*******************************************************************************/
-void BTA_AvOffloadStartRsp(tBTA_AV_HNDL hndl, tBTA_AV_STATUS status);
-
-/*******************************************************************************
-**
-** Function         bta_av_get_codec_type
-**
-** Description      Returns the codec_type from the most recently used scb
-**
-** Returns          A2D_NON_A2DP_MEDIA_CT or BTIF_AV_CODEC_SBC
-**
-*******************************************************************************/
-UINT8 bta_av_get_codec_type();
 
 #ifdef __cplusplus
 }

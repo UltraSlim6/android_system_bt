@@ -23,7 +23,7 @@
  ******************************************************************************/
 #include <stddef.h>
 #include "utl.h"
-#include "bt_common.h"
+#include "gki.h"
 #include "btm_api.h"
 
 /*******************************************************************************
@@ -189,6 +189,28 @@ UINT8 utl_itoa(UINT16 i, char *p_s)
 
 /*******************************************************************************
 **
+** Function         utl_freebuf
+**
+** Description      This function calls GKI_freebuf to free the buffer passed
+**                  in, if buffer pointer is not NULL, and also initializes
+**                  buffer pointer to NULL.
+**
+**
+** Returns          Nothing.
+**
+*******************************************************************************/
+void utl_freebuf(void **p)
+{
+    if (*p != NULL)
+    {
+        GKI_freebuf(*p);
+        *p = NULL;
+    }
+}
+
+
+/*******************************************************************************
+**
 ** Function         utl_set_device_class
 **
 ** Description      This function updates the local Device Class.
@@ -305,7 +327,6 @@ BOOLEAN utl_isdialstr(const char *p_s)
     {
         if(!(((p_s[i] >= '0') && (p_s[i] <= '9'))
             || (p_s[i] == '*') || (p_s[i] == '+') || (p_s[i] == '#') || (p_s[i] == ';')
-            || (p_s[i] == '-')
             || ((p_s[i] >= 'A') && (p_s[i] <= 'C'))
             || ((p_s[i] == 'p') || (p_s[i] == 'P')
             || (p_s[i] == 'w') || (p_s[i] == 'W'))))

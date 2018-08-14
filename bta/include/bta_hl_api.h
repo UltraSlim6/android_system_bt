@@ -89,7 +89,7 @@
 #define BTA_HL_NUM_PROTO_ELEMS          2
 #endif
 
-#define BTA_HL_VERSION                  0x0101
+#define BTA_HL_VERSION_01_00            0x0100
 #define BTA_HL_NUM_ADD_PROTO_LISTS      1
 #define BTA_HL_NUM_ADD_PROTO_ELEMS      2
 #define BTA_HL_MDEP_SEQ_SIZE            20
@@ -102,6 +102,7 @@
 #define BTA_HL_NUM_TIMERS               7
 
 #define BTA_HL_CCH_RSP_TOUT             2000
+#define BTA_HL_LRG_POOL_ID              GKI_POOL_ID_7
 #define BTA_HL_MAX_TIME                 255
 #define BTA_HL_MIN_TIME                 1
 #define BTA_HL_INVALID_APP_HANDLE       0xFF

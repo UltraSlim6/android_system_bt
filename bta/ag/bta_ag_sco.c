@@ -31,19 +31,16 @@
 #endif
 #include "bta_ag_int.h"
 #include "btm_api.h"
-#include "bt_common.h"
+#include "gki.h"
 #include "utl.h"
 
 #ifndef BTA_AG_SCO_DEBUG
 #define BTA_AG_SCO_DEBUG FALSE
 #endif
 
-/* Codec negotiation timeout */
-#ifndef BTA_AG_CODEC_NEGOTIATION_TIMEOUT_MS
-#define BTA_AG_CODEC_NEGOTIATION_TIMEOUT_MS (3 * 1000)          /* 3 seconds */
+#ifndef BTA_AG_CODEC_NEGO_TIMEOUT
+#define BTA_AG_CODEC_NEGO_TIMEOUT   3000
 #endif
-
-extern fixed_queue_t *btu_bta_alarm_queue;
 
 #if BTA_AG_SCO_DEBUG == TRUE
 static char *bta_ag_sco_evt_str(UINT8 event);
@@ -103,7 +100,7 @@ static const tBTM_ESCO_PARAMS bta_ag_esco_params[BTA_AG_NUM_CODECS] =
         BTM_64KBITS_RATE,                   /* RX Bandwidth (64 kbits/sec)              */
         0x000a,                             /* 10 ms (HS/HF can use EV3, 2-EV3, 3-EV3)  */
         BTM_VOICE_SETTING_CVSD,             /* Inp Linear, Air CVSD, 2s Comp, 16bit     */
-       (BTM_SCO_PKT_TYPES_MASK_HV1      +   /* Packet Types                             */
+       (BTM_SCO_PKT_TYPES_MASK_HV1      +  /* Packet Types                             */
         BTM_SCO_PKT_TYPES_MASK_HV2      +
         BTM_SCO_PKT_TYPES_MASK_HV3      +
         BTM_SCO_PKT_TYPES_MASK_EV3      +
@@ -191,6 +188,7 @@ static const tBTM_ESCO_PARAMS bta_ag_esco_params[] =
 static void bta_ag_sco_conn_cback(UINT16 sco_idx)
 {
     UINT16  handle;
+    BT_HDR  *p_buf;
     tBTA_AG_SCB *p_scb;
 
     /* match callback to scb; first check current sco scb */
@@ -208,13 +206,18 @@ static void bta_ag_sco_conn_cback(UINT16 sco_idx)
             handle = 0;
     }
 
-    if (handle != 0) {
-        BT_HDR *p_buf = (BT_HDR *)osi_malloc(sizeof(BT_HDR));
-        p_buf->event = BTA_AG_SCO_OPEN_EVT;
-        p_buf->layer_specific = handle;
-        bta_sys_sendmsg(p_buf);
-    } else {
-        /* no match found; disconnect sco, init sco variables */
+    if (handle != 0)
+    {
+        if ((p_buf = (BT_HDR *) GKI_getbuf(sizeof(BT_HDR))) != NULL)
+        {
+            p_buf->event = BTA_AG_SCO_OPEN_EVT;
+            p_buf->layer_specific = handle;
+            bta_sys_sendmsg(p_buf);
+        }
+    }
+    /* no match found; disconnect sco, init sco variables */
+    else
+    {
         bta_ag_cb.sco.p_curr_scb = NULL;
         bta_ag_cb.sco.state = BTA_AG_SCO_SHUTDOWN_ST;
         BTM_RemoveSco(sco_idx);
@@ -233,6 +236,7 @@ static void bta_ag_sco_conn_cback(UINT16 sco_idx)
 *******************************************************************************/
 static void bta_ag_sco_disc_cback(UINT16 sco_idx)
 {
+    BT_HDR  *p_buf;
     UINT16  handle = 0;
 
     APPL_TRACE_IMP("bta_ag_sco_disc_cback(): sco_idx: 0x%x  p_cur_scb: 0x%08x  sco.state: %d", sco_idx, bta_ag_cb.sco.p_curr_scb, bta_ag_cb.sco.state);
@@ -284,28 +288,27 @@ static void bta_ag_sco_disc_cback(UINT16 sco_idx)
                      bta_ag_cb.sco.p_curr_scb->codec_msbc_settings = BTA_AG_SCO_MSBC_SETTINGS_T1;
                 }
                 else
-                {
-                    APPL_TRACE_DEBUG("Fallback to CVSD settings");
-                    bta_ag_cb.sco.p_curr_scb->codec_fallback = TRUE;
-                }
-#else
-                {
-                    APPL_TRACE_DEBUG("Fallback to CVSD settings");
-                    bta_ag_cb.sco.p_curr_scb->codec_fallback = TRUE;
-                }
 #endif
+                {
+                    APPL_TRACE_DEBUG("Fallback to CVSD settings");
+                    bta_ag_cb.sco.p_curr_scb->codec_fallback = TRUE;
+                }
             }
         }
 
         bta_ag_cb.sco.p_curr_scb->inuse_codec = BTA_AG_CODEC_NONE;
 #endif
 
-        BT_HDR *p_buf = (BT_HDR *)osi_malloc(sizeof(BT_HDR));
-        p_buf->event = BTA_AG_SCO_CLOSE_EVT;
-        p_buf->layer_specific = handle;
-        bta_sys_sendmsg(p_buf);
-    } else {
-        /* no match found */
+        if ((p_buf = (BT_HDR *) GKI_getbuf(sizeof(BT_HDR))) != NULL)
+        {
+            p_buf->event = BTA_AG_SCO_CLOSE_EVT;
+            p_buf->layer_specific = handle;
+            bta_sys_sendmsg(p_buf);
+        }
+    }
+    /* no match found */
+    else
+    {
         APPL_TRACE_DEBUG("no scb for ag_sco_disc_cback");
 
         /* sco could be closed after scb dealloc'ed */
@@ -687,7 +690,7 @@ BOOLEAN bta_ag_attempt_msbc_safe_settings(tBTA_AG_SCB *p_scb)
 
 /*******************************************************************************
 **
-** Function         bta_ag_codec_negotiation_timer_cback
+** Function         bta_ag_cn_timer_cback
 **
 ** Description
 **
@@ -695,15 +698,23 @@ BOOLEAN bta_ag_attempt_msbc_safe_settings(tBTA_AG_SCB *p_scb)
 ** Returns          void
 **
 *******************************************************************************/
-static void bta_ag_codec_negotiation_timer_cback(void *data)
+static void bta_ag_cn_timer_cback (TIMER_LIST_ENT *p_tle)
 {
-    tBTA_AG_SCB *p_scb = (tBTA_AG_SCB *)data;
+    tBTA_AG_SCB *p_scb;
 
-    /* Announce that codec negotiation failed. */
-    bta_ag_sco_codec_nego(p_scb, FALSE);
+    if (p_tle)
+    {
+        p_scb = (tBTA_AG_SCB *)p_tle->param;
 
-    /* call app callback */
-    bta_ag_cback_sco(p_scb, BTA_AG_AUDIO_CLOSE_EVT);
+        if (p_scb)
+        {
+            /* Announce that codec negotiation failed. */
+            bta_ag_sco_codec_nego(p_scb, FALSE);
+
+            /* call app callback */
+            bta_ag_cback_sco(p_scb, BTA_AG_AUDIO_CLOSE_EVT);
+        }
+    }
 }
 
 /*******************************************************************************
@@ -731,11 +742,9 @@ void bta_ag_codec_negotiate(tBTA_AG_SCB *p_scb)
         bta_ag_send_bcs(p_scb, NULL);
 
         /* Start timer to handle timeout */
-        alarm_set_on_queue(p_scb->codec_negotiation_timer,
-                           BTA_AG_CODEC_NEGOTIATION_TIMEOUT_MS,
-                           bta_ag_codec_negotiation_timer_cback,
-                           p_scb,
-                           btu_bta_alarm_queue);
+        p_scb->cn_timer.p_cback = (TIMER_CBACK*)&bta_ag_cn_timer_cback;
+        p_scb->cn_timer.param = (INT32)p_scb;
+        bta_sys_start_timer(&p_scb->cn_timer, 0, BTA_AG_CODEC_NEGO_TIMEOUT);
     }
     else
     {
@@ -788,7 +797,7 @@ static void bta_ag_sco_event(tBTA_AG_SCB *p_scb, UINT8 event)
                 if (p_sco->state == BTA_AG_SCO_OPEN_ST)
                     BTM_WriteScoData(p_sco->p_curr_scb->sco_idx, p_buf);
                 else
-                    osi_free(p_buf);
+                    GKI_freebuf(p_buf);
             }
             else
                 break;

@@ -40,12 +40,12 @@ static bool interop_match_dynamic_(const interop_feature_t feature, const bt_bda
 
 // Interface functions
 
-bool interop_match_addr(const interop_feature_t feature, const bt_bdaddr_t *addr) {
+bool interop_match(const interop_feature_t feature, const bt_bdaddr_t *addr) {
   assert(addr);
 
   if (interop_match_fixed_(feature, addr) || interop_match_dynamic_(feature, addr)) {
     char bdstr[20] = {0};
-    LOG_WARN(LOG_TAG, "%s() Device %s is a match for interop workaround %s.",
+    LOG_WARN("%s() Device %s is a match for interop workaround %s.",
           __func__, bdaddr_to_string(addr, bdstr, sizeof(bdstr)),
                         interop_feature_string_(feature));
     return true;
@@ -54,61 +54,12 @@ bool interop_match_addr(const interop_feature_t feature, const bt_bdaddr_t *addr
   return false;
 }
 
-bool interop_match_name(const interop_feature_t feature, const char *name) {
-  assert(name);
-
-  const size_t db_size = sizeof(interop_name_database) / sizeof(interop_name_entry_t);
-  for (size_t i = 0; i != db_size; ++i) {
-    if (feature == interop_name_database[i].feature &&
-        strlen(name) >= interop_name_database[i].length &&
-        strncmp(name, interop_name_database[i].name, interop_name_database[i].length) == 0) {
-      LOG_WARN(LOG_TAG, "%s() Device with name: %s is a match for interop workaround %s", __func__,
-          name, interop_feature_string_(feature));
-      return true;
-    }
-  }
-
-  return false;
-}
-
-bool interop_match_manufacturer(const interop_feature_t feature, uint16_t manufacturer) {
-  const size_t db_size = sizeof(interop_manufacturer_database) / sizeof(interop_manufacturer_t);
-
-  for (size_t i = 0; i != db_size; ++i) {
-    if (feature == interop_manufacturer_database[i].feature &&
-        manufacturer == interop_manufacturer_database[i].manufacturer) {
-      LOG_WARN(LOG_TAG, "%s() Device with manufacturer id: %d is a match for interop "
-        "workaround %s", __func__, manufacturer, interop_feature_string_(feature));
-      return true;
-    }
-  }
-
-  return false;
-}
-
-bool interop_match_vendor_product_ids(const interop_feature_t feature,
-        uint16_t vendor_id, uint16_t product_id) {
-  const size_t db_size = sizeof(interop_hid_multitouch_database) / sizeof(interop_hid_multitouch_t);
-
-  for (size_t i = 0; i != db_size; ++i) {
-    if (vendor_id == interop_hid_multitouch_database[i].vendor_id &&
-        product_id == interop_hid_multitouch_database[i].product_id) {
-      LOG_WARN(LOG_TAG, "%s() Device with vendor_id: %d product_id: %d is a match for "
-          "interop workaround %s", __func__, vendor_id, product_id,
-          interop_feature_string_(feature));
-      return true;
-    }
-  }
-
-  return false;
-}
-
-void interop_database_add(const uint16_t feature, const bt_bdaddr_t *addr, size_t length) {
+void interop_database_add(const interop_feature_t feature, const bt_bdaddr_t *addr, size_t length) {
   assert(addr);
   assert(length > 0);
   assert(length < sizeof(bt_bdaddr_t));
 
-  interop_addr_entry_t *entry = osi_calloc(sizeof(interop_addr_entry_t));
+  interop_addr_t *entry = osi_calloc(sizeof(interop_addr_t));
   memcpy(&entry->addr, addr, length);
   entry->feature = feature;
   entry->length = length;
@@ -130,7 +81,7 @@ static future_t *interop_clean_up(void) {
   return future_new_immediate(FUTURE_SUCCESS);
 }
 
-EXPORT_SYMBOL module_t interop_module = {
+const module_t interop_module = {
   .name = INTEROP_MODULE,
   .init = NULL,
   .start_up = NULL,
@@ -145,24 +96,37 @@ static const char* interop_feature_string_(const interop_feature_t feature) {
   switch (feature) {
     CASE_RETURN_STR(INTEROP_DISABLE_LE_SECURE_CONNECTIONS)
     CASE_RETURN_STR(INTEROP_AUTO_RETRY_PAIRING)
-    CASE_RETURN_STR(INTEROP_DISABLE_ABSOLUTE_VOLUME)
-    CASE_RETURN_STR(INTEROP_DISABLE_AUTO_PAIRING)
-    CASE_RETURN_STR(INTEROP_KEYBOARD_REQUIRES_FIXED_PIN)
-    CASE_RETURN_STR(INTEROP_2MBPS_LINK_ONLY)
     CASE_RETURN_STR(INTEROP_DISABLE_SDP_AFTER_PAIRING)
     CASE_RETURN_STR(INTEROP_DISABLE_AUTH_FOR_HID_POINTING)
-    CASE_RETURN_STR(INTEROP_REMOVE_HID_DIG_DESCRIPTOR)
     CASE_RETURN_STR(INTEROP_DISABLE_SNIFF_DURING_SCO)
     CASE_RETURN_STR(INTEROP_INCREASE_AG_CONN_TIMEOUT)
-    CASE_RETURN_STR(INTEROP_ADV_AVRCP_VER_1_3)
+    CASE_RETURN_STR(INTEROP_DISABLE_ABSOLUTE_VOLUME)
   }
 
   return "UNKNOWN";
 }
 
 static void interop_free_entry_(void *data) {
-  interop_addr_entry_t *entry = (interop_addr_entry_t *)data;
+  interop_addr_t *entry = (interop_addr_t *)data;
   osi_free(entry);
+}
+
+bool interop_addr_match(const interop_feature_t feature, const bt_bdaddr_t *addr) {
+  assert(addr);
+
+  const size_t db_size = sizeof(interop_addr_database) / sizeof(interop_addr_t);
+
+  for (size_t i = 0; i != db_size; ++i) {
+    if (feature == interop_addr_database[i].feature &&
+        memcmp(addr, &interop_addr_database[i].addr, interop_addr_database[i].length) == 0) {
+      char bdstr[20] = {0};
+      LOG_WARN("%s() Device %s is a match for interop addr workaround %s", __func__,
+          bdaddr_to_string(addr, bdstr, sizeof(bdstr)), interop_feature_string_(feature));
+      return true;
+    }
+  }
+
+  return false;
 }
 
 static void interop_lazy_init_(void) {
@@ -177,7 +141,7 @@ static bool interop_match_dynamic_(const interop_feature_t feature, const bt_bda
 
   const list_node_t *node = list_begin(interop_list);
   while (node != list_end(interop_list)) {
-    interop_addr_entry_t *entry = list_node(node);
+    interop_addr_t *entry = list_node(node);
     assert(entry);
 
     if (feature == entry->feature && memcmp(addr, &entry->addr, entry->length) == 0)
@@ -191,13 +155,53 @@ static bool interop_match_dynamic_(const interop_feature_t feature, const bt_bda
 static bool interop_match_fixed_(const interop_feature_t feature, const bt_bdaddr_t *addr) {
   assert(addr);
 
-  const size_t db_size = sizeof(interop_addr_database) / sizeof(interop_addr_entry_t);
+  const size_t db_size = sizeof(interop_addr_database) / sizeof(interop_addr_t);
   for (size_t i = 0; i != db_size; ++i) {
     if (feature == interop_addr_database[i].feature &&
         memcmp(addr, &interop_addr_database[i].addr, interop_addr_database[i].length) == 0) {
+      char bdstr[20] = {0};
+      LOG_WARN("%s() Device %s is a match for interop workaround %s", __func__,
+          bdaddr_to_string(addr, bdstr, sizeof(bdstr)), interop_feature_string_(feature));
       return true;
     }
   }
 
   return false;
 }
+
+bool interop_name_match(const interop_feature_t feature, const char *name) {
+  assert(name);
+
+  const size_t db_size = sizeof(interop_name_database) / sizeof(interop_name_t);
+
+  for (size_t i = 0; i != db_size; ++i) {
+    if (feature == interop_name_database[i].feature &&
+        strncmp(name, interop_name_database[i].name, strlen(name)) == 0) {
+      char bdstr[20] = {0};
+      LOG_WARN("%s() Device with name: %s is a match for interop name workaround %s", __func__,
+          name, interop_feature_string_(feature));
+      return true;
+    }
+  }
+
+  return false;
+}
+
+bool interop_manufacturer_match(const interop_feature_t feature, uint16_t manufacturer) {
+  assert(manufacturer);
+
+  const size_t db_size = sizeof(interop_manufctr_database) / sizeof(interop_manufacturer_t);
+
+  for (size_t i = 0; i != db_size; ++i) {
+    if (feature == interop_manufctr_database[i].feature &&
+        manufacturer == interop_manufctr_database[i].manufacturer) {
+      char bdstr[20] = {0};
+    LOG_WARN("%s() Device with manufacturer id: %d is a match for interop manufacturer "
+        "workaround %s", __func__, manufacturer, interop_feature_string_(feature));
+      return true;
+    }
+  }
+
+  return false;
+}
+

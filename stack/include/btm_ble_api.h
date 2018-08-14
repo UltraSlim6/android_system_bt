@@ -26,8 +26,7 @@
 #define BTM_BLE_API_H
 
 #include "btm_api.h"
-#include "bt_common.h"
-#include "osi/include/alarm.h"
+#include "gki.h"
 #include <hardware/bt_common_types.h>
 
 #define CHNL_MAP_LEN    5
@@ -180,11 +179,6 @@ typedef UINT8   tBTM_BLE_SFP;
 /* default supervision timeout */
 #ifndef BTM_BLE_CONN_TIMEOUT_DEF
 #define BTM_BLE_CONN_TIMEOUT_DEF    2000
-#endif
-
-/* minimum supervision timeout */
-#ifndef BTM_BLE_CONN_TIMEOUT_MIN_DEF
-#define BTM_BLE_CONN_TIMEOUT_MIN_DEF    100
 #endif
 
 /* minimum acceptable connection interval */
@@ -393,77 +387,85 @@ typedef struct
 }tBTM_BLE_INT_RANGE;
 
 /* Service tag supported in the device */
-#define MAX_16BIT_SERVICES 16
 typedef struct
 {
     UINT8       num_service;
     BOOLEAN     list_cmpl;
-    UINT16      uuid[MAX_16BIT_SERVICES];
+    UINT16      *p_uuid;
 }tBTM_BLE_SERVICE;
 
 /* 32 bits Service supported in the device */
-#define MAX_32BIT_SERVICES 4
 typedef struct
 {
     UINT8       num_service;
     BOOLEAN     list_cmpl;
-    UINT32      uuid[MAX_32BIT_SERVICES];
+    UINT32      *p_uuid;
 }tBTM_BLE_32SERVICE;
 
 /* 128 bits Service supported in the device */
 typedef struct
 {
-    UINT8       num_service;
     BOOLEAN     list_cmpl;
     UINT8       uuid128[MAX_UUID_SIZE];
 }tBTM_BLE_128SERVICE;
 
-#define MAX_SIZE_MANUFACTURER_DATA 32
 typedef struct
 {
-    UINT8 len;
-    UINT8 val[MAX_SIZE_MANUFACTURER_DATA];
+    UINT8       len;
+    UINT8      *p_val;
 }tBTM_BLE_MANU;
 
-#define MAX_SIZE_SERVICE_DATA 32
+
 typedef struct
 {
     tBT_UUID    service_uuid;
     UINT8       len;
-    UINT8       val[MAX_SIZE_SERVICE_DATA];
+    UINT8      *p_val;
 }tBTM_BLE_SERVICE_DATA;
 
-#define MAX_SIZE_PROPRIETARY_ELEMENT 32
 typedef struct
 {
     UINT8       adv_type;
     UINT8       len;
-    UINT8       val[MAX_SIZE_PROPRIETARY_ELEMENT];     /* number of len byte */
+    UINT8       *p_val;     /* number of len byte */
 }tBTM_BLE_PROP_ELEM;
 
-#define MAX_PROPRIETARY_ELEMENTS 4
 typedef struct
 {
     UINT8                   num_elem;
-    tBTM_BLE_PROP_ELEM      elem[MAX_PROPRIETARY_ELEMENTS];
+    tBTM_BLE_PROP_ELEM      *p_elem;
 }tBTM_BLE_PROPRIETARY;
 
 typedef struct
 {
     tBTM_BLE_INT_RANGE      int_range;      /* slave prefered conn interval range */
-    tBTM_BLE_MANU           manu;           /* manufactuer data */
-    tBTM_BLE_SERVICE        services;       /* services */
-    tBTM_BLE_128SERVICE     services_128b;  /* 128 bits service */
-    tBTM_BLE_32SERVICE      service_32b;     /* 32 bits Service UUID */
-    tBTM_BLE_SERVICE        sol_services;    /* 16 bits services Solicitation UUIDs */
-    tBTM_BLE_32SERVICE      sol_service_32b;    /* List of 32 bit Service Solicitation UUIDs */
-    tBTM_BLE_128SERVICE     sol_service_128b;    /* List of 128 bit Service Solicitation UUIDs */
-    tBTM_BLE_PROPRIETARY    proprietary;
-    tBTM_BLE_SERVICE_DATA   service_data;    /* service data */
+    tBTM_BLE_MANU           *p_manu;           /* manufactuer data */
+    tBTM_BLE_SERVICE        *p_services;       /* services */
+    tBTM_BLE_128SERVICE     *p_services_128b;  /* 128 bits service */
+    tBTM_BLE_32SERVICE      *p_service_32b;     /* 32 bits Service UUID */
+    tBTM_BLE_SERVICE        *p_sol_services;    /* 16 bits services Solicitation UUIDs */
+    tBTM_BLE_32SERVICE      *p_sol_service_32b;    /* List of 32 bit Service Solicitation UUIDs */
+    tBTM_BLE_128SERVICE     *p_sol_service_128b;    /* List of 128 bit Service Solicitation UUIDs */
+    tBTM_BLE_PROPRIETARY    *p_proprietary;
+    tBTM_BLE_SERVICE_DATA   *p_service_data;    /* service data */
     UINT16                  appearance;
     UINT8                   flag;
     UINT8                   tx_power;
 }tBTM_BLE_ADV_DATA;
+#if (defined(LE_L2CAP_CFC_INCLUDED) && (LE_L2CAP_CFC_INCLUDED == TRUE))
+enum
+{
+    BTM_BLE_SUCCESS               = 0,
+    BTM_BLE_NO_PSM                = 2,
+    BTM_BLE_NO_RESOURCES          = 4,
+    BTM_BLE_INSUFF_AUTHENTICATION = 5,
+    BTM_BLE_INSUFF_AUTHORIZATION  = 6,
+    BTM_BLE_INSUFF_ENCR_KEY_SIZE  = 7,
+    BTM_BLE_INSUFF_ENCRYPTION     = 8
+};
+
+typedef UINT8 tBTM_BLE_STATUS;
+#endif /* LE_L2CAP_CFC_INCLUDED */
 
 #ifndef BTM_BLE_MULTI_ADV_MAX
 #define BTM_BLE_MULTI_ADV_MAX   16 /* controller returned adv_inst_max should be less
@@ -507,7 +509,7 @@ typedef struct
     BOOLEAN                     in_use;
     UINT8                       adv_evt;
     BD_ADDR                     rpa;
-    alarm_t                     *adv_raddr_timer;
+    TIMER_LIST_ENT              raddr_timer_ent;
     tBTM_BLE_MULTI_ADV_CBACK    *p_cback;
     void                        *p_ref;
     UINT8                       index;
@@ -912,7 +914,7 @@ extern "C" {
 ** Returns          TRUE if added OK, else FALSE
 **
 *******************************************************************************/
-extern BOOLEAN BTM_SecAddBleDevice (const BD_ADDR bd_addr, BD_NAME bd_name,
+extern BOOLEAN BTM_SecAddBleDevice (BD_ADDR bd_addr, BD_NAME bd_name,
                                            tBT_DEVICE_TYPE dev_type, tBLE_ADDR_TYPE addr_type);
 
 /*******************************************************************************
@@ -1235,22 +1237,6 @@ extern void BTM_BleConfirmReply (BD_ADDR bd_addr, UINT8 res);
 **
 *******************************************************************************/
 extern void BTM_BleOobDataReply(BD_ADDR bd_addr, UINT8 res, UINT8 len, UINT8 *p_data);
-
-/*******************************************************************************
-**
-** Function         BTM_BleSecureConnectionOobDataReply
-**
-** Description      This function is called to provide the OOB data for
-**                  SMP in response to BTM_LE_OOB_REQ_EVT when secure connection
-**                  data is available
-**
-** Parameters:      bd_addr     - Address of the peer device
-**                  p_c         - pointer to Confirmation
-**                  p_r         - pointer to Randomizer.
-**
-*******************************************************************************/
-extern void BTM_BleSecureConnectionOobDataReply(BD_ADDR bd_addr,
-                                                uint8_t *p_c, uint8_t *p_r);
 
 
 /*******************************************************************************

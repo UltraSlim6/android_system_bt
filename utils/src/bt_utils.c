@@ -27,25 +27,23 @@
 
 #define LOG_TAG "bt_utils"
 
-#include "bt_utils.h"
-
+#include <cutils/properties.h>
+#include <cutils/sched_policy.h>
 #include <errno.h>
 #include <pthread.h>
+#include <sys/resource.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/resource.h>
 #include <unistd.h>
-
 #include <utils/ThreadDefs.h>
-#include <cutils/sched_policy.h>
 
 #include "bt_types.h"
+#include "bt_utils.h"
 #include "btcore/include/module.h"
 #include "osi/include/compat.h"
-#include "osi/include/allocator.h"
 #include "osi/include/log.h"
-#include "osi/include/properties.h"
-#include "osi/include/list.h"
+#include "gki.h"
+#include "list.h"
 #include <string.h>
 
 /*******************************************************************************
@@ -71,19 +69,6 @@ typedef struct {
     bool device_found;
 } iot_input_param;
 
-typedef struct {
-    bt_soc_type soc_type;
-    char* soc_name;
-} soc_type_node;
-
-static soc_type_node soc_type_entries[] = {
-                           { BT_SOC_SMD , "smd" },
-                           { BT_SOC_AR3K , "ath3k" },
-                           { BT_SOC_ROME , "rome" },
-                           { BT_SOC_CHEROKEE , "cherokee" },
-                           { BT_SOC_RESERVED , "" }
-                                       };
-
 static list_t *iot_header_queue = NULL;
 #define MAX_LINE 2048
 #define MAX_ADDR_STR_LEN 9
@@ -96,10 +81,7 @@ static BOOLEAN g_DoSchedulingGroup[TASK_HIGH_MAX];
 static pthread_mutex_t         gIdxLock;
 static int g_TaskIdx;
 static int g_TaskIDs[TASK_HIGH_MAX];
-static bt_soc_type soc_type;
 #define INVALID_TASK_ID  (-1)
-
-static void init_soc_type();
 
 static future_t *init(void) {
   int i;
@@ -114,7 +96,6 @@ static future_t *init(void) {
   pthread_mutexattr_init(&lock_attr);
   pthread_mutex_init(&gIdxLock, &lock_attr);
   pthread_mutex_init(&iot_mutex_lock, NULL);
-  init_soc_type();
   return NULL;
 }
 
@@ -124,7 +105,7 @@ static future_t *clean_up(void) {
   return NULL;
 }
 
-EXPORT_SYMBOL const module_t bt_utils_module = {
+const module_t bt_utils_module = {
   .name = BT_UTILS_MODULE,
   .init = init,
   .start_up = NULL,
@@ -134,6 +115,7 @@ EXPORT_SYMBOL const module_t bt_utils_module = {
     NULL
   }
 };
+
 
 /*****************************************************************************
 **
@@ -146,7 +128,7 @@ EXPORT_SYMBOL const module_t bt_utils_module = {
 *******************************************************************************/
 static void check_do_scheduling_group(void) {
     char buf[PROPERTY_VALUE_MAX];
-    int len = osi_property_get("debug.sys.noschedgroups", buf, "");
+    int len = property_get("debug.sys.noschedgroups", buf, "");
     if (len > 0) {
         int temp;
         if (sscanf(buf, "%d", &temp) == 1) {
@@ -172,23 +154,16 @@ void raise_priority_a2dp(tHIGH_PRIORITY_TASK high_task) {
     pthread_mutex_lock(&gIdxLock);
     g_TaskIdx = high_task;
 
-    // TODO(armansito): Remove this conditional check once we find a solution
-    // for system/core on non-Android platforms.
-#if defined(OS_GENERIC)
-    rc = -1;
-#else  // !defined(OS_GENERIC)
     pthread_once(&g_DoSchedulingGroupOnce[g_TaskIdx], check_do_scheduling_group);
     if (g_TaskIdx < TASK_HIGH_MAX && g_DoSchedulingGroup[g_TaskIdx]) {
         // set_sched_policy does not support tid == 0
         rc = set_sched_policy(tid, SP_AUDIO_SYS);
     }
-#endif  // defined(OS_GENERIC)
-
     g_TaskIDs[high_task] = tid;
     pthread_mutex_unlock(&gIdxLock);
 
     if (rc) {
-        LOG_WARN(LOG_TAG, "failed to change sched policy, tid %d, err: %d", tid, errno);
+        LOG_WARN("failed to change sched policy, tid %d, err: %d", tid, errno);
     }
 
     // always use urgent priority for HCI worker thread until we can adjust
@@ -198,7 +173,7 @@ void raise_priority_a2dp(tHIGH_PRIORITY_TASK high_task) {
     priority = ANDROID_PRIORITY_URGENT_AUDIO;
 
     if (setpriority(PRIO_PROCESS, tid, priority) < 0) {
-        LOG_WARN(LOG_TAG, "failed to change priority tid: %d to %d", tid, priority);
+        LOG_WARN("failed to change priority tid: %d to %d", tid, priority);
     }
 }
 
@@ -225,7 +200,7 @@ void adjust_priority_a2dp(int start) {
         {
             if (setpriority(PRIO_PROCESS, tid, priority) < 0)
             {
-                LOG_WARN(LOG_TAG, "failed to change priority tid: %d to %d", tid, priority);
+                LOG_WARN("failed to change priority tid: %d to %d", tid, priority);
             }
         }
     }
@@ -320,6 +295,7 @@ static bool check_header_cb(void* node, void* cb_data)
 *******************************************************************************/
 bool is_device_present(char* header, unsigned char* device_details)
 {
+    int device_present = false;
     iot_input_param input_param;
     input_param.dev_details = device_details;
     input_param.header = header;
@@ -436,12 +412,12 @@ static bool is_device_node_exist(iot_header_node_t *header_entry, char* device_d
 static void populate_list(char *header_end, iot_header_node_t *node)
 {
     if(node->devlist == NULL)
-        node->devlist = list_new(osi_free);
+        node->devlist = list_new(GKI_freebuf);
     while(header_end && (*header_end != '\n')&&(*header_end != '\0')) // till end of line reached
     {
         // read from line buffer and copy to list
         if (node->method_type == METHOD_BD) {
-            iot_devlist_bd_node_t *bd = (iot_devlist_bd_node_t *)osi_malloc(sizeof(iot_devlist_bd_node_t));
+            iot_devlist_bd_node_t *bd = GKI_getbuf(sizeof(iot_devlist_bd_node_t));
             if(bd == NULL) {
                 ALOGE(" Unable to allocate memory for addr entry");
                 return;
@@ -449,14 +425,14 @@ static void populate_list(char *header_end, iot_header_node_t *node)
             header_end++;
             parse_bd(&header_end, bd);
             if(is_device_node_exist(node, (char *) bd, node->method_type)) {
-                osi_free(bd);
+                GKI_freebuf(bd);
             }
             else {
                 list_append(node->devlist, bd);
             }
         }
         else if (node->method_type == METHOD_NAME) {
-            iot_devlist_name_node_t *name = (iot_devlist_name_node_t *)osi_malloc(sizeof(iot_devlist_name_node_t));
+            iot_devlist_name_node_t *name = GKI_getbuf(sizeof(iot_devlist_name_node_t));
             if(name == NULL) {
                 ALOGE(" Unable to allocate memory for name entry");
                 return;
@@ -464,7 +440,7 @@ static void populate_list(char *header_end, iot_header_node_t *node)
             header_end++;
             parse_name(&header_end, name);
             if(is_device_node_exist(node, (char *)name, node->method_type)) {
-                osi_free(name);
+                GKI_freebuf(name);
             }
             else {
                 list_append(node->devlist, name);
@@ -489,7 +465,7 @@ static iot_header_node_t *create_header_node(char* name, unsigned int len,
     if(len >= MAX_NAME_LEN) {
         return NULL;
     }
-    node =(iot_header_node_t *) osi_malloc(sizeof(iot_header_node_t));
+    node = GKI_getbuf(sizeof(iot_header_node_t));
     if (node == NULL) {
        ALOGE(" Not enough memory to create the header node");
        return NULL;
@@ -544,7 +520,7 @@ static void populate_header(char* line_start, char *header_end)
         method_type = METHOD_NAME;
 
     if (!iot_header_queue) {
-        iot_header_queue = list_new(osi_free);
+        iot_header_queue = list_new(GKI_freebuf);
         if (iot_header_queue == NULL) {
             ALOGE(" Not enough memory  to create the queue");
             return;
@@ -570,7 +546,7 @@ static void populate_header(char* line_start, char *header_end)
 ** Returns         boolean
 **
 *******************************************************************************/
-static bool free_header_list(void* node, void *context)
+static bool free_header_list(void* node)
 {
     iot_header_node_t *header_node = (iot_header_node_t*)node;
     list_free(header_node->devlist);
@@ -594,7 +570,7 @@ void unload_iot_devlist()
         pthread_mutex_unlock(&iot_mutex_lock);
         return;
     }
-    list_foreach(iot_header_queue, free_header_list, NULL);
+    list_foreach(iot_header_queue, free_header_list);
     list_free(iot_header_queue);
     iot_header_queue = NULL;
     pthread_mutex_unlock(&iot_mutex_lock);
@@ -998,10 +974,11 @@ bool remove_iot_device(const char *filename, char* header,
 {
     char line_start[MAX_LINE];
     FILE *iot_devlist_fp, *iot_devlist_new_fp;
+    char *header_end = NULL;
     char bd_addr[MAX_ADDR_STR_LEN];
     char header_name[MAX_NAME_LEN] = { 0 };
     char *dev = NULL;
-    int len = 0;
+    int index = 0, i, len = 0;
 
     if((header == NULL) || (device_details == NULL)) {
         ALOGE("Invalid input data to add the device");
@@ -1079,51 +1056,4 @@ bool remove_iot_device(const char *filename, char* header,
     rename(IOT_DEV_CONF_BKP_FILE, filename);
     pthread_mutex_unlock(&iot_mutex_lock);
     return true;
-}
-
-/*****************************************************************************
-**
-** Function        init_soc_type
-**
-** Description     Get Bluetooth SoC type from system setting and stores it
-**                 in soc_type.
-**
-** Returns         void.
-**
-*******************************************************************************/
-static void init_soc_type()
-{
-    int ret = 0;
-    char bt_soc_type[PROPERTY_VALUE_MAX];
-
-    ALOGI("init_soc_type");
-
-    soc_type = BT_SOC_DEFAULT;
-    ret = property_get("qcom.bluetooth.soc", bt_soc_type, NULL);
-    if (ret != 0) {
-        unsigned int i;
-        ALOGI("qcom.bluetooth.soc set to %s\n", bt_soc_type);
-        for ( i = 0 ; i < sizeof(soc_type_entries)/sizeof(soc_type_entries[0]) ; i++ )
-        {
-            char* soc_name = soc_type_entries[i].soc_name;
-            if (!strcmp(bt_soc_type, soc_name)) {
-                soc_type = soc_type_entries[i].soc_type;
-                break;
-            }
-        }
-    }
-}
-
-/*****************************************************************************
-**
-** Function        get_soc_type
-**
-** Description     This function is used to get the Bluetooth SoC type.
-**
-** Returns         bt_soc_type.
-**
-*******************************************************************************/
-bt_soc_type get_soc_type()
-{
-    return soc_type;
 }

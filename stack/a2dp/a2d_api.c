@@ -23,12 +23,12 @@
  ******************************************************************************/
 #include <string.h>
 #include "bt_target.h"
-#include "bt_common.h"
+#include "gki.h"
+#include "utl.h"
 #include "sdpdefs.h"
 #include "a2d_api.h"
 #include "a2d_int.h"
 #include "avdt_api.h"
-#include "osi/include/allocator.h"
 
 /*****************************************************************************
 **  Global data
@@ -123,7 +123,7 @@ static void a2d_sdp_cback(UINT16 status)
     }
 
     a2d_cb.find.service_uuid = 0;
-    osi_free_and_reset((void**)&a2d_cb.find.p_db);
+    utl_freebuf((void**)&a2d_cb.find.p_db);
     /* return info from sdp record in app callback function */
     if (a2d_cb.find.p_cback != NULL)
     {
@@ -283,6 +283,10 @@ tA2D_STATUS A2D_FindService(UINT16 service_uuid, BD_ADDR bd_addr,
     tSDP_UUID   uuid_list;
     BOOLEAN     result = TRUE;
 
+    /* Fix for below klockwork issue.
+     * Address of a local variable is returned through formal argument 'p_db->p_attrs'
+     * removed local declaration and declared it globally renamed from a2d_attr_list to a2d_attribute_list
+     * as there is name conflict in another file avrc_sdp.c */
     A2D_TRACE_API("A2D_FindService uuid: %x", service_uuid);
     if( (service_uuid != UUID_SERVCLASS_AUDIO_SOURCE && service_uuid != UUID_SERVCLASS_AUDIO_SINK) ||
         p_db == NULL || p_cback == NULL)
@@ -303,9 +307,9 @@ tA2D_STATUS A2D_FindService(UINT16 service_uuid, BD_ADDR bd_addr,
     }
 
     if(a2d_cb.find.p_db == NULL)
-        a2d_cb.find.p_db = (tSDP_DISCOVERY_DB*)osi_malloc(p_db->db_len);
-
-    result = SDP_InitDiscoveryDb(a2d_cb.find.p_db, p_db->db_len, 1, &uuid_list, p_db->num_attr,
+        a2d_cb.find.p_db = (tSDP_DISCOVERY_DB*)GKI_getbuf(p_db->db_len);
+    if(a2d_cb.find.p_db != NULL)
+        result = SDP_InitDiscoveryDb(a2d_cb.find.p_db, p_db->db_len, 1, &uuid_list, p_db->num_attr,
                                  p_db->p_attrs);
 
     if (result == TRUE)

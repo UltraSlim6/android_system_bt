@@ -26,21 +26,21 @@
  *
  ***********************************************************************************/
 
-#define LOG_TAG "bt_btif_hfc"
-
-#include <stdlib.h>
-#include <string.h>
-
 #include <hardware/bluetooth.h>
 #include <hardware/bt_hf_client.h>
+#include <stdlib.h>
+#include <string.h>
+#include <cutils/properties.h>
 
-#include "bt_utils.h"
-#include "bta_hf_client_api.h"
-#include "btcore/include/bdaddr.h"
+#define LOG_TAG "bt_btif_hfc"
 #include "btif_common.h"
-#include "btif_profile_queue.h"
 #include "btif_util.h"
-#include "osi/include/properties.h"
+#include "btif_profile_queue.h"
+#include "bt_utils.h"
+#include "btcore/include/bdaddr.h"
+#include "bta_hf_client_api.h"
+#include "gki.h"
+#include "btu.h"
 
 /************************************************************************************
 **  Constants & Macros
@@ -65,6 +65,9 @@
                                     BTA_HF_CLIENT_FEAT_CODEC)
 #endif
 
+#define BTIF_TIMEOUT_SCO_OPEN_ON_SECS 2
+#define BTIF_TIMEOUT_SCO_CLOSE_ON_SECS 2
+
 /************************************************************************************
 **  Local type definitions
 ************************************************************************************/
@@ -73,9 +76,11 @@
 **  Static variables
 ************************************************************************************/
 static bthf_client_callbacks_t *bt_hf_client_callbacks = NULL;
+char   btif_hf_client_version[PROPERTY_VALUE_MAX];
 static UINT32 btif_hf_client_features = 0;
-
-char btif_hf_client_version[PROPERTY_VALUE_MAX];
+static TIMER_LIST_ENT tle_hfp_client_open_SCO;
+static TIMER_LIST_ENT tle_hfp_client_close_SCO;
+bool in_mo_call_setup = false;
 
 #define CHECK_BTHF_CLIENT_INIT() if (bt_hf_client_callbacks == NULL)\
     {\
@@ -116,6 +121,7 @@ typedef struct
 } btif_hf_client_cb_t;
 
 static btif_hf_client_cb_t btif_hf_client_cb;
+
 
 /************************************************************************************
 **  Static functions
@@ -170,6 +176,60 @@ static BOOLEAN is_connected(bt_bdaddr_t *bd_addr)
         ((bd_addr == NULL) || (bdcmp(bd_addr->address, btif_hf_client_cb.connected_bda.address) == 0)))
         return TRUE;
     return FALSE;
+}
+
+/*******************************************************************************
+**
+** Function         btif_initiate_open_SCO_tmr_hdlr
+**
+** Description      Timer to trigger SCO connection request if SCO is not initiated
+**                  by AG after call is active.
+**
+** Returns          void
+**
+*******************************************************************************/
+static void btif_initiate_open_SCO_tmr_hdlr(TIMER_LIST_ENT *tle)
+{
+    BTIF_TRACE_EVENT("%s", __FUNCTION__);
+    if (!BTM_GetNumScoLinks())
+    {
+        if (btif_hf_client_cb.peer_feat & BTA_HF_CLIENT_PEER_CODEC)
+        {
+            BTIF_TRACE_DEBUG("codec negotiation supported, sending AT+BCC");
+            BTA_HfClientSendAT(btif_hf_client_cb.handle, BTA_HF_CLIENT_AT_CMD_BCC, 0, 0, NULL);
+        }
+        else
+        {
+            BTA_HfClientAudioOpen(btif_hf_client_cb.handle);
+        }
+    }
+    else
+    {
+        BTIF_TRACE_EVENT("SCO is connected");
+    }
+}
+
+/*******************************************************************************
+**
+** Function         btif_initiate_close_SCO_tmr_hdlr
+**
+** Description      Timer to trigger SCO disconnection request if SCO is not disconnected
+**                  by AG after call is terminated.
+**
+** Returns          void
+**
+*******************************************************************************/
+static void btif_initiate_close_SCO_tmr_hdlr(TIMER_LIST_ENT *tle)
+{
+    BTIF_TRACE_EVENT("%s", __FUNCTION__);
+    if (BTM_GetNumScoLinks())
+    {
+        BTA_HfClientAudioClose(btif_hf_client_cb.handle);
+    }
+    else
+    {
+        BTIF_TRACE_EVENT("SCO is Disconnected");
+    }
 }
 
 /*****************************************************************************
@@ -272,8 +332,7 @@ static bt_status_t connect_audio( bt_bdaddr_t *bd_addr )
 
     if (is_connected(bd_addr))
     {
-        if ((BTIF_HF_CLIENT_FEATURES & BTA_HF_CLIENT_FEAT_CODEC) &&
-                (btif_hf_client_cb.peer_feat & BTA_HF_CLIENT_PEER_CODEC))
+        if (btif_hf_client_cb.peer_feat & BTA_HF_CLIENT_PEER_CODEC)
         {
             BTA_HfClientSendAT(btif_hf_client_cb.handle, BTA_HF_CLIENT_AT_CMD_BCC, 0, 0, NULL);
         }
@@ -640,7 +699,11 @@ static void  cleanup( void )
 {
     BTIF_TRACE_EVENT("%s", __FUNCTION__);
 
-    btif_disable_service(BTA_HFP_HS_SERVICE_ID);
+    if (bt_hf_client_callbacks)
+    {
+        btif_disable_service(BTA_HFP_HS_SERVICE_ID);
+        bt_hf_client_callbacks = NULL;
+    }
 }
 
 /*******************************************************************************
@@ -689,10 +752,65 @@ static void process_ind_evt(tBTA_HF_CLIENT_IND *ind)
     switch (ind->type)
     {
         case BTA_HF_CLIENT_IND_CALL:
+            if (ind->value)
+            {
+                // Start timer to initiate SCO
+                memset(&tle_hfp_client_open_SCO, 0, sizeof(tle_hfp_client_open_SCO));
+                tle_hfp_client_open_SCO.param = (UINT32)btif_initiate_open_SCO_tmr_hdlr;
+                btu_start_timer(&tle_hfp_client_open_SCO, BTU_TTYPE_USER_FUNC,
+                        BTIF_TIMEOUT_SCO_OPEN_ON_SECS);
+
+                /* for AT+CHLD=1, SCO is not disconnected when active call is ended.
+                 * Same SCO conn is used when held/waiting call become active. We
+                 * receive CIEV1,0 and CIEV1,1 in that order. SCO close timer will
+                 * start as soon as CIEV1,0 is received. Stop it since we received
+                 * CIEV1,1.
+                 */
+                if (tle_hfp_client_close_SCO.in_use)
+                {
+                    BTIF_TRACE_DEBUG("Call connected, stop SCO close timer");
+                    btu_stop_timer(&tle_hfp_client_close_SCO);
+                }
+            }
+            else
+            {
+                if (tle_hfp_client_open_SCO.in_use)
+                {
+                    BTIF_TRACE_DEBUG("Call disconnected, stop SCO open timer");
+                    btu_stop_timer(&tle_hfp_client_open_SCO);
+                }
+                if (BTM_GetNumScoLinks() && in_mo_call_setup != true)
+                {
+                    BTIF_TRACE_DEBUG("No MO call in setup, starting SCO close timer");
+                    // Start timer to disconnect SCO
+                    memset(&tle_hfp_client_close_SCO, 0, sizeof(tle_hfp_client_close_SCO));
+                    tle_hfp_client_close_SCO.param = (UINT32)btif_initiate_close_SCO_tmr_hdlr;
+                    btu_start_timer(&tle_hfp_client_close_SCO, BTU_TTYPE_USER_FUNC,
+                            BTIF_TIMEOUT_SCO_CLOSE_ON_SECS);
+                }
+            }
             HAL_CBACK(bt_hf_client_callbacks, call_cb, ind->value);
             break;
 
         case BTA_HF_CLIENT_IND_CALLSETUP:
+            if (ind->value == BTHF_CLIENT_CALLSETUP_OUTGOING ||
+                ind->value == BTHF_CLIENT_CALLSETUP_ALERTING)
+            {
+                BTIF_TRACE_DEBUG("MO call setup in progress, set the flag");
+                in_mo_call_setup = true;
+                if (tle_hfp_client_close_SCO.in_use)
+                {
+                    BTIF_TRACE_DEBUG("stop SCO close timer");
+                    btu_stop_timer(&tle_hfp_client_close_SCO);
+                }
+            }
+
+            if (ind->value == BTHF_CLIENT_CALLSETUP_NONE &&
+                in_mo_call_setup == true)
+            {
+                BTIF_TRACE_DEBUG("Done with MO call setup, reset the flag");
+                in_mo_call_setup = false;
+            }
             HAL_CBACK(bt_hf_client_callbacks, callsetup_cb, ind->value);
             break;
         case BTA_HF_CLIENT_IND_CALLHELD:
@@ -734,7 +852,7 @@ static void btif_hf_client_upstreams_evt(UINT16 event, char* p_param)
     tBTA_HF_CLIENT *p_data = (tBTA_HF_CLIENT *)p_param;
     bdstr_t bdstr;
 
-    BTIF_TRACE_IMP("%s: event=%s (%u)", __FUNCTION__, dump_hf_client_event(event), event);
+    BTIF_TRACE_DEBUG("%s: event=%s (%u)", __FUNCTION__, dump_hf_client_event(event), event);
 
     switch (event)
     {
@@ -802,6 +920,14 @@ static void btif_hf_client_upstreams_evt(UINT16 event, char* p_param)
             btif_hf_client_cb.peer_feat = 0;
             btif_hf_client_cb.chld_feat = 0;
             btif_queue_advance();
+            if (tle_hfp_client_open_SCO.in_use) {
+                BTIF_TRACE_DEBUG("HFP Disconnected Stop SCO open timer");
+                btu_stop_timer(&tle_hfp_client_open_SCO);
+            }
+            if (tle_hfp_client_close_SCO.in_use) {
+                BTIF_TRACE_DEBUG("HFP Disconnected Stop SCO Close timer");
+                btu_stop_timer(&tle_hfp_client_close_SCO);
+            }
             break;
 
         case BTA_HF_CLIENT_IND_EVT:
@@ -941,7 +1067,7 @@ bt_status_t btif_hf_client_execute_service(BOOLEAN b_enable)
 {
     BTIF_TRACE_EVENT("%s enable:%d", __FUNCTION__, b_enable);
 
-    osi_property_get("ro.bluetooth.hfp.ver", btif_hf_client_version, "1.5");
+    property_get("ro.bluetooth.hfp.ver", btif_hf_client_version, "1.5");
 
      if (b_enable)
      {
@@ -966,15 +1092,9 @@ bt_status_t btif_hf_client_execute_service(BOOLEAN b_enable)
      }
      else
      {
-         if (bt_hf_client_callbacks)
-         {
-             BTIF_TRACE_IMP("%s: setting call backs to NULL", __FUNCTION__);
-             bt_hf_client_callbacks = NULL;
-         }
          BTA_HfClientDeregister(btif_hf_client_cb.handle);
          BTA_HfClientDisable();
      }
-     BTIF_TRACE_IMP("%s: enable: %d completed", __FUNCTION__, b_enable);
      return BT_STATUS_SUCCESS;
 }
 

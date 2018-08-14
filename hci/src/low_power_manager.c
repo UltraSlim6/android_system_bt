@@ -1,9 +1,4 @@
 /******************************************************************************
- *  Copyright (c) 2016, The Linux Foundation. All rights reserved.
- *
- *  Not a contribution.
- ******************************************************************************/
-/******************************************************************************
  *
  *  Copyright (C) 2014 Google, Inc.
  *
@@ -23,14 +18,13 @@
 
 #define LOG_TAG "bt_low_power_manager"
 
-#include "low_power_manager.h"
-
 #include <assert.h>
 #include <stdint.h>
 
 #include "osi/include/alarm.h"
-#include "osi/include/log.h"
+#include "low_power_manager.h"
 #include "osi/include/osi.h"
+#include "osi/include/log.h"
 #include "osi/include/thread.h"
 #include "vendor.h"
 
@@ -77,7 +71,6 @@ static wake_state_t wake_state;
 static uint32_t idle_timeout_ms;
 static alarm_t *idle_alarm;
 static bool transmit_is_done;
-static void wake_deassert();
 
 // Interface functions
 
@@ -87,9 +80,9 @@ static void init(thread_t *post_thread) {
 
   vendor->set_callback(VENDOR_SET_LPM_MODE, vendor_enable_disable_callback);
 
-  idle_alarm = alarm_new("hci.idle");
+  idle_alarm = alarm_new();
   if (!idle_alarm) {
-    LOG_ERROR(LOG_TAG, "%s could not create idle alarm.", __func__);
+    LOG_ERROR("%s could not create idle alarm.", __func__);
   }
 
   reset_state();
@@ -103,7 +96,7 @@ static void cleanup() {
 
 static void post_command(low_power_command_t command) {
   if (command > LPM_WAKE_DEASSERT) {
-    LOG_ERROR(LOG_TAG, "%s unknown low power command %d", __func__, command);
+    LOG_ERROR("%s unknown low power command %d", __func__, command);
     return;
   }
 
@@ -127,7 +120,7 @@ static void wake_assert() {
 
 static void transmit_done() {
   transmit_is_done = true;
-  if (wake_state == LPM_WAKE_W4_TX_DONE) {
+  if (wake_state == LPM_WAKE_W4_TX_DONE || wake_state == LPM_WAKE_ASSERTED) {
     wake_state = LPM_WAKE_W4_TIMEOUT;
     start_idle_timer(true);
   }
@@ -138,18 +131,18 @@ static void transmit_done() {
 static void enable(bool enable) {
   if (state == LPM_DISABLING) {
     if (enable)
-      LOG_ERROR(LOG_TAG, "%s still processing prior disable request, cannot enable.", __func__);
+      LOG_ERROR("%s still processing prior disable request, cannot enable.", __func__);
     else
-      LOG_WARN(LOG_TAG, "%s still processing prior disable request, ignoring new request to disable.", __func__);
+      LOG_WARN("%s still processing prior disable request, ignoring new request to disable.", __func__);
   } else if (state == LPM_ENABLING) {
     if (enable)
-      LOG_ERROR(LOG_TAG, "%s still processing prior enable request, ignoring new request to enable.", __func__);
+      LOG_ERROR("%s still processing prior enable request, ignoring new request to enable.", __func__);
     else
-      LOG_WARN(LOG_TAG, "%s still processing prior enable request, cannot disable.", __func__);
+      LOG_WARN("%s still processing prior enable request, cannot disable.", __func__);
   } else if (state == LPM_ENABLED && enable) {
-    LOG_INFO(LOG_TAG, "%s already enabled.", __func__);
+    LOG_INFO("%s already enabled.", __func__);
   } else if (state == LPM_DISABLED && !enable) {
-    LOG_INFO(LOG_TAG, "%s already disabled.", __func__);
+    LOG_INFO("%s already disabled.", __func__);
   } else {
     uint8_t command = enable ? BT_VND_LPM_ENABLE : BT_VND_LPM_DISABLE;
     state = enable ? LPM_ENABLING : LPM_DISABLING;
@@ -192,20 +185,14 @@ static void idle_timer_expired(UNUSED_ATTR void *context) {
 
 void start_idle_timer(bool check_LPM) {
   if (state == LPM_ENABLED || !check_LPM) {
-    if (idle_timeout_ms == 0) {
-       wake_deassert();
-    }
-    else {
-       alarm_set(idle_alarm, idle_timeout_ms, idle_timer_expired, NULL);
-    }
-
-    LOG_VERBOSE(LOG_TAG,"%s check_LPM = %d", __func__, check_LPM);
+    alarm_set(idle_alarm, idle_timeout_ms, idle_timer_expired, NULL);
+    LOG_VERBOSE("%s check_LPM = %d", __func__, check_LPM);
   }
 }
 
 void stop_idle_timer() {
   alarm_cancel(idle_alarm);
-  LOG_VERBOSE(LOG_TAG, "%s", __func__);
+  LOG_VERBOSE("%s", __func__);
 }
 
 static void event_disable(UNUSED_ATTR void *context) {

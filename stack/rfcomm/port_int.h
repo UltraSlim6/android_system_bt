@@ -26,9 +26,7 @@
 #define PORT_INT_H
 
 #include "bt_target.h"
-#include "osi/include/alarm.h"
-#include "osi/include/fixed_queue.h"
-#include "bt_common.h"
+#include "gki.h"
 #include "rfcdefs.h"
 #include "port_api.h"
 
@@ -55,7 +53,7 @@
 */
 typedef struct
 {
-    fixed_queue_t *queue;   /* Queue of buffers waiting to be sent */
+    BUFFER_Q queue;         /* Queue of buffers waiting to be sent */
     BOOLEAN  peer_fc;       /* TRUE if flow control is set based on peer's request */
     BOOLEAN  user_fc;       /* TRUE if flow control is set based on user's request  */
     UINT32   queue_size;    /* Number of data bytes in the queue */
@@ -92,8 +90,8 @@ typedef struct
 */
 typedef struct
 {
-    alarm_t *mcb_timer;       /* MCB timer */
-    fixed_queue_t *cmd_q;     /* Queue for command messages on this mux */
+    TIMER_LIST_ENT tle;       /* Timer list entry */
+    BUFFER_Q  cmd_q;          /* Queue for command messages on this mux */
     UINT8     port_inx[RFCOMM_MAX_DLCI + 1];  /* Array for quick access to  */
                                               /* tPORT based on dlci        */
     BD_ADDR   bd_addr;        /* BD ADDR of the peer if initiator */
@@ -116,7 +114,8 @@ typedef struct
 /*
 ** RFCOMM Port Connection Control Block
 */
-typedef struct {
+struct t_rfc_port
+{
 #define RFC_PORT_STATE_IDLE          0
 #define RFC_PORT_STATE_WAIT_START    1
 #define RFC_PORT_STATE_OPENING       2
@@ -135,14 +134,15 @@ typedef struct {
 
     tRFC_MCB *p_mcb;
 
-    alarm_t  *port_timer;
-} tRFC_PORT;
+    TIMER_LIST_ENT tle;       /* Timer list entry */
+};
+typedef struct t_rfc_port tRFC_PORT;
 
 
 /*
 ** Define control block containing information about PORT connection
 */
-typedef struct
+struct t_port_info
 {
     UINT8   inx;            /* Index of this control block in the port_info array */
     BOOLEAN in_use;         /* True when structure is allocated */
@@ -204,7 +204,8 @@ typedef struct
     BOOLEAN     keep_port_handle;           /* TRUE if port is not deallocated when closing */
                                             /* it is set to TRUE for server when allocating port */
     UINT16      keep_mtu;                   /* Max MTU that port can receive by server */
-} tPORT;
+};
+typedef struct t_port_info tPORT;
 
 
 /* Define the PORT/RFCOMM control structure

@@ -50,19 +50,20 @@ extern void bta_hl_ci_get_tx_data(  tBTA_HL_MDL_HANDLE mdl_handle,
                                     tBTA_HL_STATUS status,
                                     UINT16 evt )
 {
-    tBTA_HL_CI_GET_PUT_DATA *p_evt =
-        (tBTA_HL_CI_GET_PUT_DATA *)osi_malloc(sizeof(tBTA_HL_CI_GET_PUT_DATA));
+    tBTA_HL_CI_GET_PUT_DATA  *p_evt;
 
 #if  (BTA_HL_DEBUG == TRUE)
-    APPL_TRACE_DEBUG("%s mdl_handle=%d status=%d evt=%d\n", __func__,
-                     mdl_handle, status, evt);
+    APPL_TRACE_DEBUG("bta_hl_ci_get_tx_data mdl_handle=%d status=%d evt=%d\n",
+                      mdl_handle, status, evt);
 #endif
 
-    p_evt->hdr.event = evt;
-    p_evt->mdl_handle = mdl_handle;
-    p_evt->status = status;
-
-    bta_sys_sendmsg(p_evt);
+    if ((p_evt = (tBTA_HL_CI_GET_PUT_DATA *)GKI_getbuf(sizeof(tBTA_HL_CI_GET_PUT_DATA))) != NULL)
+    {
+        p_evt->hdr.event = evt;
+        p_evt->mdl_handle =  mdl_handle;
+        p_evt->status = status;
+        bta_sys_sendmsg(p_evt);
+    }
 }
 
 /*******************************************************************************
@@ -84,20 +85,21 @@ extern void bta_hl_ci_put_rx_data(  tBTA_HL_MDL_HANDLE mdl_handle,
                                     tBTA_HL_STATUS status,
                                     UINT16 evt )
 {
-    tBTA_HL_CI_GET_PUT_DATA *p_evt =
-        (tBTA_HL_CI_GET_PUT_DATA *)osi_malloc(sizeof(tBTA_HL_CI_GET_PUT_DATA));
-
+    tBTA_HL_CI_GET_PUT_DATA  *p_evt;
 #if  (BTA_HL_DEBUG == TRUE)
-    APPL_TRACE_DEBUG("%s mdl_handle=%d status=%d evt=%d\n", __func__,
-                     mdl_handle, status, evt);
+    APPL_TRACE_DEBUG("bta_hl_ci_put_rx_data mdl_handle=%d status=%d evt=%d\n",
+                      mdl_handle, status, evt);
 #endif
 
-    p_evt->hdr.event = evt;
-    p_evt->mdl_handle =  mdl_handle;
-    p_evt->status = status;
-
-    bta_sys_sendmsg(p_evt);
+    if ((p_evt = (tBTA_HL_CI_GET_PUT_DATA *)GKI_getbuf(sizeof(tBTA_HL_CI_GET_PUT_DATA))) != NULL)
+    {
+        p_evt->hdr.event = evt;
+        p_evt->mdl_handle =  mdl_handle;
+        p_evt->status = status;
+        bta_sys_sendmsg(p_evt);
+    }
 }
+
 
 /*******************************************************************************
 **
@@ -118,19 +120,20 @@ extern void bta_hl_ci_get_echo_data(  tBTA_HL_MCL_HANDLE mcl_handle,
                                       tBTA_HL_STATUS status,
                                       UINT16 evt )
 {
-    tBTA_HL_CI_ECHO_DATA *p_evt =
-        (tBTA_HL_CI_ECHO_DATA *)osi_malloc(sizeof(tBTA_HL_CI_ECHO_DATA));
+    tBTA_HL_CI_ECHO_DATA  *p_evt;
 
 #if  (BTA_HL_DEBUG == TRUE)
-    APPL_TRACE_DEBUG("%s mcl_handle=%d status=%d evt=%d\n", __func__,
-                     mcl_handle, status, evt);
+    APPL_TRACE_DEBUG("bta_hl_ci_get_echo_data mcl_handle=%d status=%d evt=%d\n",
+                      mcl_handle, status, evt);
 #endif
 
-    p_evt->hdr.event = evt;
-    p_evt->mcl_handle =  mcl_handle;
-    p_evt->status = status;
-
-    bta_sys_sendmsg(p_evt);
+    if ((p_evt = (tBTA_HL_CI_ECHO_DATA *)GKI_getbuf(sizeof(tBTA_HL_CI_ECHO_DATA))) != NULL)
+    {
+        p_evt->hdr.event = evt;
+        p_evt->mcl_handle =  mcl_handle;
+        p_evt->status = status;
+        bta_sys_sendmsg(p_evt);
+    }
 }
 
 /*******************************************************************************
@@ -152,17 +155,18 @@ extern void bta_hl_ci_put_echo_data(  tBTA_HL_MCL_HANDLE mcl_handle,
                                       tBTA_HL_STATUS status,
                                       UINT16 evt )
 {
-    tBTA_HL_CI_ECHO_DATA *p_evt =
-        (tBTA_HL_CI_ECHO_DATA *)osi_malloc(sizeof(tBTA_HL_CI_ECHO_DATA));
+    tBTA_HL_CI_ECHO_DATA  *p_evt;
 
 #if  (BTA_HL_DEBUG == TRUE)
-    APPL_TRACE_DEBUG("%s mcl_handle=%d status=%d evt=%d\n", __func__,
+    APPL_TRACE_DEBUG("bta_hl_ci_put_echo_data mcl_handle=%d status=%d evt=%d\n",
                       mcl_handle, status, evt);
 #endif
 
-    p_evt->hdr.event = evt;
-    p_evt->mcl_handle =  mcl_handle;
-    p_evt->status = status;
-
-    bta_sys_sendmsg(p_evt);
+    if ((p_evt = (tBTA_HL_CI_ECHO_DATA *)GKI_getbuf(sizeof(tBTA_HL_CI_ECHO_DATA))) != NULL)
+    {
+        p_evt->hdr.event = evt;
+        p_evt->mcl_handle =  mcl_handle;
+        p_evt->status = status;
+        bta_sys_sendmsg(p_evt);
+    }
 }

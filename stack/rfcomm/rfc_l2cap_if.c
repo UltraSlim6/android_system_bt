@@ -24,9 +24,8 @@
 
 #include <stddef.h>
 #include "bt_target.h"
-
-#include "osi/include/time.h"
-#include "bt_common.h"
+#include "btcore/include/counter.h"
+#include "gki.h"
 
 #include "rfcdefs.h"
 #include "port_api.h"
@@ -107,7 +106,7 @@ void RFCOMM_ConnectInd (BD_ADDR bd_addr, UINT16 lcid, UINT16 psm, UINT8 id)
             RFCOMM_TRACE_DEBUG ("RFCOMM_ConnectInd start timer for collision, initiator's LCID(0x%x), acceptor's LCID(0x%x)",
                                   p_mcb->lcid, p_mcb->pending_lcid);
 
-            rfc_timer_start(p_mcb, (UINT16)(time_get_os_boottime_ms() % 10 + 2));
+            rfc_timer_start(p_mcb, (UINT16)(GKI_get_os_tick_count()%10 + 2));
             return;
         }
         else
@@ -313,7 +312,7 @@ void RFCOMM_BufDataInd (UINT16 lcid, BT_HDR *p_buf)
     if (!p_mcb)
     {
         RFCOMM_TRACE_WARNING ("RFCOMM_BufDataInd LCID:0x%x", lcid);
-        osi_free(p_buf);
+        GKI_freebuf (p_buf);
         return;
     }
 
@@ -322,7 +321,7 @@ void RFCOMM_BufDataInd (UINT16 lcid, BT_HDR *p_buf)
     /* If the frame did not pass validation just ignore it */
     if (event == RFC_EVENT_BAD_FRAME)
     {
-        osi_free(p_buf);
+        GKI_freebuf (p_buf);
         return;
     }
 
@@ -337,7 +336,7 @@ void RFCOMM_BufDataInd (UINT16 lcid, BT_HDR *p_buf)
 
         /* Other multiplexer events go to state machine */
         rfc_mx_sm_execute (p_mcb, event, NULL);
-        osi_free(p_buf);
+        GKI_freebuf (p_buf);
         return;
     }
 
@@ -351,14 +350,14 @@ void RFCOMM_BufDataInd (UINT16 lcid, BT_HDR *p_buf)
             if (( p_mcb->is_initiator && !rfc_cb.rfc.rx_frame.cr)
              || (!p_mcb->is_initiator &&  rfc_cb.rfc.rx_frame.cr))
                 rfc_send_dm (p_mcb, rfc_cb.rfc.rx_frame.dlci, rfc_cb.rfc.rx_frame.pf);
-            osi_free(p_buf);
+            GKI_freebuf (p_buf);
             return;
         }
 
         if ((p_port = port_find_dlci_port (rfc_cb.rfc.rx_frame.dlci)) == NULL)
         {
             rfc_send_dm (p_mcb, rfc_cb.rfc.rx_frame.dlci, TRUE);
-            osi_free(p_buf);
+            GKI_freebuf (p_buf);
             return;
         }
         p_mcb->port_inx[rfc_cb.rfc.rx_frame.dlci] = p_port->inx;
@@ -367,11 +366,13 @@ void RFCOMM_BufDataInd (UINT16 lcid, BT_HDR *p_buf)
 
     if (event == RFC_EVENT_UIH)
     {
+        counter_add("rfcomm.rx.frames", 1);
+        counter_add("rfcomm.rx.bytes", p_buf->len);
 
         if (p_buf->len > 0)
             rfc_port_sm_execute (p_port, event, p_buf);
         else
-            osi_free(p_buf);
+            GKI_freebuf (p_buf);
 
         if (rfc_cb.rfc.rx_frame.credit != 0)
             rfc_inc_credit (p_port, rfc_cb.rfc.rx_frame.credit);
@@ -379,7 +380,7 @@ void RFCOMM_BufDataInd (UINT16 lcid, BT_HDR *p_buf)
         return;
     }
     rfc_port_sm_execute (p_port, event,  NULL);
-    osi_free(p_buf);
+    GKI_freebuf (p_buf);
 }
 
 /*******************************************************************************
@@ -444,9 +445,7 @@ tRFC_MCB *rfc_find_lcid_mcb (UINT16 lcid)
 ** Description      This function returns MCB block supporting local cid
 **
 *******************************************************************************/
-void rfc_save_lcid_mcb(tRFC_MCB *p_mcb, UINT16 lcid)
+void rfc_save_lcid_mcb (tRFC_MCB *p_mcb, UINT16 lcid)
 {
-    if (lcid < L2CAP_BASE_APPL_CID)
-        return;
     rfc_cb.rfc.p_rfc_lcid_mcb[lcid - L2CAP_BASE_APPL_CID] = p_mcb;
 }

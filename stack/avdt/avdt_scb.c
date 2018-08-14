@@ -30,7 +30,7 @@
 #include "avdt_api.h"
 #include "avdtc_api.h"
 #include "avdt_int.h"
-#include "bt_common.h"
+#include "gki.h"
 #include "btu.h"
 
 /*****************************************************************************
@@ -165,7 +165,7 @@ const tAVDT_SCB_ACTION avdt_scb_action[] = {
     avdt_scb_free_pkt,
     avdt_scb_clr_pkt,
     avdt_scb_chk_snd_pkt,
-    avdt_scb_transport_channel_timer,
+    avdt_scb_tc_timer,
     avdt_scb_clr_vars,
     avdt_scb_dealloc
 };
@@ -511,7 +511,7 @@ const tAVDT_SCB_ST_TBL avdt_scb_st_tbl[] = {
     avdt_scb_st_closing
 };
 
-UINT8 max_av_clients = 1;
+
 /*******************************************************************************
 **
 ** Function         avdt_scb_event
@@ -601,7 +601,7 @@ tAVDT_SCB *avdt_scb_alloc(tAVDT_CS *p_cs)
             memcpy(&p_scb->cs, p_cs, sizeof(tAVDT_CS));
 #if AVDT_MULTIPLEXING == TRUE
             /* initialize fragments gueue */
-            p_scb->frag_q = fixed_queue_new(SIZE_MAX);
+            GKI_init_q(&p_scb->frag_q);
 
             if(p_cs->cfg.psc_mask & AVDT_PSC_MUX)
             {
@@ -614,8 +614,7 @@ tAVDT_SCB *avdt_scb_alloc(tAVDT_CS *p_cs)
 #endif
             }
 #endif
-            p_scb->transport_channel_timer =
-                alarm_new("avdt_scb.transport_channel_timer");
+            p_scb->timer_entry.param = (UINT32) p_scb;
             AVDT_TRACE_DEBUG("avdt_scb_alloc hdl=%d, psc_mask:0x%x", i+1, p_cs->cfg.psc_mask);
             break;
         }
@@ -643,14 +642,18 @@ tAVDT_SCB *avdt_scb_alloc(tAVDT_CS *p_cs)
 *******************************************************************************/
 void avdt_scb_dealloc(tAVDT_SCB *p_scb, tAVDT_SCB_EVT *p_data)
 {
+#if AVDT_MULTIPLEXING == TRUE
+    void *p_buf;
+#endif
     UNUSED(p_data);
 
     AVDT_TRACE_DEBUG("avdt_scb_dealloc hdl=%d", avdt_scb_to_hdl(p_scb));
-    alarm_free(p_scb->transport_channel_timer);
+    btu_stop_timer(&p_scb->timer_entry);
 
 #if AVDT_MULTIPLEXING == TRUE
     /* free fragments we're holding, if any; it shouldn't happen */
-    fixed_queue_free(p_scb->frag_q, osi_free);
+    while ((p_buf = GKI_dequeue (&p_scb->frag_q)) != NULL)
+        GKI_freebuf(p_buf);
 #endif
 
     memset(p_scb, 0, sizeof(tAVDT_SCB));
@@ -744,17 +747,16 @@ UINT8 avdt_scb_verify(tAVDT_CCB *p_ccb, UINT8 state, UINT8 *p_seid, UINT16 num_s
           case AVDT_VERIFY_OPEN:
           case AVDT_VERIFY_START:
             /* Fix for below klockwork issue
-             * Pointer 'p_scb' checked for NULL at line 736 may be dereferenced below at line 746.
+             * Pointer 'p_scb' checked for NULL at line 739 may be dereferenced below at line 750.
              * need to put NULL check for p_scb */
-            if (p_scb != NULL && p_scb->state != AVDT_SCB_OPEN_ST &&
-                p_scb->state != AVDT_SCB_STREAM_ST)
+            if (p_scb != NULL && p_scb->state != AVDT_SCB_OPEN_ST && p_scb->state != AVDT_SCB_STREAM_ST)
               *p_err_code = AVDT_ERR_BAD_STATE;
             break;
 
           case AVDT_VERIFY_SUSPEND:
           case AVDT_VERIFY_STREAMING:
             /* Fix for below klockwork issue
-             * Pointer 'p_scb' checked for NULL at line 736 may be dereferenced below at line 752.
+             * Pointer 'p_scb' checked for NULL at line 739 may be dereferenced below at line 759.
              * need to put NULL check for p_scb */
             if (p_scb != NULL && p_scb->state != AVDT_SCB_STREAM_ST)
               *p_err_code = AVDT_ERR_BAD_STATE;
@@ -793,33 +795,5 @@ void avdt_scb_peer_seid_list(tAVDT_MULTI *p_multi)
             p_multi->seid_list[i] = p_scb->peer_seid;
         }
     }
-}
-
-/*******************************************************************************
-**
-** Function         avdt_scb_max_av_client
-**
-** Description      Update max simultaneous AV connections supported
-**
-** Returns          Nothing.
-**
-*******************************************************************************/
-void avdt_scb_set_max_av_client(UINT8 max_clients)
-{
-    max_av_clients = max_clients;
-}
-
-/*******************************************************************************
-**
-** Function         avdt_scb_get_max_av_client
-**
-** Description      Return max simultaneous AV connections supported
-**
-** Returns          max av clients supported
-**
-*******************************************************************************/
-UINT8 avdt_scb_get_max_av_client()
-{
-    return max_av_clients;
 }
 

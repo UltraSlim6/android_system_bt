@@ -485,7 +485,7 @@ void avdt_ad_tc_data_ind(tAVDT_TC_TBL *p_tbl, BT_HDR *p_buf)
         }
         else
         {
-            osi_free(p_buf);
+            GKI_freebuf(p_buf);
             AVDT_TRACE_ERROR(" avdt_ad_tc_data_ind buffer freed");
         }
     }

@@ -19,7 +19,7 @@
 #include <gtest/gtest.h>
 
 extern "C" {
-#include "osi/include/allocation_tracker.h"
+#include "allocation_tracker.h"
 
 void allocation_tracker_uninit(void);
 }

@@ -25,17 +25,14 @@
 #include <string.h>
 #include "bt_target.h"
 #include "bt_utils.h"
-#include "bt_common.h"
+#include "gki.h"
 #include "btm_api.h"
 #include "mca_api.h"
 #include "mca_defs.h"
 #include "mca_int.h"
-#include <unistd.h>
+
 
 #include  "btu.h"
-
-extern fixed_queue_t *btu_general_alarm_queue;
-
 /*****************************************************************************
 ** constants
 *****************************************************************************/
@@ -83,7 +80,8 @@ void mca_ccb_report_event(tMCA_CCB *p_ccb, UINT8 event, tMCA_CTRL *p_data)
 void mca_ccb_free_msg(tMCA_CCB *p_ccb, tMCA_CCB_EVT *p_data)
 {
     UNUSED(p_ccb);
-    osi_free(p_data);
+
+    GKI_freebuf (p_data);
 }
 
 /*******************************************************************************
@@ -98,6 +96,7 @@ void mca_ccb_free_msg(tMCA_CCB *p_ccb, tMCA_CCB_EVT *p_data)
 void mca_ccb_snd_req(tMCA_CCB *p_ccb, tMCA_CCB_EVT *p_data)
 {
     tMCA_CCB_MSG *p_msg = (tMCA_CCB_MSG *)p_data;
+    BT_HDR  *p_pkt;
     UINT8   *p, *p_start;
     BOOLEAN is_abort = FALSE;
     tMCA_DCB *p_dcb;
@@ -111,10 +110,10 @@ void mca_ccb_snd_req(tMCA_CCB *p_ccb, tMCA_CCB_EVT *p_data)
          * Get the mdl_id in dcb to compose the request */
         if(p_dcb)
         {
-            p_msg->mdl_id = p_dcb->mdl_id;
-            mca_dcb_event(p_dcb, MCA_DCB_API_CLOSE_EVT, NULL);
+           p_msg->mdl_id = p_dcb->mdl_id;
+           mca_dcb_event(p_dcb, MCA_DCB_API_CLOSE_EVT, NULL);
         }
-        osi_free_and_reset((void **)&p_ccb->p_tx_req);
+        mca_free_buf ((void **)&p_ccb->p_tx_req);
         p_ccb->status = MCA_CCB_STAT_NORM;
         is_abort = TRUE;
     }
@@ -125,30 +124,31 @@ void mca_ccb_snd_req(tMCA_CCB *p_ccb, tMCA_CCB_EVT *p_data)
         p_ccb->p_tx_req = p_msg;
         if (!p_ccb->cong)
         {
-            BT_HDR *p_pkt = (BT_HDR *)osi_malloc(MCA_CTRL_MTU + sizeof(BT_HDR));
-
-            p_pkt->offset = L2CAP_MIN_OFFSET;
-            p = p_start = (UINT8*)(p_pkt + 1) + L2CAP_MIN_OFFSET;
-            *p++ = p_msg->op_code;
-            UINT16_TO_BE_STREAM (p, p_msg->mdl_id);
-            if (p_msg->op_code == MCA_OP_MDL_CREATE_REQ) {
-                *p++ = p_msg->mdep_id;
-                *p++ = p_msg->param;
+            p_pkt = (BT_HDR *)GKI_getbuf (MCA_CTRL_MTU);
+            if (p_pkt)
+            {
+                p_pkt->offset = L2CAP_MIN_OFFSET;
+                p = p_start = (UINT8*)(p_pkt + 1) + L2CAP_MIN_OFFSET;
+                *p++ = p_msg->op_code;
+                UINT16_TO_BE_STREAM (p, p_msg->mdl_id);
+                if (p_msg->op_code == MCA_OP_MDL_CREATE_REQ)
+                {
+                    *p++ = p_msg->mdep_id;
+                    *p++ = p_msg->param;
+                }
+                p_msg->hdr.layer_specific = TRUE;   /* mark this message as sent */
+                p_pkt->len = p - p_start;
+                L2CA_DataWrite (p_ccb->lcid, p_pkt);
+                p_ccb->timer_entry.param = (TIMER_PARAM_TYPE) p_ccb;
+                btu_start_timer(&p_ccb->timer_entry, BTU_TTYPE_MCA_CCB_RSP, p_ccb->p_rcb->reg.rsp_tout);
             }
-            p_msg->hdr.layer_specific = TRUE;   /* mark this message as sent */
-            p_pkt->len = p - p_start;
-            L2CA_DataWrite (p_ccb->lcid, p_pkt);
-            period_ms_t interval_ms = p_ccb->p_rcb->reg.rsp_tout * 1000;
-            alarm_set_on_queue(p_ccb->mca_ccb_timer, interval_ms,
-                               mca_ccb_timer_timeout, p_ccb,
-                               btu_general_alarm_queue);
         }
         /* else the L2CAP channel is congested. keep the message to be sent later */
     }
     else
     {
         MCA_TRACE_WARNING ("dropping api req");
-        osi_free(p_data);
+        GKI_freebuf (p_data);
     }
 }
 
@@ -165,42 +165,45 @@ void mca_ccb_snd_req(tMCA_CCB *p_ccb, tMCA_CCB_EVT *p_data)
 void mca_ccb_snd_rsp(tMCA_CCB *p_ccb, tMCA_CCB_EVT *p_data)
 {
     tMCA_CCB_MSG *p_msg = (tMCA_CCB_MSG *)p_data;
+    BT_HDR  *p_pkt;
     UINT8   *p, *p_start;
     BOOLEAN chk_mdl = FALSE;
-    BT_HDR *p_pkt = (BT_HDR *)osi_malloc(MCA_CTRL_MTU + sizeof(BT_HDR));
 
-    MCA_TRACE_DEBUG("%s cong=%d req=%d", __func__, p_ccb->cong, p_msg->op_code);
+    MCA_TRACE_DEBUG ("mca_ccb_snd_rsp cong=%d req=%d", p_ccb->cong, p_msg->op_code);
     /* assume that API functions verified the parameters */
+    p_pkt = (BT_HDR *)GKI_getbuf (MCA_CTRL_MTU);
+    if (p_pkt)
+    {
+        p_pkt->offset = L2CAP_MIN_OFFSET;
+        p = p_start = (UINT8*)(p_pkt + 1) + L2CAP_MIN_OFFSET;
+        *p++ = p_msg->op_code;
+        *p++ = p_msg->rsp_code;
+        UINT16_TO_BE_STREAM (p, p_msg->mdl_id);
+        if (p_msg->op_code == MCA_OP_MDL_CREATE_RSP)
+        {
+            *p++ = p_msg->param;
+            chk_mdl = TRUE;
+        }
+        else if (p_msg->op_code == MCA_OP_MDL_RECONNECT_RSP)
+                chk_mdl = TRUE;
 
-    p_pkt->offset = L2CAP_MIN_OFFSET;
-    p = p_start = (UINT8*)(p_pkt + 1) + L2CAP_MIN_OFFSET;
-    *p++ = p_msg->op_code;
-    *p++ = p_msg->rsp_code;
-    UINT16_TO_BE_STREAM (p, p_msg->mdl_id);
-    if (p_msg->op_code == MCA_OP_MDL_CREATE_RSP) {
-        *p++ = p_msg->param;
-        chk_mdl = TRUE;
-    }
-    else if (p_msg->op_code == MCA_OP_MDL_RECONNECT_RSP) {
-        chk_mdl = TRUE;
+        if (chk_mdl && p_msg->rsp_code == MCA_RSP_SUCCESS)
+        {
+            mca_dcb_by_hdl(p_msg->dcb_idx);
+            BTM_SetSecurityLevel(FALSE, "", BTM_SEC_SERVICE_MCAP_DATA, p_ccb->sec_mask,
+                p_ccb->p_rcb->reg.data_psm, BTM_SEC_PROTO_MCA, p_msg->dcb_idx);
+            p_ccb->status = MCA_CCB_STAT_PENDING;
+            /* set p_tx_req to block API_REQ/API_RSP before DL is up */
+            mca_free_buf ((void **)&p_ccb->p_tx_req);
+            p_ccb->p_tx_req = p_ccb->p_rx_msg;
+            p_ccb->p_rx_msg = NULL;
+            p_ccb->p_tx_req->dcb_idx = p_msg->dcb_idx;
+        }
+        mca_free_buf ((void **)&p_ccb->p_rx_msg);
+        p_pkt->len = p - p_start;
+        L2CA_DataWrite (p_ccb->lcid, p_pkt);
     }
 
-    if (chk_mdl && p_msg->rsp_code == MCA_RSP_SUCCESS) {
-        mca_dcb_by_hdl(p_msg->dcb_idx);
-        BTM_SetSecurityLevel(FALSE, "", BTM_SEC_SERVICE_MCAP_DATA,
-                             p_ccb->sec_mask,
-                             p_ccb->p_rcb->reg.data_psm, BTM_SEC_PROTO_MCA,
-                             p_msg->dcb_idx);
-        p_ccb->status = MCA_CCB_STAT_PENDING;
-        /* set p_tx_req to block API_REQ/API_RSP before DL is up */
-        osi_free_and_reset((void **)&p_ccb->p_tx_req);
-        p_ccb->p_tx_req = p_ccb->p_rx_msg;
-        p_ccb->p_rx_msg = NULL;
-        p_ccb->p_tx_req->dcb_idx = p_msg->dcb_idx;
-    }
-    osi_free_and_reset((void **)&p_ccb->p_rx_msg);
-    p_pkt->len = p - p_start;
-    L2CA_DataWrite(p_ccb->lcid, p_pkt);
 }
 
 /*******************************************************************************
@@ -259,6 +262,7 @@ void mca_ccb_cong(tMCA_CCB *p_ccb, tMCA_CCB_EVT *p_data)
 void mca_ccb_hdl_req(tMCA_CCB *p_ccb, tMCA_CCB_EVT *p_data)
 {
     BT_HDR  *p_pkt = &p_data->hdr;
+    BT_HDR  *p_buf;
     UINT8   *p, *p_start;
     tMCA_DCB    *p_dcb;
     tMCA_CTRL       evt_data;
@@ -288,8 +292,8 @@ void mca_ccb_hdl_req(tMCA_CCB *p_ccb, tMCA_CCB_EVT *p_data)
             p_ccb->status = MCA_CCB_STAT_NORM;
             if (p_ccb->p_tx_req && ((p_dcb = mca_dcb_by_hdl(p_ccb->p_tx_req->dcb_idx))!= NULL))
             {
-                mca_dcb_dealloc(p_dcb, NULL);
-                osi_free_and_reset((void **)&p_ccb->p_tx_req);
+                mca_dcb_dealloc (p_dcb, NULL);
+                mca_free_buf ((void **)&p_ccb->p_tx_req);
             }
         }
         else
@@ -317,13 +321,13 @@ void mca_ccb_hdl_req(tMCA_CCB *p_ccb, tMCA_CCB_EVT *p_data)
             {
                 mca_dcb_dealloc(p_dcb, NULL);
             }
-            osi_free_and_reset((void **)&p_ccb->p_tx_req);
+            mca_free_buf ((void **)&p_ccb->p_tx_req);
             mca_stop_timer(p_ccb);
         }
         else
         {
             /*  local is initiator, ignore the req */
-            osi_free(p_pkt);
+            GKI_freebuf (p_pkt);
             return;
         }
     }
@@ -398,9 +402,6 @@ void mca_ccb_hdl_req(tMCA_CCB *p_ccb, tMCA_CCB_EVT *p_data)
                 case MCA_OP_MDL_DELETE_REQ:
                     /* delete the associated mdl */
                     mca_dcb_close_by_mdl_id(p_ccb, evt_data.hdr.mdl_id);
-#if (defined(MCA_DELAY_DELETE_MDL_RSP) && MCA_DELAY_DELETE_MDL_RSP == TRUE)
-                    sleep(5);
-#endif
                     send_rsp = TRUE;
                     break;
                 }
@@ -409,22 +410,26 @@ void mca_ccb_hdl_req(tMCA_CCB *p_ccb, tMCA_CCB_EVT *p_data)
     }
 
     if (((reject_code != MCA_RSP_SUCCESS) && (evt_data.hdr.op_code != MCA_OP_SYNC_INFO_IND))
-        || send_rsp) {
-        BT_HDR *p_buf = (BT_HDR *)osi_malloc(MCA_CTRL_MTU + sizeof(BT_HDR));
-        p_buf->offset = L2CAP_MIN_OFFSET;
-        p = p_start = (UINT8*)(p_buf + 1) + L2CAP_MIN_OFFSET;
-        *p++ = reject_opcode;
-        *p++ = reject_code;
-        UINT16_TO_BE_STREAM(p, evt_data.hdr.mdl_id);
-        /*
-          if (((*p_start) == MCA_OP_MDL_CREATE_RSP) && (reject_code == MCA_RSP_SUCCESS))
-          {
-          *p++ = evt_data.create_ind.cfg;
-          }
-        */
+        || send_rsp)
+    {
+        p_buf = (BT_HDR *)GKI_getbuf (MCA_CTRL_MTU);
+        if (p_buf)
+        {
+            p_buf->offset = L2CAP_MIN_OFFSET;
+            p = p_start = (UINT8*)(p_buf + 1) + L2CAP_MIN_OFFSET;
+            *p++ = reject_opcode;
+            *p++ = reject_code;
+            UINT16_TO_BE_STREAM (p, evt_data.hdr.mdl_id);
+            /*
+            if (((*p_start) == MCA_OP_MDL_CREATE_RSP) && (reject_code == MCA_RSP_SUCCESS))
+            {
+                *p++ = evt_data.create_ind.cfg;
+            }
+            */
 
-        p_buf->len = p - p_start;
-        L2CA_DataWrite (p_ccb->lcid, p_buf);
+            p_buf->len = p - p_start;
+            L2CA_DataWrite (p_ccb->lcid, p_buf);
+        }
     }
 
     if (reject_code == MCA_RSP_SUCCESS)
@@ -435,13 +440,13 @@ void mca_ccb_hdl_req(tMCA_CCB *p_ccb, tMCA_CCB_EVT *p_data)
         p_ccb->p_rx_msg = p_rx_msg;
         if (send_rsp)
         {
-            osi_free(p_pkt);
+            GKI_freebuf (p_pkt);
             p_ccb->p_rx_msg = NULL;
         }
         mca_ccb_report_event(p_ccb, evt_data.hdr.op_code, &evt_data);
     }
     else
-        osi_free(p_pkt);
+        GKI_freebuf (p_pkt);
 }
 
 /*******************************************************************************
@@ -533,7 +538,7 @@ void mca_ccb_hdl_rsp(tMCA_CCB *p_ccb, tMCA_CCB_EVT *p_data)
             } /* end of chk_mdl */
 
             if (p_ccb->status != MCA_CCB_STAT_PENDING)
-                osi_free_and_reset((void **)&p_ccb->p_tx_req);
+                mca_free_buf ((void **)&p_ccb->p_tx_req);
             mca_ccb_report_event(p_ccb, evt_data.hdr.op_code, &evt_data);
         }
         /* else a bad response is received */
@@ -543,7 +548,7 @@ void mca_ccb_hdl_rsp(tMCA_CCB *p_ccb, tMCA_CCB_EVT *p_data)
         /* not expecting any response. drop it */
         MCA_TRACE_WARNING ("dropping received rsp (not expecting a response)");
     }
-    osi_free(p_data);
+    GKI_freebuf (p_data);
 }
 
 /*******************************************************************************
@@ -579,8 +584,8 @@ void mca_ccb_dl_open (tMCA_CCB *p_ccb, tMCA_CCB_EVT *p_data)
 {
     UNUSED(p_data);
 
-    osi_free_and_reset((void **)&p_ccb->p_tx_req);
-    osi_free_and_reset((void **)&p_ccb->p_rx_msg);
+    mca_free_buf ((void **)&p_ccb->p_tx_req);
+    mca_free_buf ((void **)&p_ccb->p_rx_msg);
     p_ccb->status = MCA_CCB_STAT_NORM;
 }
 

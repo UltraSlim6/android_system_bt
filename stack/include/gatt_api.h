@@ -549,7 +549,7 @@ typedef struct
 } tGATT_DISC_RES;
 
 
-#define GATT_LINK_IDLE_TIMEOUT_WHEN_NO_APP    1 /* start a idle timer for this duration
+#define GATT_LINK_IDLE_TIMEOUT_WHEN_NO_APP    0 /* start a idle timer for this duration
                                                  when no application need to use the link */
 
 #define GATT_LINK_NO_IDLE_TIMEOUT            0xFFFF
@@ -1070,18 +1070,14 @@ extern  void GATT_StartIf (tGATT_IF gatt_if);
 **
 ** Parameters       gatt_if: applicaiton interface
 **                  bd_addr: peer device address.
-**                  is_direct: is a direct connection or a background auto connection
+**                  is_direct: is a direct conenection or a background auto connection
 **                  transport : Physical transport for GATT connection (BR/EDR or LE)
-**                  opportunistic: will not keep device connected if other apps
-**                      disconnect, will not update connected apps counter, when
-**                      disconnected won't cause physical disconnection.
 **
 ** Returns          TRUE if connection started; FALSE if connection start failure.
 **
 *******************************************************************************/
 extern BOOLEAN GATT_Connect (tGATT_IF gatt_if, BD_ADDR bd_addr,
-                             BOOLEAN is_direct, tBT_TRANSPORT transport,
-                             BOOLEAN opportunistic);
+                             BOOLEAN is_direct, tBT_TRANSPORT transport);
 
 
 /*******************************************************************************

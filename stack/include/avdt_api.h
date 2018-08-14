@@ -1,10 +1,4 @@
 /******************************************************************************
- *  Copyright (c) 2016, The Linux Foundation. All rights reserved.
- *
- *  Not a contribution.
- ******************************************************************************/
-
-/******************************************************************************
  *
  *  Copyright (C) 2002-2012 Broadcom Corporation
  *
@@ -53,17 +47,16 @@
 /* The index to access the codec type in codec_info[]. */
 #define AVDT_CODEC_TYPE_INDEX       2
 
-/* The index to access the vendorId in codec_info[]. */
-#define AVDT_VENDOR_ID_TYPE_INDEX    3
-
-/* The index to access the codecId in codec_info[]. */
-#define AVDT_CODEC_ID_TYPE_INDEX     7
-
 /* The size in bytes of a Adaptation Layer header. */
 #define AVDT_AL_HDR_SIZE         3
 
 /* The size in bytes of a media packet header. */
 #define AVDT_MEDIA_HDR_SIZE         12
+
+/* AVDTP 7.5.3 Adaptation Layer Fragmentation
+ * original length of the un-fragmented transport packet should be specified by
+ * two bytes length field of Adaptation Layer Header  */
+#define AVDT_MAX_MEDIA_SIZE         (0xFFFF - AVDT_MEDIA_HDR_SIZE)
 
 /* The handle is used when reporting MULTI_AV specific events */
 #define AVDT_MULTI_AV_HANDLE        0xFF
@@ -962,6 +955,30 @@ UINT16 AVDT_GetStreamingDestChannelId(UINT16 lcid);
 
 /*******************************************************************************
 **
+** Function         AVDT_WriteDataReq
+**
+** Description      Send a media packet to the peer device.  The stream must
+**                  be started before this function is called.  Also, this
+**                  function can only be called if the stream is a SRC.
+**
+**                  When AVDTP has sent the media packet and is ready for the
+**                  next packet, an AVDT_WRITE_CFM_EVT is sent to the
+**                  application via the control callback.  The application must
+**                  wait for the AVDT_WRITE_CFM_EVT before it makes the next
+**                  call to AVDT_WriteDataReq().  If the applications calls
+**                  AVDT_WriteDataReq() before it receives the event the packet
+**                  will not be sent.  The application may make its first call
+**                  to AVDT_WriteDataReq() after it receives an
+**                  AVDT_START_CFM_EVT or AVDT_START_IND_EVT.
+**
+** Returns          AVDT_SUCCESS if successful, otherwise error.
+**
+*******************************************************************************/
+extern UINT16 AVDT_WriteDataReq(UINT8 handle, UINT8 *p_data, UINT32 data_len,
+                                UINT32 time_stamp, UINT8 m_pt, UINT8 marker);
+
+/*******************************************************************************
+**
 ** Function         AVDT_SetMediaBuf
 **
 ** Description      Assigns buffer for media packets or forbids using of assigned
@@ -993,17 +1010,6 @@ extern UINT16 AVDT_SetMediaBuf(UINT8 handle, UINT8 *p_buf, UINT32 buf_len);
 *******************************************************************************/
 extern UINT16 AVDT_SendReport(UINT8 handle, AVDT_REPORT_TYPE type,
                               tAVDT_REPORT_DATA *p_data);
-
-/*******************************************************************************
-**
-** Function         AVDT_UpdateMaxAvClients
-**
-** Description      Update max simultaneous AV connections supported
-**
-** Returns
-**
-*******************************************************************************/
-extern void AVDT_UpdateMaxAvClients(UINT8 num_clients);
 
 /******************************************************************************
 **

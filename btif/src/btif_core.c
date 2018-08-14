@@ -26,17 +26,19 @@
  *
  ***********************************************************************************/
 
-#define LOG_TAG "bt_btif_core"
-
 #include <ctype.h>
+#include <cutils/properties.h>
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <hardware/bluetooth.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <unistd.h>
+
+#define LOG_TAG "bt_btif_core"
+#include "btcore/include/bdaddr.h"
 
 #include "bdaddr.h"
 #include "bt_utils.h"
@@ -47,33 +49,27 @@
 #include "btif_config.h"
 #include "btif_pan.h"
 #include "btif_profile_queue.h"
+#include "btif_config.h"
 #include "btif_sock.h"
 #include "btif_storage.h"
-#include "btif_uid.h"
 #include "btif_util.h"
 #include "btu.h"
 #include "device/include/controller.h"
-#include "bt_common.h"
 #include "osi/include/fixed_queue.h"
 #include "osi/include/future.h"
-#include "osi/include/log.h"
+#include "gki.h"
 #include "osi/include/osi.h"
-#include "osi/include/properties.h"
-#include "osi/include/thread.h"
+#include "osi/include/log.h"
 #include "stack_manager.h"
+#include "osi/include/thread.h"
 
 /************************************************************************************
 **  Constants & Macros
 ************************************************************************************/
 
 #ifndef BTE_DID_CONF_FILE
-// TODO(armansito): Find a better way than searching by a hardcoded path.
-#if defined(OS_GENERIC)
-#define BTE_DID_CONF_FILE "bt_did.conf"
-#else  // !defined(OS_GENERIC)
 #define BTE_DID_CONF_FILE "/etc/bluetooth/bt_did.conf"
-#endif  // defined(OS_GENERIC)
-#endif  // BTE_DID_CONF_FILE
+#endif
 
 #define VENDOR_PERSISTENCE_PATH    "/persist/bluetooth"
 #define VENDOR_PERSISTENCE_PATH_LEGACY       "/persist"
@@ -129,7 +125,6 @@ static UINT8 btif_dut_mode = 0;
 
 static thread_t *bt_jni_workqueue_thread;
 static const char *BT_JNI_WORKQUEUE_NAME = "bt_jni_workqueue";
-static uid_set_t* uid_set = NULL;
 
 static BOOLEAN ssr_triggered = FALSE;
 
@@ -137,7 +132,7 @@ static BOOLEAN ssr_triggered = FALSE;
 **  Static functions
 ************************************************************************************/
 static void btif_jni_associate(UNUSED_ATTR uint16_t event, UNUSED_ATTR char *p_param);
-static void btif_jni_disassociate();
+static void btif_jni_disassociate(UNUSED_ATTR uint16_t event, UNUSED_ATTR char *p_param);
 static bool btif_fetch_property(const char *key, bt_bdaddr_t *addr);
 
 /* sends message to btif task */
@@ -153,7 +148,7 @@ extern void bte_load_did_conf(const char *p_path);
 /** TODO: Move these to _common.h */
 void bte_main_boot_entry(void);
 void bte_main_disable(void);
-void bte_main_cleanup(void);
+void bte_main_shutdown(void);
 #if (defined(HCILP_INCLUDED) && HCILP_INCLUDED == TRUE)
 void bte_main_enable_lpm(BOOLEAN enable);
 #endif
@@ -207,27 +202,36 @@ static void btif_context_switched(void *p_msg)
 
 bt_status_t btif_transfer_context (tBTIF_CBACK *p_cback, UINT16 event, char* p_params, int param_len, tBTIF_COPY_CBACK *p_copy_cback)
 {
-    tBTIF_CONTEXT_SWITCH_CBACK *p_msg =
-        (tBTIF_CONTEXT_SWITCH_CBACK *)osi_malloc(sizeof(tBTIF_CONTEXT_SWITCH_CBACK) + param_len);
+    tBTIF_CONTEXT_SWITCH_CBACK *p_msg;
 
     BTIF_TRACE_VERBOSE("btif_transfer_context event %d, len %d", event, param_len);
 
     /* allocate and send message that will be executed in btif context */
-    p_msg->hdr.event = BT_EVT_CONTEXT_SWITCH_EVT; /* internal event */
-    p_msg->p_cb = p_cback;
+    if ((p_msg = (tBTIF_CONTEXT_SWITCH_CBACK *) GKI_getbuf(sizeof(tBTIF_CONTEXT_SWITCH_CBACK) + param_len)) != NULL)
+    {
+        p_msg->hdr.event = BT_EVT_CONTEXT_SWITCH_EVT; /* internal event */
+        p_msg->p_cb = p_cback;
 
-    p_msg->event = event;                         /* callback event */
+        p_msg->event = event;                         /* callback event */
 
-    /* check if caller has provided a copy callback to do the deep copy */
-    if (p_copy_cback) {
-        p_copy_cback(event, p_msg->p_param, p_params);
-    } else if (p_params) {
-        memcpy(p_msg->p_param, p_params, param_len);  /* callback parameter data */
+        /* check if caller has provided a copy callback to do the deep copy */
+        if (p_copy_cback)
+        {
+            p_copy_cback(event, p_msg->p_param, p_params);
+        }
+        else if (p_params)
+        {
+            memcpy(p_msg->p_param, p_params, param_len);  /* callback parameter data */
+        }
+
+        btif_sendmsg(p_msg);
+        return BT_STATUS_SUCCESS;
     }
-
-    btif_sendmsg(p_msg);
-
-    return BT_STATUS_SUCCESS;
+    else
+    {
+        /* let caller deal with a failed allocation */
+        return BT_STATUS_NOMEM;
+    }
 }
 
 /*******************************************************************************
@@ -268,6 +272,16 @@ void btif_init_ok(UNUSED_ATTR uint16_t event, UNUSED_ATTR char *p_param) {
   BTA_EnableBluetooth(bte_dm_evt);
 }
 
+void btif_init_fail(UNUSED_ATTR uint16_t event, UNUSED_ATTR char *p_param) {
+  BTIF_TRACE_DEBUG("btif_task: hardware init failed");
+  bte_main_disable();
+  btif_queue_release();
+  bte_main_shutdown();
+  btif_dut_mode = 0;
+
+  future_ready(stack_manager_get_hack_future(), FUTURE_FAIL);
+}
+
 /*******************************************************************************
 **
 ** Function         btif_task
@@ -291,7 +305,7 @@ static void bt_jni_msg_ready(void *context) {
       BTIF_TRACE_ERROR("unhandled btif event (%d)", p_msg->event & BT_EVT_MASK);
       break;
   }
-  osi_free(p_msg);
+  GKI_freebuf(p_msg);
 }
 
 /*******************************************************************************
@@ -306,36 +320,13 @@ static void bt_jni_msg_ready(void *context) {
 
 void btif_sendmsg(void *p_msg)
 {
-  if (!bt_jni_workqueue_thread) {
-    BTIF_TRACE_ERROR("%s: message dropped, queue not initialized or gone", __func__);
-    osi_free(p_msg);
-    return;
-  }
-
-  thread_post(bt_jni_workqueue_thread, bt_jni_msg_ready, p_msg);
+    thread_post(bt_jni_workqueue_thread, bt_jni_msg_ready, p_msg);
 }
 
 void btif_thread_post(thread_fn func, void *context) {
-  if (!bt_jni_workqueue_thread) {
-    BTIF_TRACE_ERROR("%s: call dropped, queue not initialized or gone", __func__);
-    return;
-  }
-
-  thread_post(bt_jni_workqueue_thread, func, context);
+    thread_post(bt_jni_workqueue_thread, func, context);
 }
 
-static bool btif_fetch_property(const char *key, bt_bdaddr_t *addr) {
-    char val[PROPERTY_VALUE_MAX] = {0};
-
-    if (osi_property_get(key, val, NULL)) {
-        if (string_to_bdaddr(val, addr)) {
-            BTIF_TRACE_DEBUG("%s: Got BDA %s", __func__, val);
-            return TRUE;
-        }
-        BTIF_TRACE_DEBUG("%s: System Property did not contain valid bdaddr", __func__);
-    }
-    return FALSE;
-}
 static bool fetch_vendor_addr (bt_bdaddr_t *local_addr)
 {
     int addr_fd, i;
@@ -393,26 +384,37 @@ static bool fetch_vendor_addr (bt_bdaddr_t *local_addr)
     close(addr_fd);
     return status;
 }
+static bool btif_fetch_property(const char *key, bt_bdaddr_t *addr) {
+    char val[PROPERTY_VALUE_MAX] = {0};
+
+    if (property_get(key, val, NULL)) {
+        if (string_to_bdaddr(val, addr)) {
+            BTIF_TRACE_DEBUG("%s: Got BDA %s", __func__, val);
+            return TRUE;
+        }
+        BTIF_TRACE_DEBUG("%s: System Property did not contain valid bdaddr", __func__);
+    }
+    return FALSE;
+}
 
 static void btif_fetch_local_bdaddr(bt_bdaddr_t *local_addr)
 {
     char val[PROPERTY_VALUE_MAX] = {0};
     uint8_t valid_bda = FALSE;
     int val_size = 0;
-
     const uint8_t null_bdaddr[BD_ADDR_LEN] = {0,0,0,0,0,0};
 
     /* Get local bdaddr storage path from property */
-    if (osi_property_get(PROPERTY_BT_BDADDR_PATH, val, NULL))
+    if (property_get(PROPERTY_BT_BDADDR_PATH, val, NULL))
     {
         int addr_fd;
 
         BTIF_TRACE_DEBUG("%s, local bdaddr is stored in %s", __func__, val);
 
-        if ((addr_fd = open(val, O_RDONLY)) != -1)
+        if ((addr_fd = TEMP_FAILURE_RETRY(open(val, O_RDONLY))) != -1)
         {
             memset(val, 0, sizeof(val));
-            read(addr_fd, val, FACTORY_BT_BDADDR_STORAGE_LEN);
+            TEMP_FAILURE_RETRY(read(addr_fd, val, FACTORY_BT_BDADDR_STORAGE_LEN));
             /* If this is not a reserved/special bda, then use it */
             if ((string_to_bdaddr(val, local_addr)) &&
                 (memcmp(local_addr->address, null_bdaddr, BD_ADDR_LEN) != 0))
@@ -445,18 +447,6 @@ static void btif_fetch_local_bdaddr(bt_bdaddr_t *local_addr)
         valid_bda = btif_fetch_property(FACTORY_BT_ADDR_PROPERTY, local_addr);
     }
 
-    /* No factory BDADDR found. Look for BDA in ro.boot.btmacaddr */
-    if ((!valid_bda) && \
-        (property_get("ro.boot.btmacaddr", val, NULL)))
-    {
-        valid_bda = string_to_bdaddr(val, local_addr);
-        if (valid_bda) {
-            BTIF_TRACE_DEBUG("Got vendor BDA %02X:%02X:%02X:%02X:%02X:%02X",
-                local_addr->address[0], local_addr->address[1], local_addr->address[2],
-                local_addr->address[3], local_addr->address[4], local_addr->address[5]);
-        }
-    }
-
     if (!valid_bda && fetch_vendor_addr(local_addr))
     {
         valid_bda = TRUE;
@@ -469,14 +459,16 @@ static void btif_fetch_local_bdaddr(bt_bdaddr_t *local_addr)
     if (!valid_bda)
     {
         bdstr_t bdstr;
+        /* Seed the random number generator */
+        srand((unsigned int) (time(0)));
 
         /* No autogen BDA. Generate one now. */
         local_addr->address[0] = 0x22;
         local_addr->address[1] = 0x22;
-        local_addr->address[2] = (uint8_t) osi_rand();
-        local_addr->address[3] = (uint8_t) osi_rand();
-        local_addr->address[4] = (uint8_t) osi_rand();
-        local_addr->address[5] = (uint8_t) osi_rand();
+        local_addr->address[2] = (uint8_t) ((rand() >> 8) & 0xFF);
+        local_addr->address[3] = (uint8_t) ((rand() >> 8) & 0xFF);
+        local_addr->address[4] = (uint8_t) ((rand() >> 8) & 0xFF);
+        local_addr->address[5] = (uint8_t) ((rand() >> 8) & 0xFF);
 
         /* Convert to ascii, and store as a persistent property */
         bdaddr_to_string(local_addr, bdstr, sizeof(bdstr));
@@ -484,7 +476,7 @@ static void btif_fetch_local_bdaddr(bt_bdaddr_t *local_addr)
         BTIF_TRACE_DEBUG("No preset BDA. Generating BDA: %s for prop %s",
              (char*)bdstr, PERSIST_BDADDR_PROPERTY);
 
-        if (osi_property_set(PERSIST_BDADDR_PROPERTY, (char*)bdstr) < 0)
+        if (property_set(PERSIST_BDADDR_PROPERTY, (char*)bdstr) < 0)
             BTIF_TRACE_ERROR("Failed to set random BDA in prop %s",PERSIST_BDADDR_PROPERTY);
     }
 
@@ -521,7 +513,7 @@ bt_status_t btif_init_bluetooth() {
 
   bt_jni_workqueue_thread = thread_new(BT_JNI_WORKQUEUE_NAME);
   if (bt_jni_workqueue_thread == NULL) {
-    LOG_ERROR(LOG_TAG, "%s Unable to create thread %s", __func__, BT_JNI_WORKQUEUE_NAME);
+    LOG_ERROR("%s Unable to create thread %s", __func__, BT_JNI_WORKQUEUE_NAME);
     goto error_exit;
   }
 
@@ -557,7 +549,12 @@ void btif_enable_bluetooth_evt(tBTA_STATUS status)
 
     BTIF_TRACE_DEBUG("%s: status %d, local bd [%s]", __FUNCTION__, status, bdstr);
 
-    ssr_triggered = FALSE;
+    if(ssr_triggered)
+    {
+       BTIF_TRACE_DEBUG("%s: Enable timeout happend", __FUNCTION__);
+       ssr_triggered = FALSE;
+       return;
+    }
 
     if (bdcmp(btif_local_bd_addr.address, controller->get_address()->address))
     {
@@ -601,12 +598,8 @@ void btif_enable_bluetooth_evt(tBTA_STATUS status)
     /* callback to HAL */
     if (status == BTA_SUCCESS)
     {
-        uid_set = uid_set_create();
-
-        btif_dm_init(uid_set);
-
         /* init rfcomm & l2cap api */
-        btif_sock_init(uid_set);
+        btif_sock_init();
 
         /* load did configuration */
         bte_load_did_conf(BTE_DID_CONF_FILE);
@@ -679,6 +672,11 @@ void btif_disable_bluetooth_evt(void)
     bte_main_enable_lpm(FALSE);
 #endif
 
+#if (BLE_INCLUDED == TRUE)
+     BTA_VendorCleanup();
+     BTA_StopBleTimers();
+#endif
+
      bte_main_disable();
 
     /* callback to HAL */
@@ -687,30 +685,27 @@ void btif_disable_bluetooth_evt(void)
 
 /*******************************************************************************
 **
-** Function         btif_cleanup_bluetooth
+** Function         btif_shutdown_bluetooth
 **
-** Description      Cleanup BTIF state.
+** Description      Finalizes BT scheduler shutdown and terminates BTIF
+**                  task.
 **
 ** Returns          void
 **
 *******************************************************************************/
 
-bt_status_t btif_cleanup_bluetooth(void)
+bt_status_t btif_shutdown_bluetooth(void)
 {
     BTIF_TRACE_DEBUG("%s", __FUNCTION__);
 
-#if (BLE_INCLUDED == TRUE)
-     BTA_VendorCleanup();
-#endif
+    btif_transfer_context(btif_jni_disassociate, 0, NULL, 0, NULL);
 
-    btif_dm_cleanup();
-    btif_jni_disassociate();
     btif_queue_release();
 
     thread_free(bt_jni_workqueue_thread);
     bt_jni_workqueue_thread = NULL;
 
-    bte_main_cleanup();
+    bte_main_shutdown();
 
     btif_dut_mode = 0;
 
@@ -731,7 +726,7 @@ void btif_ssr_cleanup(void)
    bte_ssr_cleanup(0x11);//SSR reason 0x11 - ENABLE_TIMEOUT
 }
 
-/*******************************************************************************
+/****************************************************************************
 **
 **   BTIF Test Mode APIs
 **
@@ -1473,8 +1468,10 @@ static void btif_jni_associate(UNUSED_ATTR uint16_t event, UNUSED_ATTR char *p_p
   HAL_CBACK(bt_hal_cbacks, thread_evt_cb, ASSOCIATE_JVM);
 }
 
-static void btif_jni_disassociate() {
+static void btif_jni_disassociate(UNUSED_ATTR uint16_t event, UNUSED_ATTR char *p_param) {
   BTIF_TRACE_DEBUG("%s Disassociating thread from JVM", __func__);
   HAL_CBACK(bt_hal_cbacks, thread_evt_cb, DISASSOCIATE_JVM);
   bt_hal_cbacks = NULL;
+  future_ready(stack_manager_get_hack_future(), FUTURE_SUCCESS);
 }
+

@@ -191,10 +191,11 @@ typedef struct
 {
     UINT8                   index;
     BOOLEAN                 in_use;
-    UINT8                   srvc_inst_id;
-    UINT8                   char_inst_id;
+    UINT8                   inst_id;    /* share service instance ID and report instance ID, as
+                                           hi 4 for service instance ID, low 4 as charatceristic instance ID */
     tBTA_HH_RPT_TYPE        rpt_type;
     UINT16                  uuid;
+    UINT8                   prop;
     UINT8                   rpt_id;
     BOOLEAN                 client_cfg_exist;
     UINT16                  client_cfg_value;
@@ -207,11 +208,11 @@ typedef struct
 typedef struct
 {
     BOOLEAN                 in_use;
-    UINT8                   srvc_inst_id;
     tBTA_HH_LE_RPT          report[BTA_HH_LE_RPT_MAX];
 
-    UINT16                  proto_mode_handle;
-    UINT8                   control_point_handle;
+#define BTA_HH_LE_PROTO_MODE_BIT        0x01
+#define BTA_HH_LE_CP_BIT                0x02
+    UINT8                   option_char; /* control point char exisit or not */
 
     BOOLEAN                 expl_incl_srvc;
     UINT8                   incl_srvc_inst; /* assuming only one included service : battery service */
@@ -223,11 +224,7 @@ typedef struct
 }tBTA_HH_LE_HID_SRVC;
 
 #ifndef BTA_HH_LE_HID_SRVC_MAX
-#if (defined(BLE_HH_QUALIFICATION_ENABLED) && BLE_HH_QUALIFICATION_ENABLED == TRUE)
 #define BTA_HH_LE_HID_SRVC_MAX      2
-#else
-#define BTA_HH_LE_HID_SRVC_MAX      1
-#endif
 #endif
 
 /* convert a HID handle to the LE CB index */
@@ -270,14 +267,12 @@ typedef struct
     tBTA_HH_STATUS      status;
     tBTA_GATT_REASON    reason;
     BOOLEAN             is_le_device;
-    UINT8               total_srvc;
     tBTA_HH_LE_HID_SRVC hid_srvc[BTA_HH_LE_HID_SRVC_MAX];
     UINT16              conn_id;
     BOOLEAN             in_bg_conn;
-    UINT8               cur_srvc_index; /* currently discovering service index */
+    UINT8               total_srvc;
     UINT8               clt_cfg_idx;
-    UINT16              scan_refresh_char_handle;
-    UINT16              scan_int_char_handle;
+    UINT8               cur_srvc_index; /* currently discovering service index */
     BOOLEAN             scps_supported;
 
 #define BTA_HH_LE_SCPS_NOTIFY_NONE    0

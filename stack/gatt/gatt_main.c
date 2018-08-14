@@ -26,7 +26,7 @@
 
 #if BLE_INCLUDED == TRUE
 
-#include "bt_common.h"
+#include "gki.h"
 #include "gatt_int.h"
 #include "l2c_api.h"
 #include "btm_int.h"
@@ -73,6 +73,11 @@ static const tL2CAP_APPL_INFO dyn_info =
     gatt_l2cif_data_ind_cback,
     gatt_l2cif_congest_cback,
     NULL
+#if (defined(LE_L2CAP_CFC_INCLUDED) && (LE_L2CAP_CFC_INCLUDED == TRUE))
+    ,
+    NULL,
+    NULL
+#endif
 } ;
 
 #if GATT_DYNAMIC_MEMORY == FALSE
@@ -104,9 +109,9 @@ void gatt_init (void)
     gatt_cb.trace_level = BT_TRACE_LEVEL_NONE;    /* No traces */
 #endif
     gatt_cb.def_mtu_size = GATT_DEF_BLE_MTU_SIZE;
-    gatt_cb.sign_op_queue = fixed_queue_new(SIZE_MAX);
-    gatt_cb.srv_chg_clt_q = fixed_queue_new(SIZE_MAX);
-    gatt_cb.pending_new_srv_start_q = fixed_queue_new(SIZE_MAX);
+    GKI_init_q (&gatt_cb.sign_op_queue);
+    GKI_init_q (&gatt_cb.srv_chg_clt_q);
+    GKI_init_q (&gatt_cb.pending_new_srv_start_q);
     /* First, register fixed L2CAP channel for ATT over BLE */
     fixed_reg.fixed_chnl_opts.mode         = L2CAP_FCR_BASIC_MODE;
     fixed_reg.fixed_chnl_opts.max_transmit = 0xFF;
@@ -152,30 +157,6 @@ void gatt_free(void)
 {
     int i;
     GATT_TRACE_DEBUG("gatt_free()");
-
-    fixed_queue_free(gatt_cb.sign_op_queue, NULL);
-    gatt_cb.sign_op_queue = NULL;
-    fixed_queue_free(gatt_cb.srv_chg_clt_q, NULL);
-    gatt_cb.srv_chg_clt_q = NULL;
-    fixed_queue_free(gatt_cb.pending_new_srv_start_q, NULL);
-    gatt_cb.pending_new_srv_start_q = NULL;
-    for (i = 0; i < GATT_MAX_PHY_CHANNEL; i++)
-    {
-        fixed_queue_free(gatt_cb.tcb[i].pending_enc_clcb, NULL);
-        gatt_cb.tcb[i].pending_enc_clcb = NULL;
-
-        fixed_queue_free(gatt_cb.tcb[i].pending_ind_q, NULL);
-        gatt_cb.tcb[i].pending_ind_q = NULL;
-
-        alarm_free(gatt_cb.tcb[i].conf_timer);
-        gatt_cb.tcb[i].conf_timer = NULL;
-
-        alarm_free(gatt_cb.tcb[i].ind_ack_timer);
-        gatt_cb.tcb[i].ind_ack_timer = NULL;
-
-        fixed_queue_free(gatt_cb.tcb[i].sr_cmd.multi_rsp_q, NULL);
-        gatt_cb.tcb[i].sr_cmd.multi_rsp_q = NULL;
-    }
     for (i = 0; i < GATT_MAX_SR_PROFILES; i++)
     {
         gatt_free_hdl_buffer(&gatt_cb.hdl_list[i]);
@@ -230,8 +211,7 @@ BOOLEAN gatt_disconnect (tGATT_TCB *p_tcb)
 {
     BOOLEAN             ret = FALSE;
     tGATT_CH_STATE      ch_state;
-
-    GATT_TRACE_EVENT ("%s", __func__);
+    GATT_TRACE_WARNING ("gatt_disconnect ");
 
     if (p_tcb != NULL)
     {
@@ -247,23 +227,25 @@ BOOLEAN gatt_disconnect (tGATT_TCB *p_tcb)
                 }
                 else
                 {
-                    gatt_set_ch_state(p_tcb, GATT_CH_CLOSING);
                     ret = L2CA_CancelBleConnectReq (p_tcb->peer_bda);
-                    if (!ret)
-                        gatt_set_ch_state(p_tcb, GATT_CH_CLOSE);
                 }
+                gatt_set_ch_state(p_tcb, GATT_CH_CLOSING);
             }
             else
             {
                 if ((ch_state == GATT_CH_OPEN) || (ch_state == GATT_CH_CFG))
+                {
                     ret = L2CA_DisconnectReq(p_tcb->att_lcid);
+                }
                 else
-                    GATT_TRACE_DEBUG ("%s gatt_disconnect channel not opened", __func__);
+                {
+                    GATT_TRACE_DEBUG ("gatt_disconnect channel not opened");
+                }
             }
         }
         else
         {
-            GATT_TRACE_DEBUG ("%s already in closing state", __func__);
+            GATT_TRACE_DEBUG ("gatt_disconnect already in closing state");
         }
     }
 
@@ -276,25 +258,49 @@ BOOLEAN gatt_disconnect (tGATT_TCB *p_tcb)
 **
 ** Description      Update the application use link status
 **
-** Returns          true if any modifications are made, false otherwise.
+** Returns          void.
 **
 *******************************************************************************/
-BOOLEAN gatt_update_app_hold_link_status(tGATT_IF gatt_if, tGATT_TCB *p_tcb, BOOLEAN is_add)
+void gatt_update_app_hold_link_status (tGATT_IF gatt_if, tGATT_TCB *p_tcb, BOOLEAN is_add)
 {
-    for (int i=0; i<GATT_MAX_APPS; i++) {
-        if (p_tcb->app_hold_link[i] == 0 && is_add) {
-            p_tcb->app_hold_link[i] = gatt_if;
-            GATT_TRACE_DEBUG("%s: added gatt_if=%d idx=%d ", __func__, gatt_if, i);
-            return TRUE;
-        } else if (p_tcb->app_hold_link[i] == gatt_if && !is_add) {
-            p_tcb->app_hold_link[i] = 0;
-            GATT_TRACE_DEBUG("%s: removed gatt_if=%d idx=%d", __func__, gatt_if, i);
-            return TRUE;
+    UINT8 i;
+    BOOLEAN found=FALSE;
+
+    if (p_tcb == NULL)
+    {
+        GATT_TRACE_ERROR("gatt_update_app_hold_link_status p_tcb=NULL");
+        return;
+    }
+
+
+    for (i=0; i<GATT_MAX_APPS; i++)
+    {
+        if (p_tcb->app_hold_link[i] ==  gatt_if)
+        {
+            found = TRUE;
+            if (!is_add)
+            {
+                p_tcb->app_hold_link[i] = 0;
+                break;
+            }
         }
     }
 
-    GATT_TRACE_DEBUG("%s: gatt_if=%d not found; is_add=%d", __func__, gatt_if, is_add);
-    return FALSE;
+    if (!found && is_add)
+    {
+        for (i=0; i<GATT_MAX_APPS; i++)
+        {
+            if (p_tcb->app_hold_link[i] ==  0)
+            {
+                p_tcb->app_hold_link[i] = gatt_if;
+                found = TRUE;
+                break;
+            }
+        }
+    }
+
+    GATT_TRACE_DEBUG("gatt_update_app_hold_link_status found=%d[1-found] idx=%d gatt_if=%d is_add=%d", found, i, gatt_if, is_add);
+
 }
 
 /*******************************************************************************
@@ -307,37 +313,34 @@ BOOLEAN gatt_update_app_hold_link_status(tGATT_IF gatt_if, tGATT_TCB *p_tcb, BOO
 ** Returns          void.
 **
 *******************************************************************************/
-void gatt_update_app_use_link_flag(tGATT_IF gatt_if, tGATT_TCB *p_tcb, BOOLEAN is_add,
-                                   BOOLEAN check_acl_link)
+void gatt_update_app_use_link_flag (tGATT_IF gatt_if, tGATT_TCB *p_tcb, BOOLEAN is_add, BOOLEAN check_acl_link)
 {
-    GATT_TRACE_DEBUG("%s: is_add=%d chk_link=%d", __func__, is_add, check_acl_link);
+    GATT_TRACE_DEBUG("gatt_update_app_use_link_flag  is_add=%d chk_link=%d",
+                      is_add, check_acl_link);
 
-    if (!p_tcb)
-        return;
+    gatt_update_app_hold_link_status(gatt_if, p_tcb, is_add);
 
-    // If we make no modification, i.e. kill app that was never connected to a device,
-    // skip updating the device state.
-    if (!gatt_update_app_hold_link_status(gatt_if, p_tcb, is_add))
-        return;
+    if (check_acl_link &&
+        p_tcb &&
+         p_tcb->att_lcid == L2CAP_ATT_CID && /* only update link idle timer for fixed channel */
+        (BTM_GetHCIConnHandle(p_tcb->peer_bda, p_tcb->transport) != GATT_INVALID_ACL_HANDLE))
+    {
+        if (is_add)
+        {
+            GATT_TRACE_DEBUG("GATT disables link idle timer");
+            /* acl link is connected disable the idle timeout */
+            GATT_SetIdleTimeout(p_tcb->peer_bda, GATT_LINK_NO_IDLE_TIMEOUT, p_tcb->transport);
+        }
+        else
+        {
+            if (!gatt_num_apps_hold_link(p_tcb))
+            {
+                /* acl link is connected but no application needs to use the link
+                   so set the timeout value to GATT_LINK_IDLE_TIMEOUT_WHEN_NO_APP seconds */
+                GATT_TRACE_DEBUG("GATT starts link idle timer =%d sec", GATT_LINK_IDLE_TIMEOUT_WHEN_NO_APP);
+                GATT_SetIdleTimeout(p_tcb->peer_bda, GATT_LINK_IDLE_TIMEOUT_WHEN_NO_APP, p_tcb->transport);
+            }
 
-    if (!check_acl_link ||
-            p_tcb->att_lcid != L2CAP_ATT_CID || /* only update link idle timer for fixed channel */
-            (BTM_GetHCIConnHandle(p_tcb->peer_bda, p_tcb->transport) == GATT_INVALID_ACL_HANDLE)) {
-        return;
-    }
-
-    if (is_add) {
-        GATT_TRACE_DEBUG("%s: disable link idle timer", __func__);
-        /* acl link is connected disable the idle timeout */
-        GATT_SetIdleTimeout(p_tcb->peer_bda, GATT_LINK_NO_IDLE_TIMEOUT, p_tcb->transport);
-    } else {
-        if (!gatt_num_apps_hold_link(p_tcb)) {
-            /* acl link is connected but no application needs to use the link
-               so set the timeout value to GATT_LINK_IDLE_TIMEOUT_WHEN_NO_APP seconds */
-            GATT_TRACE_DEBUG("%s: start link idle timer =%d sec", __func__,
-                             GATT_LINK_IDLE_TIMEOUT_WHEN_NO_APP);
-            GATT_SetIdleTimeout(p_tcb->peer_bda, GATT_LINK_IDLE_TIMEOUT_WHEN_NO_APP,
-                                p_tcb->transport);
         }
     }
 }
@@ -351,8 +354,7 @@ void gatt_update_app_use_link_flag(tGATT_IF gatt_if, tGATT_TCB *p_tcb, BOOLEAN i
 ** Returns          void.
 **
 *******************************************************************************/
-BOOLEAN gatt_act_connect (tGATT_REG *p_reg, BD_ADDR bd_addr,
-                          tBT_TRANSPORT transport, BOOLEAN opportunistic)
+BOOLEAN gatt_act_connect (tGATT_REG *p_reg, BD_ADDR bd_addr, tBT_TRANSPORT transport)
 {
     BOOLEAN     ret = FALSE;
     tGATT_TCB   *p_tcb;
@@ -383,8 +385,6 @@ BOOLEAN gatt_act_connect (tGATT_REG *p_reg, BD_ADDR bd_addr,
             if (!gatt_connect(bd_addr,  p_tcb, transport))
             {
                 GATT_TRACE_ERROR("gatt_connect failed");
-                fixed_queue_free(p_tcb->pending_enc_clcb, NULL);
-                fixed_queue_free(p_tcb->pending_ind_q, NULL);
                 memset(p_tcb, 0, sizeof(tGATT_TCB));
             }
             else
@@ -399,11 +399,7 @@ BOOLEAN gatt_act_connect (tGATT_REG *p_reg, BD_ADDR bd_addr,
 
     if (ret)
     {
-        if (!opportunistic)
-            gatt_update_app_use_link_flag(p_reg->gatt_if, p_tcb, TRUE, FALSE);
-        else
-            GATT_TRACE_DEBUG("%s: connection is opportunistic, not updating app usage",
-                            __func__);
+        gatt_update_app_use_link_flag(p_reg->gatt_if, p_tcb, TRUE, FALSE);
     }
 
     return ret;
@@ -518,7 +514,7 @@ static void gatt_channel_congestion(tGATT_TCB *p_tcb, BOOLEAN congested)
     {
         if (p_reg->in_use)
         {
-            if (p_reg->app_cb.p_congestion_cb)
+            if (p_reg->app_cb.p_congestion_cb && p_tcb)
             {
                 conn_id = GATT_CREATE_CONN_ID(p_tcb->tcb_idx, p_reg->gatt_if);
                 (*p_reg->app_cb.p_congestion_cb)(conn_id, congested);
@@ -575,7 +571,7 @@ static void gatt_le_data_ind (UINT16 chan, BD_ADDR bd_addr, BT_HDR *p_buf)
     }
     else
     {
-        osi_free(p_buf);
+        GKI_freebuf (p_buf);
 
         if (p_tcb != NULL)
         {
@@ -899,7 +895,7 @@ static void gatt_l2cif_data_ind_cback(UINT16 lcid, BT_HDR *p_buf)
         gatt_data_process(p_tcb, p_buf);
     }
     else /* prevent buffer leak */
-        osi_free(p_buf);
+        GKI_freebuf(p_buf);
 }
 
 /*******************************************************************************
@@ -1020,7 +1016,7 @@ void gatt_data_process (tGATT_TCB *p_tcb, BT_HDR *p_buf)
         GATT_TRACE_ERROR ("invalid data length, ignore");
     }
 
-    osi_free(p_buf);
+    GKI_freebuf (p_buf);
 }
 
 /*******************************************************************************

@@ -1,5 +1,7 @@
 /******************************************************************************
  *
+ *  Copyright (c) 2013, The Linux Foundation. All rights reserved.
+ *  Not a Contribution.
  *  Copyright (c) 2014 The Android Open Source Project
  *  Copyright (C) 2009-2012 Broadcom Corporation
  *
@@ -39,6 +41,9 @@
 **  Type definitions for callback functions
 ********************************************************************************/
 
+typedef char bdstr_t[18];
+
+
 /*******************************************************************************
 **  Functions
 ********************************************************************************/
@@ -49,6 +54,7 @@ const char* dump_dm_event(UINT16 event);
 const char* dump_hf_event(UINT16 event);
 const char* dump_hf_client_event(UINT16 event);
 const char* dump_hh_event(UINT16 event);
+const char* dump_hd_event(UINT16 event);
 const char* dump_hf_conn_state(UINT16 event);
 const char* dump_hf_call_state(bthf_call_state_t call_state);
 const char* dump_property_type(bt_property_type_t type);
@@ -65,14 +71,8 @@ UINT32 devclass2uint(DEV_CLASS dev_class);
 void uint2devclass(UINT32 dev, DEV_CLASS dev_class);
 void uuid16_to_uuid128(uint16_t uuid16, bt_uuid_t* uuid128);
 
-// Takes a |str| containing a 128-bit GUID formatted UUID and stores the
-// result in |p_uuid|. |str| must be formatted in this format:
-//   "12345678-1234-1234-1234-123456789012"
-// |p_uuid| cannot be null. Returns true if parsing was successful, false
-// otherwise. Returns false if |str| is null.
-bool string_to_uuid(const char *str, bt_uuid_t *p_uuid);
-
 void uuid_to_string_legacy(bt_uuid_t *p_uuid, char *str);
-int ascii_2_hex (const char *p_ascii, int len, UINT8 *p_hex);
+void string_to_uuid(char *str, bt_uuid_t *p_uuid);
+int ascii_2_hex (char *p_ascii, int len, UINT8 *p_hex);
 
 #endif /* BTIF_UTIL_H */

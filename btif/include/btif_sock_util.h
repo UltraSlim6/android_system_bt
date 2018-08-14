@@ -27,7 +27,7 @@
 #ifndef BTIF_SOCK_UTIL_H
 #define BTIF_SOCK_UTIL_H
 
-#include <stdint.h>
+#include "osi/include/log.h"
 
 void dump_bin(const char* title, const char* data, int size);
 

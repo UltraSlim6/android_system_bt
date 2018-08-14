@@ -33,7 +33,7 @@
 #include "l2cdefs.h"
 #include "btm_api.h"
 #include "btm_int.h"
-#include "device/include/interop.h"
+
 
 /* callback function declarations */
 void avdt_l2c_connect_ind_cback(BD_ADDR bd_addr, UINT16 lcid, UINT16 psm, UINT8 id);
@@ -58,6 +58,11 @@ const tL2CAP_APPL_INFO avdt_l2c_appl = {
     avdt_l2c_data_ind_cback,
     avdt_l2c_congestion_ind_cback,
     NULL                /* tL2CA_TX_COMPLETE_CB */
+#if (defined(LE_L2CAP_CFC_INCLUDED) && (LE_L2CAP_CFC_INCLUDED == TRUE))
+    ,
+    NULL,
+    NULL
+#endif
 };
 
 /*******************************************************************************
@@ -211,19 +216,6 @@ void avdt_l2c_connect_ind_cback(BD_ADDR bd_addr, UINT16 lcid, UINT16 psm, UINT8 
             p_tbl->state = AVDT_AD_ST_SEC_ACP;
             p_tbl->cfg_flags = AVDT_L2C_CFG_CONN_ACP;
 
-            if (interop_match_addr(INTEROP_2MBPS_LINK_ONLY, (const bt_bdaddr_t *)&bd_addr)) {
-                // Disable 3DH packets for AVDT ACL to improve sensitivity on HS
-                tACL_CONN *p_acl_cb = btm_bda_to_acl(bd_addr, BT_TRANSPORT_BR_EDR);
-                /* Fix for below klockwork issue
-                 * Pointer 'p_acl_cb' returned from call to function 'btm_bda_to_acl' at line 216
-                 * may be NULL and will be dereferenced at line 217*/
-                if (p_acl_cb)
-                    btm_set_packet_types(p_acl_cb, (btm_cb.btm_acl_pkt_types_supported |
-                                                HCI_PKT_TYPES_MASK_NO_3_DH1 |
-                                                HCI_PKT_TYPES_MASK_NO_3_DH3 |
-                                                HCI_PKT_TYPES_MASK_NO_3_DH5));
-            }
-
             /* Check the security */
             rc = btm_sec_mx_access_request (bd_addr, AVDT_PSM,
                 FALSE, BTM_SEC_PROTO_AVDT,
@@ -342,19 +334,6 @@ void avdt_l2c_connect_cfm_cback(UINT16 lcid, UINT16 result)
                         p_tbl->state = AVDT_AD_ST_SEC_INT;
                         p_tbl->lcid = lcid;
                         p_tbl->cfg_flags = AVDT_L2C_CFG_CONN_INT;
-
-                        if (interop_match_addr(INTEROP_2MBPS_LINK_ONLY, (const bt_bdaddr_t *) &p_ccb->peer_addr)) {
-                            // Disable 3DH packets for AVDT ACL to improve sensitivity on HS
-                            tACL_CONN *p_acl_cb = btm_bda_to_acl(p_ccb->peer_addr, BT_TRANSPORT_BR_EDR);
-                            /* Fix for below klockwork issue
-                             * Pointer 'p_acl_cb' returned from call to function 'btm_bda_to_acl' at line 344
-                             * may be NULL and will be dereferenced at line 345*/
-                            if (p_acl_cb)
-                                btm_set_packet_types(p_acl_cb, (btm_cb.btm_acl_pkt_types_supported |
-                                                            HCI_PKT_TYPES_MASK_NO_3_DH1 |
-                                                            HCI_PKT_TYPES_MASK_NO_3_DH3 |
-                                                            HCI_PKT_TYPES_MASK_NO_3_DH5));
-                        }
 
                         /* Check the security */
                         btm_sec_mx_access_request (p_ccb->peer_addr, AVDT_PSM,
@@ -559,6 +538,6 @@ void avdt_l2c_data_ind_cback(UINT16 lcid, BT_HDR *p_buf)
         avdt_ad_tc_data_ind(p_tbl, p_buf);
     }
     else /* prevent buffer leak */
-        osi_free(p_buf);
+        GKI_freebuf(p_buf);
 }
 

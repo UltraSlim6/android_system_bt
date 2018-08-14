@@ -70,10 +70,11 @@ const tBTA_DM_ACTION bta_dm_action[] =
 
     bta_dm_set_encryption,    /* BTA_DM_API_SET_ENCRYPTION_EVT */
 
-    /* out of band pairing events */
+#if (BTM_OOB_INCLUDED == TRUE)
     bta_dm_loc_oob,           /* 20 BTA_DM_API_LOC_OOB_EVT */
     bta_dm_ci_io_req_act,     /* 21 BTA_DM_CI_IO_REQ_EVT */
     bta_dm_ci_rmt_oob_act,    /* 22 BTA_DM_CI_RMT_OOB_EVT */
+#endif /* BTM_OOB_INCLUDED */
 
 
 #if BLE_INCLUDED == TRUE
@@ -350,7 +351,6 @@ BOOLEAN bta_dm_search_sm_execute(BT_HDR *p_msg)
 
     APPL_TRACE_EVENT("bta_dm_search_sm_execute state:%d, event:0x%x",
         bta_dm_search_cb.state, p_msg->event);
-
     /* look up the state table for the current state */
     state_table = bta_dm_search_st_tbl[bta_dm_search_cb.state];
 

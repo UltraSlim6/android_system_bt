@@ -18,8 +18,6 @@
 
 #pragma once
 
-#include <gtest/gtest.h>
-
 class AllocationTestHarness : public ::testing::Test {
   protected:
     virtual void SetUp();

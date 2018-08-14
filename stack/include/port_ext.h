@@ -25,8 +25,8 @@
 #ifndef PORTEXT_H
 #define PORTEXT_H
 
-#include "bt_common.h"
+#include "gki.h"
 
-extern void rfcomm_port_timer_timeout(void *data);
-extern void rfcomm_mcb_timer_timeout(void *data);
+/* Port emulation entity Entry Points */
+extern void rfcomm_process_timeout (TIMER_LIST_ENT  *p_tle);
 #endif

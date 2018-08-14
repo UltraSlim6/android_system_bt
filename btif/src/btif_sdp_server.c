@@ -25,23 +25,20 @@
  *
  ***********************************************************************************/
 
-#define LOG_TAG "bt_btif_sdp_server"
-
-#include <pthread.h>
-#include <stdlib.h>
-#include <string.h>
-
 #include <hardware/bluetooth.h>
 #include <hardware/bt_sdp.h>
+#include <stdlib.h>
+#include <string.h>
+#include <pthread.h>
 
+#define LOG_TAG "BTIF_SDP_SERVER"
+#include "allocator.h"
+#include "btif_common.h"
+#include "btif_util.h"
 #include "bta_sdp_api.h"
 #include "bta_sys.h"
-#include "btif_common.h"
-#include "btif_sock_util.h"
-#include "btif_util.h"
-#include "osi/include/allocator.h"
 #include "utl.h"
-#include "stack_manager.h"
+#include "btif_sock_util.h"
 
 static pthread_mutex_t sdp_lock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
 
@@ -71,6 +68,7 @@ static int add_mapc_sdp(const bluetooth_sdp_mns_record* rec);
 static int add_pbaps_sdp(const bluetooth_sdp_pse_record* rec);
 static int add_opps_sdp(const bluetooth_sdp_ops_record* rec);
 static int add_saps_sdp(const bluetooth_sdp_sap_record* rec);
+static int add_pbapc_sdp(const bluetooth_sdp_pce_record* rec);
 bt_status_t remove_sdp_record(int record_id);
 static int free_sdp_slot(int id);
 
@@ -187,6 +185,7 @@ void copy_sdp_records(bluetooth_sdp_record* in_records,
  *   user2_ptr. */
 static int alloc_sdp_slot(bluetooth_sdp_record* in_record) {
     int i;
+    char* tmp_ptr = NULL;
     int record_size = get_sdp_records_size(in_record, 1);
     bluetooth_sdp_record* record = osi_malloc(record_size);
 
@@ -216,8 +215,7 @@ static int alloc_sdp_slot(bluetooth_sdp_record* in_record) {
 static int free_sdp_slot(int id) {
     int handle = -1;
     bluetooth_sdp_record* record = NULL;
-    if (id < 0 || id >= MAX_SDP_SLOTS) {
-        android_errorWriteLog(0x534e4554, "37502513");
+    if(id >= MAX_SDP_SLOTS) {
         APPL_TRACE_ERROR("%s() failed - id %d is invalid", __func__, id);
         return handle;
     }
@@ -244,8 +242,6 @@ static int free_sdp_slot(int id) {
 /***
  * Use this to get a reference to a SDP slot AND change the state to
  * SDP_RECORD_CREATE_INITIATED.
- *
- * Caller of this function should held mutex with sdp_lock
  */
 static const sdp_slot_t* start_create_sdp(int id) {
     sdp_slot_t* sdp_slot;
@@ -253,12 +249,14 @@ static const sdp_slot_t* start_create_sdp(int id) {
         APPL_TRACE_ERROR("%s() failed - id %d is invalid", __func__, id);
         return NULL;
     }
+    pthread_mutex_lock(&sdp_lock);
     if(sdp_slots[id].state == SDP_RECORD_ALLOCED) {
         sdp_slot = &(sdp_slots[id]);
     } else {
         /* The record have been removed before this event occurred - e.g. deinit */
         sdp_slot = NULL;
     }
+    pthread_mutex_unlock(&sdp_lock);
     if(sdp_slot == NULL) {
         APPL_TRACE_ERROR("%s() failed - state for id %d is "
                 "sdp_slots[id].state = %d expected %d", __func__,
@@ -266,13 +264,14 @@ static const sdp_slot_t* start_create_sdp(int id) {
     }
     return sdp_slot;
 }
-/***
- * Caller of this function should held mutex with sdp_lock
- */
+
 static void set_sdp_handle(int id, int handle) {
+    pthread_mutex_lock(&sdp_lock);
     sdp_slots[id].sdp_handle = handle;
+    pthread_mutex_unlock(&sdp_lock);
     BTIF_TRACE_DEBUG("%s() id=%d to handle=0x%08x", __FUNCTION__, id, handle);
 }
+
 
 bt_status_t create_sdp_record(bluetooth_sdp_record *record, int* record_handle) {
     int handle;
@@ -283,7 +282,7 @@ bt_status_t create_sdp_record(bluetooth_sdp_record *record, int* record_handle) 
     if(handle < 0)
         return BT_STATUS_FAIL;
 
-    BTA_SdpCreateRecordByUser(INT_TO_PTR(handle));
+    BTA_SdpCreateRecordByUser((void*) handle);
 
     *record_handle = handle;
 
@@ -293,11 +292,6 @@ bt_status_t create_sdp_record(bluetooth_sdp_record *record, int* record_handle) 
 bt_status_t remove_sdp_record(int record_id) {
     int handle;
 
-    if (!stack_manager_get_interface()->get_stack_is_running()) {
-        BTIF_TRACE_DEBUG("Sdp Server %s - Stack closed", __FUNCTION__);
-        return BT_STATUS_FAIL;
-    }
-
     /* Get the Record handle, and free the slot */
     handle = free_sdp_slot(record_id);
     BTIF_TRACE_DEBUG("Sdp Server %s id=%d to handle=0x%08x",
@@ -305,12 +299,13 @@ bt_status_t remove_sdp_record(int record_id) {
 
     /* Pass the actual record handle */
     if(handle > 0) {
-        BTA_SdpRemoveRecordByUser(INT_TO_PTR(handle));
+        BTA_SdpRemoveRecordByUser((void*) handle);
         return BT_STATUS_SUCCESS;
     }
     BTIF_TRACE_DEBUG("Sdp Server %s - record already removed - or never created", __FUNCTION__);
     return BT_STATUS_FAIL;
 }
+
 
 /******************************************************************************
  * CALLBACK FUNCTIONS
@@ -325,7 +320,6 @@ void on_create_record_event(int id) {
      * 4) What to do at fail?
      * */
     BTIF_TRACE_DEBUG("Sdp Server %s", __FUNCTION__);
-    pthread_mutex_lock(&sdp_lock);
     const sdp_slot_t* sdp_slot = start_create_sdp(id);
     /* In the case we are shutting down, sdp_slot is NULL */
     if(sdp_slot != NULL) {
@@ -348,7 +342,8 @@ void on_create_record_event(int id) {
             handle = add_saps_sdp(&record->sap);
             break;
         case SDP_TYPE_PBAP_PCE:
-    //        break; not yet supported
+            handle = add_pbapc_sdp(&record->pce);
+            break;
         default:
             BTIF_TRACE_DEBUG("Record type %d is not supported",record->hdr.type);
             break;
@@ -357,7 +352,6 @@ void on_create_record_event(int id) {
             set_sdp_handle(id, handle);
         }
     }
-    pthread_mutex_unlock(&sdp_lock);
 }
 
 void on_remove_record_event(int handle) {
@@ -545,6 +539,57 @@ static int add_mapc_sdp(const bluetooth_sdp_mns_record* rec)
     return sdp_handle;
 }
 
+/* Create a PBAP PCE SDP record based on information stored in a bluetooth_sdp_mns_record */
+static int add_pbapc_sdp(const bluetooth_sdp_pce_record* rec)
+{
+
+    tSDP_PROTOCOL_ELEM  protoList [3];
+    UINT16              service = UUID_SERVCLASS_PBAP_PCE;
+    UINT16              browse = UUID_SERVCLASS_PUBLIC_BROWSE_GROUP;
+    BOOLEAN             status = TRUE;
+    UINT32              sdp_handle = 0;
+
+    APPL_TRACE_DEBUG("%s(): service name %s version %04x", __func__,
+            rec->hdr.service_name, rec->hdr.profile_version);
+
+    if ((sdp_handle = SDP_CreateRecord()) == 0)
+    {
+        APPL_TRACE_ERROR("%s(): Unable to register PBAP Client Service", __func__);
+        return sdp_handle;
+    }
+
+    /* add service class */
+    status &= SDP_AddServiceClassIdList(sdp_handle, 1, &service);
+
+    /* Add a name entry */
+    status &= SDP_AddAttribute(sdp_handle,
+                    (UINT16)ATTR_ID_SERVICE_NAME,
+                    (UINT8)TEXT_STR_DESC_TYPE,
+                    (UINT32)(rec->hdr.service_name_length + 1),
+                    (UINT8 *)rec->hdr.service_name);
+
+    /* Add in the Bluetooth Profile Descriptor List */
+    status &= SDP_AddProfileDescriptorList(sdp_handle,
+                                     UUID_SERVCLASS_PHONE_ACCESS,
+                                     rec->hdr.profile_version);
+
+    /* Make the service browseable */
+    status &= SDP_AddUuidSequence (sdp_handle, ATTR_ID_BROWSE_GROUP_LIST, 1, &browse);
+
+    if (!status)
+    {
+        SDP_DeleteRecord(sdp_handle);
+        sdp_handle = 0;
+        APPL_TRACE_ERROR("%s() FAILED", __func__);
+    }
+    else
+    {
+        bta_sys_add_uuid(service);  /* UUID_SERVCLASS_PHONE_ACCESS */
+        APPL_TRACE_DEBUG("%s():  SDP Registered (handle 0x%08x)", __func__, sdp_handle);
+    }
+    return sdp_handle;
+}
+
 /* Create a PBAP Server SDP record based on information stored in a bluetooth_sdp_pse_record */
 static int add_pbaps_sdp(const bluetooth_sdp_pse_record* rec)
 {
@@ -628,6 +673,7 @@ static int add_pbaps_sdp(const bluetooth_sdp_pse_record* rec)
     }
     return sdp_handle;
 }
+
 
 /* Create a OPP Server SDP record based on information stored in a bluetooth_sdp_ops_record */
 static int add_opps_sdp(const bluetooth_sdp_ops_record* rec)
@@ -785,3 +831,4 @@ static int add_saps_sdp(const bluetooth_sdp_sap_record* rec)
     }
     return sdp_handle;
 }
+

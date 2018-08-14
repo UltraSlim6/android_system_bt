@@ -88,13 +88,13 @@ static gid_t groups[] = { AID_NET_BT, AID_INET, AID_NET_BT_ADMIN,
 
 /* Set to 1 when the Bluedroid stack is enabled */
 static unsigned char bt_enabled = 0;
-static bool strict_mode = FALSE;
 
 /************************************************************************************
 **  Static functions
 ************************************************************************************/
 
 static void process_cmd(char *p, unsigned char is_job);
+static void job_handler(void *param);
 static void bdt_log(const char *fmt_str, ...);
 
 
@@ -136,7 +136,7 @@ static int str2bd(char *str, bt_bdaddr_t *addr)
 static void config_permissions(void)
 {
     struct __user_cap_header_struct header;
-    struct __user_cap_data_struct cap[2];
+    struct __user_cap_data_struct cap;
 
     bdt_log("set_aid_and_cap : pid %d, uid %d gid %d", getpid(), getuid(), getgid());
 
@@ -147,28 +147,19 @@ static void config_permissions(void)
     setuid(AID_BLUETOOTH);
     setgid(AID_BLUETOOTH);
 
-    header.version = _LINUX_CAPABILITY_VERSION_3;
+    header.version = _LINUX_CAPABILITY_VERSION;
 
-    cap[CAP_TO_INDEX(CAP_NET_RAW)].permitted |= CAP_TO_MASK(CAP_NET_RAW);
-    cap[CAP_TO_INDEX(CAP_NET_ADMIN)].permitted |= CAP_TO_MASK(CAP_NET_ADMIN);
-    cap[CAP_TO_INDEX(CAP_NET_BIND_SERVICE)].permitted |= CAP_TO_MASK(CAP_NET_BIND_SERVICE);
-    cap[CAP_TO_INDEX(CAP_SYS_RAWIO)].permitted |= CAP_TO_MASK(CAP_SYS_RAWIO);
-    cap[CAP_TO_INDEX(CAP_SYS_NICE)].permitted |= CAP_TO_MASK(CAP_SYS_NICE);
-    cap[CAP_TO_INDEX(CAP_SETGID)].permitted |= CAP_TO_MASK(CAP_SETGID);
-    cap[CAP_TO_INDEX(CAP_WAKE_ALARM)].permitted |= CAP_TO_MASK(CAP_WAKE_ALARM);
+    cap.effective = cap.permitted =  cap.inheritable =
+                    1 << CAP_NET_RAW |
+                    1 << CAP_NET_ADMIN |
+                    1 << CAP_NET_BIND_SERVICE |
+                    1 << CAP_SYS_RAWIO |
+                    1 << CAP_SYS_NICE |
+                    1 << CAP_SETGID;
 
-    cap[CAP_TO_INDEX(CAP_NET_RAW)].effective |= CAP_TO_MASK(CAP_NET_RAW);
-    cap[CAP_TO_INDEX(CAP_NET_ADMIN)].effective |= CAP_TO_MASK(CAP_NET_ADMIN);
-    cap[CAP_TO_INDEX(CAP_NET_BIND_SERVICE)].effective |= CAP_TO_MASK(CAP_NET_BIND_SERVICE);
-    cap[CAP_TO_INDEX(CAP_SYS_RAWIO)].effective |= CAP_TO_MASK(CAP_SYS_RAWIO);
-    cap[CAP_TO_INDEX(CAP_SYS_NICE)].effective |= CAP_TO_MASK(CAP_SYS_NICE);
-    cap[CAP_TO_INDEX(CAP_SETGID)].effective |= CAP_TO_MASK(CAP_SETGID);
-    cap[CAP_TO_INDEX(CAP_WAKE_ALARM)].effective |= CAP_TO_MASK(CAP_WAKE_ALARM);
-
-    capset(&header, &cap[0]);
+    capset(&header, &cap);
     setgroups(sizeof(groups)/sizeof(groups[0]), groups);
 }
-#if 0
 /*Pin_Request_cb */
 static void pin_remote_request_callback (bt_bdaddr_t *remote_bd_addr,
                              bt_bdname_t *bd_name, uint32_t cod)
@@ -183,7 +174,7 @@ static void pin_remote_request_callback (bt_bdaddr_t *remote_bd_addr,
     bdt_log("bdt PIN Remote Request");
     sBtInterface->pin_reply(remote_bd_addr ,1 , 4 , &pin_code);
 }
-#endif
+
 
 /* Pairing in Case of SSP */
 static void ssp_remote_requst_callback(bt_bdaddr_t *remote_bd_addr, bt_bdname_t *bd_name,
@@ -235,7 +226,7 @@ static const char* dump_bt_status(bt_status_t status)
             return "unknown status code";
     }
 }
-#if 0
+
 static void hex_dump(char *msg, void *data, int size, int trunc)
 {
     unsigned char *p = data;
@@ -266,11 +257,11 @@ static void hex_dump(char *msg, void *data, int size, int trunc)
 
         /* store hex str (for left side) */
         snprintf(bytestr, sizeof(bytestr), "%02X ", *p);
-        strncat(hexstr, bytestr, sizeof(hexstr)-strlen(hexstr)-1);
+        strlcat(hexstr, bytestr, sizeof(hexstr)-strlen(hexstr)-1);
 
         /* store char str (for right side) */
         snprintf(bytestr, sizeof(bytestr), "%c", c);
-        strncat(charstr, bytestr, sizeof(charstr)-strlen(charstr)-1);
+        strlcat(charstr, bytestr, sizeof(charstr)-strlen(charstr)-1);
 
         if(n%16 == 0) {
             /* line completed */
@@ -279,8 +270,8 @@ static void hex_dump(char *msg, void *data, int size, int trunc)
             charstr[0] = 0;
         } else if(n%8 == 0) {
             /* half line: add whitespaces */
-            strncat(hexstr, "  ", sizeof(hexstr)-strlen(hexstr)-1);
-            strncat(charstr, " ", sizeof(charstr)-strlen(charstr)-1);
+            strlcat(hexstr, "  ", sizeof(hexstr)-strlen(hexstr)-1);
+            strlcat(charstr, " ", sizeof(charstr)-strlen(charstr)-1);
         }
         p++; /* next byte */
     }
@@ -290,7 +281,7 @@ static void hex_dump(char *msg, void *data, int size, int trunc)
         bdt_log("[%4.4s]   %-50.50s  %s\n", addrstr, hexstr, charstr);
     }
 }
-#endif
+
 /*******************************************************************************
  ** Console helper functions
  *******************************************************************************/
@@ -534,12 +525,11 @@ static void dut_mode_recv(uint16_t opcode, uint8_t *buf, uint8_t len)
 {
     bdt_log("DUT MODE RECV : NOT IMPLEMENTED");
 }
-#if BLE_INCLUDED == TRUE
+
 static void le_test_mode(bt_status_t status, uint16_t packet_count)
 {
     bdt_log("LE TEST MODE END status:%s number_of_packets:%d", dump_bt_status(status), packet_count);
 }
-#endif
 
 static void device_found_cb(int num_properties, bt_property_t *properties)
 {
@@ -573,8 +563,8 @@ static bt_callbacks_t bt_callbacks = {
 #else
     NULL,
 #endif
-    NULL,                       /* energy_info_cb */
-    NULL                        /* get_testapp_interface */
+    NULL,                        /* energy_info_cb */
+    NULL                         /* hci_event_recv_cb */
 };
 
 static bool set_wake_alarm(uint64_t delay_millis, bool should_wake, alarm_cb cb, void *data)
@@ -685,7 +675,7 @@ void bdt_enable(void)
         bdt_log("Bluetooth is already enabled");
         return;
     }
-    status = sBtInterface->enable(strict_mode);
+    status = sBtInterface->enable(false);
 
     check_return_status(status);
 }
@@ -787,6 +777,7 @@ static int pos = 0;
 void do_help(char *p)
 {
     int i = 0;
+    int max = 0;
     char line[128];
 
     while (console_cmd_list[i].name != NULL)
@@ -853,13 +844,14 @@ void do_rfc_con( char *p)
 {
     char            buf[64];
     tRFC            conn_param;
+    bt_bdaddr_t     remote_addr;
 
     bdt_log("bdt do_rfc_con");
-    memset(buf, 0, 64);
+    memset(buf, '/0', 64);
     /*Enter BD address */
     get_str(&p, buf);
     str2bd(buf, &conn_param.data.conn.bdadd);
-    memset(buf ,0 , 64);
+    memset(buf ,'/0' , 64);
     get_str(&p, buf);
     conn_param.data.conn.scn = atoi(buf);
     bdt_log("SCN =%d",conn_param.data.conn.scn);
@@ -883,13 +875,14 @@ void do_rfc_con_for_test_msc_data(char *p)
 {
     char            buf[64];
     tRFC            conn_param;
+    bt_bdaddr_t     remote_addr;
 
     bdt_log("bdt do_rfc_con_for_test_msc_data");
-    memset(buf, 0, 64);
+    memset(buf, '/0', 64);
     /*Enter BD address */
     get_str(&p, buf);
     str2bd(buf, &conn_param.data.conn.bdadd);
-    memset(buf ,0 , 64);
+    memset(buf ,'/0' , 64);
     get_str(&p, buf);
     conn_param.data.conn.scn = atoi(buf);
     bdt_log("SCN =%d",conn_param.data.conn.scn);
@@ -914,13 +907,14 @@ void do_role_switch(char *p)
 {
     char   buf[64];
     tRFC conn_param ;
+    bt_bdaddr_t remote_addr;
 
     bdt_log("bdt do_role_switch");
-    memset(buf ,0 , 64);
+    memset(buf ,'/0' , 64);
     /* Bluetooth Device address */
     get_str(&p, buf);
     str2bd(buf, &conn_param.data.role_switch.bdadd);
-    memset(buf ,0 , 64);
+    memset(buf ,'/0' , 64);
     get_str(&p, buf);
     conn_param.data.role_switch.role = atoi(buf);
     /* Role Switch */
@@ -1027,7 +1021,7 @@ const t_cmd console_cmd_list[] =
 
 static void process_cmd(char *p, unsigned char is_job)
 {
-    char cmd[128];
+    char cmd[64];
     int i = 0;
     char *p_saved = p;
 
@@ -1054,6 +1048,11 @@ static void process_cmd(char *p, unsigned char is_job)
 
 int main (int argc, char * argv[])
 {
+    int opt;
+    char cmd[128];
+    int args_processed = 0;
+    int pid = -1;
+    int enable_wait_count = 0;
 
     config_permissions();
     bdt_log("\n:::::::::::::::::::::::::::::::::::::::::::::::::::");
@@ -1092,7 +1091,7 @@ int main (int argc, char * argv[])
 
     /* FIXME: Commenting this out as for some reason, the application does not exit otherwise*/
     //bdt_cleanup();
-//cleanup:
+cleanup:
     HAL_unload();
 
     bdt_log(":: Bluedroid test app terminating");

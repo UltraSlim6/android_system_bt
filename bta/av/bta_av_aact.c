@@ -1,9 +1,4 @@
 /******************************************************************************
- *  Copyright (c) 2016, The Linux Foundation. All rights reserved.
- *
- *  Not a contribution.
- ******************************************************************************/
-/******************************************************************************
  *
  *  Copyright (C) 2004-2012 Broadcom Corporation
  *
@@ -35,22 +30,17 @@
 #include <assert.h>
 #include <string.h>
 
-#include "avdt_api.h"
-#include "bta_av_int.h"
-#include "bt_utils.h"
-#include "a2d_aptx.h"
-#include "a2d_aptx_hd.h"
-#include "l2cdefs.h"
-#include "l2c_api.h"
-#include "osi/include/properties.h"
-#include "utl.h"
-#include "vendor.h"
+#include <cutils/properties.h>
 
+#include "bta_av_int.h"
+#include "avdt_api.h"
+#include "utl.h"
+#include "l2c_api.h"
+#include "l2cdefs.h"
 #if( defined BTA_AR_INCLUDED ) && (BTA_AR_INCLUDED == TRUE)
 #include "bta_ar_api.h"
 #endif
 
-extern BOOLEAN is_sniff_disabled;
 /*****************************************************************************
 **  Constants
 *****************************************************************************/
@@ -70,6 +60,8 @@ extern BOOLEAN is_sniff_disabled;
 #define BTA_AV_RECONFIG_RETRY       6
 #endif
 
+static void bta_av_st_rc_timer(tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data);
+
 static const size_t SBC_MAX_BITPOOL_OFFSET = 6;
 
 #ifdef BTA_AV_SPLIT_A2DP_DEF_FREQ_48KHZ
@@ -77,11 +69,6 @@ static const size_t SBC_MAX_BITPOOL = 51;
 #else
 static const size_t SBC_MAX_BITPOOL = 53;
 #endif
-
-/* ACL quota we are letting FW use for A2DP Offload Tx. */
-#define BTA_AV_A2DP_OFFLOAD_XMIT_QUOTA      4
-
-static void bta_av_st_rc_timer(tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data);
 
 /* state machine states */
 enum
@@ -107,9 +94,7 @@ const tBTA_AV_CO_FUNCTS bta_av_a2d_cos =
     bta_av_co_audio_start,
     bta_av_co_audio_stop,
     bta_av_co_audio_src_data_path,
-    bta_av_co_audio_delay,
-    bta_av_co_audio_is_offload_supported,
-    bta_av_co_audio_is_codec_supported
+    bta_av_co_audio_delay
 };
 
 /* ssm action functions for audio stream */
@@ -163,8 +148,6 @@ const tBTA_AV_SACT bta_av_a2d_action[] =
     bta_av_role_res,        /* BTA_AV_ROLE_RES */
     bta_av_delay_co,        /* BTA_AV_DELAY_CO */
     bta_av_open_at_inc,     /* BTA_AV_OPEN_AT_INC */
-    bta_av_offload_req,     /* BTA_AV_OFFLOAD_REQ */
-    bta_av_offload_rsp,     /* BTA_AV_OFFLOAD_RSP */
     NULL
 };
 
@@ -272,29 +255,7 @@ static UINT8 bta_av_get_scb_handle(tBTA_AV_SCB *p_scb, UINT8 local_sep)
     {
         if ((p_scb->seps[xx].tsep == local_sep) &&
             (p_scb->seps[xx].codec_type == p_scb->codec_type))
-        {
-            if (p_scb->seps[xx].codec_type != A2D_NON_A2DP_MEDIA_CT)
-                return (p_scb->seps[xx].av_handle);
-            else {
-                UINT8 losc = p_scb->cfg.codec_info[0];
-                if (losc == A2D_APTX_CODEC_LEN)
-                {
-                    tA2D_APTX_CIE aptx_config;
-                    if (A2D_ParsAptxInfo(&aptx_config, p_scb->cfg.codec_info, FALSE) == A2D_SUCCESS)
-                        if ((aptx_config.codecId == p_scb->seps[xx].codecId) &&
-                            (aptx_config.vendorId == p_scb->seps[xx].vendorId))
-                           return (p_scb->seps[xx].av_handle);
-                } else if (losc == A2D_APTX_HD_CODEC_LEN)
-                {
-                    tA2D_APTX_HD_CIE aptx_config;
-                    if (A2D_ParsAptx_hdInfo(&aptx_config, p_scb->cfg.codec_info, FALSE) == A2D_SUCCESS)
-                        if ((aptx_config.codecId == p_scb->seps[xx].codecId) &&
-                            (aptx_config.vendorId == p_scb->seps[xx].vendorId))
-                           return (p_scb->seps[xx].av_handle);
-                } else
-                    APPL_TRACE_DEBUG("%s: Invalid aptX Losc", __func__)
-            }
-        }
+            return (p_scb->seps[xx].av_handle);
     }
     APPL_TRACE_DEBUG(" bta_av_get_scb_handle appropiate sep_type not found")
     return 0; /* return invalid handle */
@@ -388,16 +349,14 @@ static void bta_av_st_rc_timer(tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
     APPL_TRACE_DEBUG("bta_av_st_rc_timer rc_handle:%d, use_rc: %d",
         p_scb->rc_handle, p_scb->use_rc);
     /* for outgoing RC connection as INT/CT */
-    if ((p_scb->rc_handle == BTA_AV_RC_HANDLE_NONE) &&
-        /* (bta_av_cb.features & BTA_AV_FEAT_RCCT) && */
-        (p_scb->use_rc == TRUE || (p_scb->role & BTA_AV_ROLE_AD_ACP)))
+    if( (p_scb->rc_handle == BTA_AV_RC_HANDLE_NONE) &&
+        /*(bta_av_cb.features & BTA_AV_FEAT_RCCT) &&*/
+        (p_scb->use_rc == TRUE || (p_scb->role & BTA_AV_ROLE_AD_ACP)) )
     {
-        if ((p_scb->wait & BTA_AV_WAIT_ROLE_SW_BITS) == 0) {
-            bta_sys_start_timer(p_scb->avrc_ct_timer, BTA_AV_RC_DISC_TIME_VAL,
-                                BTA_AV_AVRC_TIMER_EVT, p_scb->hndl);
-        } else {
+        if ((p_scb->wait & BTA_AV_WAIT_ROLE_SW_BITS) == 0)
+            bta_sys_start_timer(&p_scb->timer, BTA_AV_AVRC_TIMER_EVT, BTA_AV_RC_DISC_TIME_VAL);
+        else
             p_scb->wait |= BTA_AV_WAIT_CHECK_RC;
-        }
     }
 
 }
@@ -436,7 +395,14 @@ static BOOLEAN bta_av_next_getcap(tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
 
             /* we got a stream; get its capabilities */
             if (p_scb->p_cap == NULL)
-                p_scb->p_cap = (tAVDT_CFG *)osi_malloc(sizeof(tAVDT_CFG));
+            {
+                p_scb->p_cap = (tAVDT_CFG *) GKI_getbuf(sizeof(tAVDT_CFG));
+            }
+            if (p_scb->p_cap == NULL)
+            {
+                i = p_scb->num_seps;
+                break;
+            }
             if ((p_scb->avdt_version >= AVDT_VERSION_SYNC) && (a2d_get_avdt_sdp_ver() >= AVDT_VERSION_SYNC) )
             {
                 p_req = AVDT_GetAllCapReq;
@@ -474,6 +440,7 @@ static BOOLEAN bta_av_next_getcap(tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
 *******************************************************************************/
 static void bta_av_proc_stream_evt(UINT8 handle, BD_ADDR bd_addr, UINT8 event, tAVDT_CTRL *p_data, int index)
 {
+    tBTA_AV_STR_MSG     *p_msg;
     UINT16              sec_len = 0;
     tBTA_AV_SCB         *p_scb = bta_av_cb.p_scb[index];
     int                 xx;
@@ -493,9 +460,8 @@ static void bta_av_proc_stream_evt(UINT8 handle, BD_ADDR bd_addr, UINT8 event, t
         }
     }
 
-    if (p_scb) {
-        tBTA_AV_STR_MSG *p_msg =
-            (tBTA_AV_STR_MSG *)osi_malloc(sizeof(tBTA_AV_STR_MSG) + sec_len);
+    if (p_scb && (p_msg = (tBTA_AV_STR_MSG *) GKI_getbuf((UINT16) (sizeof(tBTA_AV_STR_MSG) + sec_len))) != NULL)
+    {
 
         /* copy event data, bd addr, and handle to event message buffer */
         p_msg->hdr.offset = 0;
@@ -644,12 +610,12 @@ void bta_av_stream_data_cback(UINT8 handle, BT_HDR *p_pkt, UINT32 time_stamp, UI
     }
     if(index == BTA_AV_NUM_STRS) /* cannot find correct handler */
     {
-        osi_free(p_pkt);
+        GKI_freebuf(p_pkt);
         return;
     }
     p_pkt->event = BTA_AV_MEDIA_DATA_EVT;
     p_scb->seps[p_scb->sep_idx].p_app_data_cback(BTA_AV_MEDIA_DATA_EVT, (tBTA_AV_MEDIA*)p_pkt);
-    osi_free(p_pkt);  /* a copy of packet had been delivered, we free this buffer */
+    GKI_freebuf(p_pkt);  /* a copy of packet had been delivered, we free this buffer */
 }
 
 /*******************************************************************************
@@ -761,28 +727,32 @@ static void bta_av_stream5_cback(UINT8 handle, BD_ADDR bd_addr, UINT8 event, tAV
 *******************************************************************************/
 static void bta_av_a2d_sdp_cback(BOOLEAN found, tA2D_Service *p_service)
 {
-    tBTA_AV_SCB *p_scb = bta_av_hndl_to_scb(bta_av_cb.handle);
+    tBTA_AV_SDP_RES *p_msg;
+    tBTA_AV_SCB     *p_scb;
 
-    if (p_scb == NULL) {
-        APPL_TRACE_ERROR("%s, no scb found for handle(0x%x)", __func__,
-                         bta_av_cb.handle);
-        return;
+    if ((p_msg = (tBTA_AV_SDP_RES *) GKI_getbuf(sizeof(tBTA_AV_SDP_RES))) != NULL)
+    {
+        p_msg->hdr.event = (found) ? BTA_AV_SDP_DISC_OK_EVT : BTA_AV_SDP_DISC_FAIL_EVT;
+
+        p_scb = bta_av_hndl_to_scb(bta_av_cb.handle);
+        if (p_scb)
+        {
+            if (found && (p_service != NULL))
+                p_scb->avdt_version = p_service->avdt_version;
+            else
+                p_scb->avdt_version = 0x00;
+
+            p_msg->hdr.layer_specific = bta_av_cb.handle;
+            bta_sys_sendmsg(p_msg);
+            if (!found)
+                APPL_TRACE_ERROR ("bta_av_a2d_sdp_cback, SDP record not found");
+            bta_sys_conn_close(BTA_ID_AV, p_scb->hdi, p_scb->peer_addr);
+        }
+        else
+        {
+            APPL_TRACE_ERROR ("bta_av_a2d_sdp_cback, no scb found for handle(0x%x)", bta_av_cb.handle);
+        }
     }
-
-    tBTA_AV_SDP_RES *p_msg =
-        (tBTA_AV_SDP_RES *)osi_malloc(sizeof(tBTA_AV_SDP_RES));
-    p_msg->hdr.event = (found) ?
-        BTA_AV_SDP_DISC_OK_EVT : BTA_AV_SDP_DISC_FAIL_EVT;
-    if (found && (p_service != NULL))
-        p_scb->avdt_version = p_service->avdt_version;
-    else
-        p_scb->avdt_version = 0x00;
-    p_msg->hdr.layer_specific = bta_av_cb.handle;
-
-    bta_sys_sendmsg(p_msg);
-    if (!found)
-        APPL_TRACE_ERROR ("bta_av_a2d_sdp_cback, SDP record not found");
-    bta_sys_conn_close(BTA_ID_AV, p_scb->hdi, p_scb->peer_addr);
 }
 
 /*******************************************************************************
@@ -805,47 +775,9 @@ static void bta_av_adjust_seps_idx(tBTA_AV_SCB *p_scb, UINT8 avdt_handle)
         if((p_scb->seps[xx].av_handle && p_scb->codec_type == p_scb->seps[xx].codec_type)
             && (p_scb->seps[xx].av_handle == avdt_handle))
         {
-            if (p_scb->seps[xx].codec_type != A2D_NON_A2DP_MEDIA_CT)
-            {
-                p_scb->sep_idx      = xx;
-                p_scb->avdt_handle  = p_scb->seps[xx].av_handle;
-                break;
-            }
-            else {
-                UINT8 losc = p_scb->cfg.codec_info[0];
-                if (losc == A2D_APTX_CODEC_LEN)
-                {
-                    tA2D_APTX_CIE aptx_config;
-                    if (A2D_ParsAptxInfo(&aptx_config, p_scb->cfg.codec_info, FALSE) == A2D_SUCCESS) {
-                        APPL_TRACE_DEBUG("%s vendorId: %x codecId: %x", __func__, p_scb->seps[xx].vendorId, p_scb->seps[xx].codecId);
-                        if ((aptx_config.codecId == p_scb->seps[xx].codecId) &&
-                            (aptx_config.vendorId == p_scb->seps[xx].vendorId)) {
-                            APPL_TRACE_DEBUG("%s p_scb->sep_idx: %d", __func__, p_scb->sep_idx);
-                            p_scb->sep_idx = xx;
-                            p_scb->avdt_handle = p_scb->seps[xx].av_handle;
-                            APPL_TRACE_DEBUG("%s p_scb->sep_idx: %d", __func__, p_scb->sep_idx);
-                            APPL_TRACE_DEBUG("%s p_scb->avdt_handle: %d", __func__, p_scb->avdt_handle);
-                            break;
-                        }
-                    }
-                } else if (losc == A2D_APTX_HD_CODEC_LEN)
-                {
-                    tA2D_APTX_HD_CIE aptx_config;
-                    if (A2D_ParsAptx_hdInfo(&aptx_config, p_scb->cfg.codec_info, FALSE) == A2D_SUCCESS) {
-                        APPL_TRACE_DEBUG("%s vendorId: %x codecId: %x", __func__, p_scb->seps[xx].vendorId, p_scb->seps[xx].codecId);
-                        if ((aptx_config.codecId == p_scb->seps[xx].codecId) &&
-                            (aptx_config.vendorId == p_scb->seps[xx].vendorId)) {
-                            APPL_TRACE_DEBUG("%s p_scb->sep_idx: %d", __func__, p_scb->sep_idx);
-                            p_scb->sep_idx = xx;
-                            p_scb->avdt_handle = p_scb->seps[xx].av_handle;
-                            APPL_TRACE_DEBUG("%s p_scb->sep_idx: %d", __func__, p_scb->sep_idx);
-                            APPL_TRACE_DEBUG("%s p_scb->avdt_handle: %d", __func__, p_scb->avdt_handle);
-                            break;
-                        }
-                    }
-                } else
-                    APPL_TRACE_DEBUG("%s: Invalid aptX Losc", __func__)
-            }
+            p_scb->sep_idx      = xx;
+            p_scb->avdt_handle  = p_scb->seps[xx].av_handle;
+            break;
         }
     }
 }
@@ -1099,8 +1031,7 @@ void bta_av_do_disc_a2d (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
     if (p_scb->wait & BTA_AV_WAIT_CHECK_RC)
     {
         p_scb->wait &= ~BTA_AV_WAIT_CHECK_RC;
-        bta_sys_start_timer(p_scb->avrc_ct_timer, BTA_AV_RC_DISC_TIME_VAL,
-                            BTA_AV_AVRC_TIMER_EVT, p_scb->hndl);
+        bta_sys_start_timer(&p_scb->timer, BTA_AV_AVRC_TIMER_EVT, BTA_AV_RC_DISC_TIME_VAL);
     }
 
     if (bta_av_cb.features & BTA_AV_FEAT_MASTER)
@@ -1128,18 +1059,19 @@ void bta_av_do_disc_a2d (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
         p_scb->uuid_int = p_data->api_open.uuid;
         /* only one A2D find service is active at a time */
         bta_av_cb.handle = p_scb->hndl;
-        APPL_TRACE_WARNING("%s: Skip Sdp for incoming A2dp connection", __func__);
+        APPL_TRACE_IMP("Skip Sdp for incoming A2dp connection");
         bta_av_a2d_sdp_cback(TRUE, &a2d_ser);
-        return;
     }
     else
     {
+
         /* only one A2D find service is active at a time */
         bta_av_cb.handle = p_scb->hndl;
 
-        /* set up parameters */
+            /* set up parameters */
         db_params.db_len = BTA_AV_DISC_BUF_SIZE;
         db_params.num_attr = 3;
+        db_params.p_db = NULL; // we will allocate memory in Stack
         db_params.p_attrs = attr_list;
         p_scb->uuid_int = p_data->api_open.uuid;
         p_scb->sdp_discovery_started = TRUE;
@@ -1148,11 +1080,12 @@ void bta_av_do_disc_a2d (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
         else if (p_scb->uuid_int == UUID_SERVCLASS_AUDIO_SOURCE)
             sdp_uuid = UUID_SERVCLASS_AUDIO_SINK;
 
-        APPL_TRACE_DEBUG("%s: uuid_int 0x%x, Doing SDP For 0x%x", __func__,
-                    p_scb->uuid_int, sdp_uuid);
-        if (A2D_FindService(sdp_uuid, p_scb->peer_addr, &db_params,
-                    bta_av_a2d_sdp_cback) == A2D_SUCCESS)
+        APPL_TRACE_DEBUG("uuid_int 0x%x, Doing SDP For 0x%x", p_scb->uuid_int, sdp_uuid);
+        if(A2D_FindService(sdp_uuid, p_scb->peer_addr, &db_params,
+                        bta_av_a2d_sdp_cback) == A2D_SUCCESS)
+        {
             return;
+        }
 
         /* when the code reaches here, either the DB is NULL
          * or A2D_FindService is not successful */
@@ -1179,7 +1112,7 @@ void bta_av_cleanup(tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
     APPL_TRACE_DEBUG("bta_av_cleanup");
 
     /* free any buffers */
-    osi_free_and_reset((void **)&p_scb->p_cap);
+    utl_freebuf((void **) &p_scb->p_cap);
     p_scb->sdp_discovery_started = FALSE;
     p_scb->avdt_version = 0;
 
@@ -1194,19 +1127,9 @@ void bta_av_cleanup(tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
     p_scb->cur_psc_mask = 0;
     p_scb->wait = 0;
     p_scb->num_disc_snks = 0;
-    alarm_cancel(p_scb->avrc_ct_timer);
-
-    vendor_get_interface()->send_command(
-        (vendor_opcode_t)BT_VND_OP_A2DP_OFFLOAD_STOP, (void*)&p_scb->l2c_cid);
-    if (p_scb->offload_start_pending) {
-        tBTA_AV_STATUS status = BTA_AV_FAIL_STREAM;
-        (*bta_av_cb.p_cback)(BTA_AV_OFFLOAD_START_RSP_EVT, (tBTA_AV *)&status);
-    }
-    p_scb->offload_start_pending = FALSE;
-    p_scb->skip_sdp = FALSE;
     p_scb->coll_mask = 0;
-
     p_scb->skip_sdp = FALSE;
+    bta_sys_stop_timer(&p_scb->timer);
     if (p_scb->deregistring)
     {
         /* remove stream */
@@ -1268,6 +1191,7 @@ void bta_av_config_ind (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
     p_scb->codec_type = p_evt_cfg->codec_info[BTA_AV_CODEC_TYPE_IDX];
     bta_av_save_addr(p_scb, p_data->str_msg.bd_addr);
 
+
     if (p_scb->coll_mask & BTA_AV_COLL_API_CALLED)
     {
         APPL_TRACE_DEBUG(" bta_av_config_ind ReSetting collision mask  ");
@@ -1279,7 +1203,12 @@ void bta_av_config_ind (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
         APPL_TRACE_WARNING(" bta_av_config_ind config_ind called before Open");
         p_scb->coll_mask |= BTA_AV_COLL_SETCONFIG_IND;
     }
-    alarm_cancel(bta_av_cb.accept_signalling_timer);
+    bta_sys_stop_timer(&bta_av_cb.acp_sig_tmr);
+    /* As there is no API currently to check if the
+     * timer is active, p_cback is used to identify
+     * the state of acp_sig_tmr. NULL means not active.
+     */
+    bta_av_cb.acp_sig_tmr.p_cback = NULL;
 
     /* if no codec parameters in configuration, fail */
     if ((p_evt_cfg->num_codec == 0) ||
@@ -1354,17 +1283,19 @@ void bta_av_disconnect_req (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
     tBTA_AV_RCB *p_rcb;
     UNUSED(p_data);
 
-    APPL_TRACE_DEBUG("%s conn_lcb: 0x%x", __func__, bta_av_cb.conn_lcb);
+    APPL_TRACE_DEBUG("bta_av_disconnect_req conn_lcb: 0x%x", bta_av_cb.conn_lcb);
 
-    alarm_cancel(bta_av_cb.link_signalling_timer);
-    alarm_cancel(p_scb->avrc_ct_timer);
-
-    if (bta_av_cb.conn_lcb) {
+    bta_sys_stop_timer(&bta_av_cb.sig_tmr);
+    bta_sys_stop_timer(&p_scb->timer);
+    if(bta_av_cb.conn_lcb)
+    {
         p_rcb = bta_av_get_rcb_by_shdl((UINT8)(p_scb->hdi + 1));
         if (p_rcb)
             bta_av_del_rc(p_rcb);
         AVDT_DisconnectReq(p_scb->peer_addr, bta_av_dt_cback[p_scb->hdi]);
-    } else {
+    }
+    else
+    {
         bta_av_ssm_execute(p_scb, BTA_AV_AVDT_DISCONNECT_EVT, NULL);
     }
 }
@@ -1426,6 +1357,7 @@ void bta_av_setconfig_rsp (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
     UINT8   *p_seid = p_data->ci_setconfig.p_seid;
     int     i;
     UINT8   local_sep;
+    tBTA_AV_MEDIA av_sink_codec_info;
 
     /* we like this codec_type. find the sep_idx */
     local_sep = bta_av_get_scb_sep_type(p_scb,avdt_handle);
@@ -1434,7 +1366,6 @@ void bta_av_setconfig_rsp (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
 
     if ((AVDT_TSEP_SNK == local_sep) && (p_data->ci_setconfig.err_code == AVDT_SUCCESS) &&
                                      (p_scb->seps[p_scb->sep_idx].p_app_data_cback != NULL)) {
-        tBTA_AV_MEDIA av_sink_codec_info;
         memcpy(av_sink_codec_info.avk_config.bd_addr,p_scb->peer_addr,sizeof(BD_ADDR));
         av_sink_codec_info.avk_config.codec_info = p_scb->cfg.codec_info;
         p_scb->seps[p_scb->sep_idx].p_app_data_cback(BTA_AV_MEDIA_SINK_CFG_EVT,
@@ -1445,7 +1376,7 @@ void bta_av_setconfig_rsp (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
     AVDT_ConfigRsp(p_scb->avdt_handle, p_scb->avdt_label, p_data->ci_setconfig.err_code,
                    p_data->ci_setconfig.category);
 
-    alarm_cancel(bta_av_cb.link_signalling_timer);
+    bta_sys_stop_timer(&bta_av_cb.sig_tmr);
 
     if(p_data->ci_setconfig.err_code == AVDT_SUCCESS)
     {
@@ -1462,13 +1393,22 @@ void bta_av_setconfig_rsp (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
             p_scb->avdt_version = AVDT_VERSION_SYNC;
 
 
-        /* For any codec used by the SNK as INT, discover req is not sent in bta_av_config_ind.
-         * This is done since we saw an IOT issue with APTX codec. Thus, we now take same
-         * path for all codecs as for SBC. call disc_res now */
-        /* this is called in A2DP SRC path only, In case of SINK we don't need it  */
-        if (local_sep == AVDT_TSEP_SRC)
-            p_scb->p_cos->disc_res(p_scb->hndl, num, num, 0, p_scb->peer_addr,
-                                                  UUID_SERVCLASS_AUDIO_SOURCE);
+        if (p_scb->codec_type == BTA_AV_CODEC_SBC || num > 1)
+        {
+            /* if SBC is used by the SNK as INT, discover req is not sent in bta_av_config_ind.
+                       * call disc_res now */
+           /* this is called in A2DP SRC path only, In case of SINK we don't need it  */
+            if (local_sep == AVDT_TSEP_SRC)
+                p_scb->p_cos->disc_res(p_scb->hndl, num, num, 0, p_scb->peer_addr,
+                                                      UUID_SERVCLASS_AUDIO_SOURCE);
+        }
+        else
+        {
+            /* we do not know the peer device and it is using non-SBC codec
+             * we need to know all the SEPs on SNK */
+            bta_av_discover_req(p_scb, NULL);
+            return;
+        }
 
         for (i = 1; i < num; i++)
         {
@@ -1517,7 +1457,6 @@ void bta_av_str_opened (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
     bta_av_conn_chg((tBTA_AV_DATA *) &msg);
     /* set the congestion flag, so AV would not send media packets by accident */
     p_scb->cong = TRUE;
-    p_scb->offload_start_pending = FALSE;
 
 
     p_scb->stream_mtu = p_data->str_msg.msg.open_ind.peer_mtu - AVDT_MEDIA_HDR_SIZE;
@@ -1537,7 +1476,7 @@ void bta_av_str_opened (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
     p_scb->l2c_bufs = 0;
     p_scb->p_cos->open(p_scb->hndl,
         p_scb->codec_type, p_scb->cfg.codec_info, mtu);
-    bta_av_cb.codec_type = p_scb->codec_type;
+
     {
         /* TODO check if other audio channel is open.
          * If yes, check if reconfig is needed
@@ -1586,27 +1525,14 @@ void bta_av_str_opened (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
 
     // This code is used to pass PTS TC for AVDTP ABORT
     char value[PROPERTY_VALUE_MAX] = {0};
-    if ((osi_property_get("bluetooth.pts.force_a2dp_abort", value, "false"))
+    if ((property_get("bluetooth.pts.force_a2dp_abort", value, "false"))
         && (!strcmp(value, "true")))
     {
         APPL_TRACE_ERROR ("%s: Calling AVDT_AbortReq", __func__);
         AVDT_AbortReq(p_scb->avdt_handle);
     }
 }
-/*******************************************************************************
-**
-** Function         bta_av_get_codec_type
-**
-** Description      Returns the codec_type from the most recently used scb
-**
-** Returns          bta_av_cb.codec_type
-**
-*******************************************************************************/
-UINT8 bta_av_get_codec_type()
-{
-    APPL_TRACE_DEBUG("%s [bta_av_cb.codec_type] %x", __func__, bta_av_cb.codec_type);
-    return bta_av_cb.codec_type;
-}
+
 /*******************************************************************************
 **
 ** Function         bta_av_security_ind
@@ -1684,7 +1610,7 @@ void bta_av_do_close (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
     {
         bta_av_str_stopped(p_scb, NULL);
     }
-    alarm_cancel(bta_av_cb.link_signalling_timer);
+    bta_sys_stop_timer(&bta_av_cb.sig_tmr);
 
     /* close stream */
     p_scb->started = FALSE;
@@ -1697,8 +1623,10 @@ void bta_av_do_close (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
      * for whatever reason the the close request can not be sent in time.
      * when this timer expires, AVDT_DisconnectReq will be called to disconnect the link
      */
-    bta_sys_start_timer(p_scb->avrc_ct_timer, BTA_AV_CLOSE_REQ_TIME_VAL,
-                        BTA_AV_API_CLOSE_EVT, p_scb->hndl);
+    bta_sys_start_timer(&p_scb->timer,
+                        (UINT16)BTA_AV_API_CLOSE_EVT,
+                        BTA_AV_CLOSE_REQ_TIME_VAL);
+
 }
 
 /*******************************************************************************
@@ -1710,20 +1638,18 @@ void bta_av_do_close (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
 ** Returns          void
 **
 *******************************************************************************/
-void bta_av_connect_req(tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
+void bta_av_connect_req (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
 {
     UINT16 result;
     UNUSED(p_data);
 
     p_scb->sdp_discovery_started = FALSE;
+
     if (p_scb->coll_mask & BTA_AV_COLL_INC_TMR)
     {
         /* SNK initiated L2C connection while SRC was doing SDP.    */
         /* Wait until timeout to check if SNK starts signalling.    */
-        APPL_TRACE_EVENT("%s: coll_mask = 0x%2X", __func__, p_scb->coll_mask);
-        p_scb->coll_mask |= BTA_AV_COLL_API_CALLED;
-        APPL_TRACE_EVENT("%s: updated coll_mask = 0x%2X", __func__,
-                         p_scb->coll_mask);
+        APPL_TRACE_EVENT("bta_av_connect_req: coll_mask = 0x%2X", p_scb->coll_mask);
         return;
     }
 
@@ -1749,7 +1675,7 @@ void bta_av_connect_req(tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
 ** Returns          void
 **
 *******************************************************************************/
-void bta_av_sdp_failed(tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
+void bta_av_sdp_failed (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
 {
     if (!p_scb->open_status)
         p_scb->open_status = BTA_AV_FAIL_SDP;
@@ -1848,7 +1774,7 @@ void bta_av_disc_res_as_acp (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
         }
     }
     p_scb->p_cos->disc_res(p_scb->hndl, p_scb->num_seps, num_snks, 0, p_scb->peer_addr,
-                           UUID_SERVCLASS_AUDIO_SOURCE);
+                                                          UUID_SERVCLASS_AUDIO_SOURCE);
     p_scb->num_disc_snks = num_snks;
     p_scb->num_disc_srcs = 0;
 
@@ -2037,6 +1963,7 @@ void bta_av_getcap_results (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
     UINT8       media_type;
     tAVDT_SEP_INFO  *p_info = &p_scb->sep_info[p_scb->sep_info_idx];
     UINT16 uuid_int; /* UUID for which connection was initiatied */
+    tBTA_AV_MEDIA av_sink_codec_info;
 
     memcpy(&cfg, &p_scb->cfg, sizeof(tAVDT_CFG));
     cfg.num_codec = 1;
@@ -2080,16 +2007,15 @@ void bta_av_getcap_results (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
         if ((uuid_int == UUID_SERVCLASS_AUDIO_SINK) &&
             (p_scb->seps[p_scb->sep_idx].p_app_data_cback != NULL))
         {
-            APPL_TRACE_DEBUG("%s Configure Decoder for Sink Connection.", __func__);
-            tBTA_AV_MEDIA av_sink_codec_info;
+            APPL_TRACE_DEBUG(" Configure Deoder for Sink Connection ");
             memcpy(av_sink_codec_info.avk_config.bd_addr,p_scb->peer_addr,sizeof(BD_ADDR));
             av_sink_codec_info.avk_config.codec_info = p_scb->cfg.codec_info;
             p_scb->seps[p_scb->sep_idx].p_app_data_cback(BTA_AV_MEDIA_SINK_CFG_EVT,
-                                                         &av_sink_codec_info);
+                     &av_sink_codec_info);
         }
 
         if ((uuid_int == UUID_SERVCLASS_AUDIO_SOURCE) &&
-            (cfg.codec_info[SBC_MAX_BITPOOL_OFFSET] > SBC_MAX_BITPOOL))
+                (cfg.codec_info[SBC_MAX_BITPOOL_OFFSET] > SBC_MAX_BITPOOL))
         {
             APPL_TRACE_WARNING("%s max bitpool length received for SBC is out of range."
                     "Clamping the codec bitpool configuration from %d to %d.", __func__,
@@ -2104,7 +2030,7 @@ void bta_av_getcap_results (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
         if (!bta_av_is_rcfg_sst(p_scb))
         {
             /* free capabilities buffer */
-            osi_free_and_reset((void **)&p_scb->p_cap);
+            utl_freebuf((void **) &p_scb->p_cap);
         }
     }
     else
@@ -2244,9 +2170,6 @@ void bta_av_str_stopped (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
     BT_HDR  *p_buf;
     UINT8 policy = HCI_ENABLE_SNIFF_MODE;
 
-    if (is_sniff_disabled == true)
-        policy = 0;
-
     APPL_TRACE_ERROR("bta_av_str_stopped:audio_open_cnt=%d, p_data %x",
             bta_av_cb.audio_open_cnt, p_data);
 
@@ -2257,15 +2180,6 @@ void bta_av_str_stopped (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
 
     if (p_scb->co_started)
     {
-      vendor_get_interface()->send_command(
-          (vendor_opcode_t)BT_VND_OP_A2DP_OFFLOAD_STOP,
-          (void*)&p_scb->l2c_cid);
-        if (p_scb->offload_start_pending) {
-            tBTA_AV_STATUS status = BTA_AV_FAIL_STREAM;
-            (*bta_av_cb.p_cback)(BTA_AV_OFFLOAD_START_RSP_EVT, (tBTA_AV *)&status);
-        }
-        p_scb->offload_start_pending = FALSE;
-
         bta_av_stream_chg(p_scb, FALSE);
         p_scb->co_started = FALSE;
 
@@ -2279,7 +2193,7 @@ void bta_av_str_stopped (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
         {
             p_buf = (BT_HDR *)list_front(p_scb->a2d_list);
             list_remove(p_scb->a2d_list, p_buf);
-            osi_free(p_buf);
+            GKI_freebuf(p_buf);
         }
 
     /* drop the audio buffers queued in L2CAP */
@@ -2347,7 +2261,9 @@ void bta_av_reconfig (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
     p_scb->num_recfg = 0;
     /* store the new configuration in control block */
     if (p_scb->p_cap == NULL)
-        p_scb->p_cap = (tAVDT_CFG *)osi_malloc(sizeof(tAVDT_CFG));
+    {
+        p_scb->p_cap = (tAVDT_CFG *) GKI_getbuf(sizeof(tAVDT_CFG));
+    }
     if((p_cfg = p_scb->p_cap) == NULL)
     {
         /* report failure */
@@ -2362,7 +2278,8 @@ void bta_av_reconfig (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
         return;
     }
 
-    alarm_cancel(p_scb->avrc_ct_timer);
+    /*if(bta_av_cb.features & BTA_AV_FEAT_RCCT)*/
+        bta_sys_stop_timer(&p_scb->timer);
 
     memcpy(p_cfg, &p_scb->cfg, sizeof(tAVDT_CFG));
     p_cfg->num_protect = p_rcfg->num_protect;
@@ -2499,7 +2416,7 @@ void bta_av_data_path (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
                 {
                     /* too many buffers in a2d_list, drop it. */
                     bta_av_co_audio_drop(p_scb->hndl);
-                    osi_free(p_buf);
+                    GKI_freebuf(p_buf);
                 }
             }
         }
@@ -2726,12 +2643,7 @@ void bta_av_start_failed (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
         notify_start_failed(p_scb);
     }
 
-    // if sniff is disabled in hf client, don't enable it again
-    if (is_sniff_disabled == true)
-        bta_sys_set_policy(BTA_ID_AV, HCI_ENABLE_MASTER_SLAVE_SWITCH, p_scb->peer_addr);
-    else
-        bta_sys_set_policy(BTA_ID_AV, (HCI_ENABLE_SNIFF_MODE|HCI_ENABLE_MASTER_SLAVE_SWITCH), p_scb->peer_addr);
-
+    bta_sys_set_policy(BTA_ID_AV, (HCI_ENABLE_SNIFF_MODE|HCI_ENABLE_MASTER_SLAVE_SWITCH), p_scb->peer_addr);
     p_scb->sco_suspend = FALSE;
 }
 
@@ -2750,9 +2662,6 @@ void bta_av_str_closed (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
     tBTA_AV_EVT event;
     UINT16      mtu;
     UINT8 policy = HCI_ENABLE_SNIFF_MODE;
-
-    if (is_sniff_disabled == true)
-        policy = 0;
 
     if ((bta_av_cb.features & BTA_AV_FEAT_MASTER) == 0 || bta_av_cb.audio_open_cnt == 1)
         policy |= HCI_ENABLE_MASTER_SLAVE_SWITCH;
@@ -2839,9 +2748,6 @@ void bta_av_suspend_cfm (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
     UINT8           err_code = p_data->str_msg.msg.hdr.err_code;
     UINT8 policy = HCI_ENABLE_SNIFF_MODE;
 
-    if (is_sniff_disabled == true)
-        policy = 0;
-
     APPL_TRACE_DEBUG ("bta_av_suspend_cfm:audio_open_cnt = %d, err_code = %d",
         bta_av_cb.audio_open_cnt, err_code);
 
@@ -2885,21 +2791,11 @@ void bta_av_suspend_cfm (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
     bta_sys_idle(BTA_ID_AV, p_scb->hdi, p_scb->peer_addr);
     if ((bta_av_cb.features & BTA_AV_FEAT_MASTER) == 0 || bta_av_cb.audio_open_cnt == 1)
         policy |= HCI_ENABLE_MASTER_SLAVE_SWITCH;
-
     bta_sys_set_policy(BTA_ID_AV, policy, p_scb->peer_addr);
 
     /* in case that we received suspend_ind, we may need to call co_stop here */
     if(p_scb->co_started)
     {
-        vendor_get_interface()->send_command(
-            (vendor_opcode_t)BT_VND_OP_A2DP_OFFLOAD_STOP,
-            (void*)&p_scb->l2c_cid);
-        if (p_scb->offload_start_pending) {
-            tBTA_AV_STATUS status = BTA_AV_FAIL_STREAM;
-            (*bta_av_cb.p_cback)(BTA_AV_OFFLOAD_START_RSP_EVT, (tBTA_AV *)&status);
-        }
-        p_scb->offload_start_pending = FALSE;
-
         bta_av_stream_chg(p_scb, FALSE);
 
         {
@@ -2936,7 +2832,7 @@ void bta_av_rcfg_str_ok (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
 
     /* rc listen */
     bta_av_st_rc_timer(p_scb, NULL);
-    osi_free_and_reset((void **)&p_scb->p_cap);
+    utl_freebuf((void **)&p_scb->p_cap);
 
     /* No need to keep the role bits once reconfig is done. */
     p_scb->role &= ~BTA_AV_ROLE_AD_ACP;
@@ -3150,7 +3046,7 @@ void bta_av_rcfg_open (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
 {
     UNUSED(p_data);
 
-    APPL_TRACE_DEBUG("%s: bta_av_rcfg_open, num_disc_snks = %d", __func__, p_scb->num_disc_snks);
+    APPL_TRACE_DEBUG("bta_av_rcfg_open, num_disc_snks = %d", p_scb->num_disc_snks);
 
     if (p_scb->num_disc_snks == 0)
     {
@@ -3167,7 +3063,7 @@ void bta_av_rcfg_open (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
         /* we may choose to use a different SEP at reconfig.
          * adjust the sep_idx now */
         bta_av_adjust_seps_idx(p_scb, bta_av_get_scb_handle(p_scb, AVDT_TSEP_SRC));
-        bta_av_cb.codec_type = p_scb->codec_type;
+
         /* open the stream with the new config */
         p_scb->sep_info_idx = p_scb->rcfg_idx;
         AVDT_OpenReq(p_scb->avdt_handle, p_scb->peer_addr,
@@ -3260,7 +3156,7 @@ void bta_av_open_rc (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
         if (!bta_av_link_role_ok(p_scb, A2D_SET_ONE_BIT))
         {
             APPL_TRACE_ERROR ("failed to start streaming for role management reasons!!");
-            alarm_cancel(p_scb->avrc_ct_timer);
+            bta_sys_stop_timer(&p_scb->timer);
             start.chnl   = p_scb->chnl;
             start.status = BTA_AV_FAIL_ROLE;
             start.initiator = TRUE;
@@ -3287,13 +3183,10 @@ void bta_av_open_rc (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
             if(p_scb->rc_handle == BTA_AV_RC_HANDLE_NONE)
             {
                 /* AVRC channel is not connected. delay a little bit */
-                if ((p_scb->wait & BTA_AV_WAIT_ROLE_SW_BITS) == 0) {
-                    bta_sys_start_timer(p_scb->avrc_ct_timer,
-                                        BTA_AV_RC_DISC_TIME_VAL,
-                                        BTA_AV_AVRC_TIMER_EVT, p_scb->hndl);
-                } else {
+                if ((p_scb->wait & BTA_AV_WAIT_ROLE_SW_BITS) == 0)
+                    bta_sys_start_timer(&p_scb->timer, BTA_AV_AVRC_TIMER_EVT, BTA_AV_RC_DISC_TIME_VAL);
+                else
                     p_scb->wait |= BTA_AV_WAIT_CHECK_RC;
-                }
             }
         }
         else
@@ -3325,6 +3218,8 @@ void bta_av_open_rc (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
 *******************************************************************************/
 void bta_av_open_at_inc (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
 {
+    tBTA_AV_API_OPEN  *p_buf;
+
     if (!p_scb)
     {
         APPL_TRACE_WARNING("scb is NULL, bailing out!");
@@ -3354,100 +3249,15 @@ void bta_av_open_at_inc (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
         /* We need to switch to INIT state and start opening connection. */
         APPL_TRACE_ERROR(" bta_av_open_at_inc ReSetting collision mask  ");
         p_scb->coll_mask = 0;
-        bta_av_set_scb_sst_init(p_scb);
+        bta_av_set_scb_sst_init (p_scb);
 
-        tBTA_AV_API_OPEN *p_buf =
-            (tBTA_AV_API_OPEN *)osi_malloc(sizeof(tBTA_AV_API_OPEN));
-        memcpy(p_buf, &(p_scb->open_api), sizeof(tBTA_AV_API_OPEN));
-        p_scb->skip_sdp = TRUE;
-        bta_sys_sendmsg(p_buf);
-    }
-}
-
-/*******************************************************************************
-**
-** Function         bta_av_offload_req
-**
-** Description      This function is called if application requests offload of
-**                  a2dp audio.
-**
-** Returns          void
-**
-*******************************************************************************/
-void bta_av_offload_req(tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
-{
-    tBTA_AV_STATUS status = BTA_AV_FAIL_RESOURCES;
-    UINT16 mtu = bta_av_chk_mtu(p_scb, p_scb->stream_mtu);
-
-    APPL_TRACE_DEBUG("%s stream %s, audio channels open %d", __func__,
-                     p_scb->started ? "STARTED" : "STOPPED", bta_av_cb.audio_open_cnt);
-
-    /* Check if stream has already been started. */
-    /* Support offload if only one audio source stream is open. */
-    if (p_scb->started != TRUE) {
-        status = BTA_AV_FAIL_STREAM;
-
-    } else if (bta_av_cb.audio_open_cnt == 1 &&
-               p_scb->seps[p_scb->sep_idx].tsep == AVDT_TSEP_SRC &&
-               p_scb->chnl == BTA_AV_CHNL_AUDIO) {
-
-        bt_vendor_op_a2dp_offload_t a2dp_offload_start;
-
-        if (L2CA_GetConnectionConfig(p_scb->l2c_cid, &a2dp_offload_start.acl_data_size,
-                                     &a2dp_offload_start.remote_cid, &a2dp_offload_start.lm_handle)) {
-
-            APPL_TRACE_DEBUG("%s l2cmtu %d lcid 0x%02X rcid 0x%02X lm_handle 0x%02X", __func__,
-                             a2dp_offload_start.acl_data_size, p_scb->l2c_cid,
-                             a2dp_offload_start.remote_cid, a2dp_offload_start.lm_handle);
-
-            a2dp_offload_start.bta_av_handle = p_scb->hndl;
-            a2dp_offload_start.xmit_quota = BTA_AV_A2DP_OFFLOAD_XMIT_QUOTA;
-            a2dp_offload_start.stream_mtu = (mtu < p_scb->stream_mtu) ? mtu : p_scb->stream_mtu;
-            a2dp_offload_start.local_cid = p_scb->l2c_cid;
-            a2dp_offload_start.is_flushable = TRUE;
-            a2dp_offload_start.stream_source = ((UINT32)(p_scb->cfg.codec_info[1] | p_scb->cfg.codec_info[2]));
-
-            memcpy(a2dp_offload_start.codec_info, p_scb->cfg.codec_info,
-                   sizeof(a2dp_offload_start.codec_info));
-
-            if (!vendor_get_interface()->send_command(
-                  (vendor_opcode_t)BT_VND_OP_A2DP_OFFLOAD_START,
-                  &a2dp_offload_start)) {
-                status = BTA_AV_SUCCESS;
-                p_scb->offload_start_pending = TRUE;
-            }
+        if ((p_buf = (tBTA_AV_API_OPEN *) GKI_getbuf(sizeof(tBTA_AV_API_OPEN))) != NULL)
+        {
+            memcpy(p_buf, &(p_scb->open_api), sizeof(tBTA_AV_API_OPEN));
+            p_scb->skip_sdp = TRUE;
+            bta_sys_sendmsg(p_buf);
         }
     }
-
-    if (status != BTA_AV_SUCCESS)
-        (*bta_av_cb.p_cback)(BTA_AV_OFFLOAD_START_RSP_EVT, (tBTA_AV *)&status);
-}
-
-/*******************************************************************************
-**
-** Function         bta_av_offload_rsp
-**
-** Description      This function is called when the vendor lib responds to
-**                  BT_VND_OP_A2DP_OFFLOAD_START.
-**
-** Returns          void
-**
-*******************************************************************************/
-void bta_av_offload_rsp(tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data)
-{
-    tBTA_AV_STATUS status = p_data->api_status_rsp.status;
-
-    APPL_TRACE_DEBUG("%s stream %s status %s", __func__,
-                     p_scb->started ? "STARTED" : "STOPPED",
-                     status ? "FAIL" : "SUCCESS");
-
-    /* Check if stream has already been started. */
-    if (status == BTA_AV_SUCCESS && p_scb->started != TRUE) {
-        status = BTA_AV_FAIL_STREAM;
-    }
-
-    p_scb->offload_start_pending = FALSE;
-    (*bta_av_cb.p_cback)(BTA_AV_OFFLOAD_START_RSP_EVT, (tBTA_AV *)&status);
 }
 
 #endif /* BTA_AV_INCLUDED */

@@ -24,11 +24,11 @@ extern "C" {
 #include <stdint.h>
 #include <unistd.h>
 
-#include "osi/include/allocator.h"
-#include "osi/include/eager_reader.h"
-#include "osi/include/osi.h"
-#include "osi/include/semaphore.h"
-#include "osi/include/thread.h"
+#include "allocator.h"
+#include "eager_reader.h"
+#include "osi.h"
+#include "semaphore.h"
+#include "thread.h"
 }
 
 #define BUFFER_SIZE 32
@@ -90,7 +90,7 @@ static void expect_data(eager_reader_t *reader, void *context) {
 
   for (int i = 0; i < length; i++) {
     uint8_t byte;
-    EXPECT_EQ((size_t)1, eager_reader_read(reader, &byte, 1));
+    EXPECT_EQ((size_t)1, eager_reader_read(reader, &byte, 1, true));
     EXPECT_EQ(data[i], byte);
   }
 
@@ -99,14 +99,14 @@ static void expect_data(eager_reader_t *reader, void *context) {
 
 static void expect_data_multibyte(eager_reader_t *reader, void *context) {
   char *data = (char *)context;
-  size_t length = strlen(data);
+  int length = strlen(data);
 
-  for (size_t i = 0; i < length;) {
+  for (int i = 0; i < length;) {
     uint8_t buffer[28];
-    size_t bytes_to_read = (length - i) > 28 ? 28 : (length - i);
-    size_t bytes_read = eager_reader_read(reader, buffer, bytes_to_read);
-    EXPECT_LE(bytes_read, bytes_to_read);
-    for (size_t j = 0; j < bytes_read && i < length; j++, i++) {
+    int bytes_to_read = (length - i) > 28 ? 28 : (length - i);
+    int bytes_read = eager_reader_read(reader, buffer, bytes_to_read, false);
+    EXPECT_EQ(bytes_to_read, bytes_read);
+    for (int j = 0; j < bytes_read && i < length; j++, i++) {
       EXPECT_EQ(data[i], buffer[j]);
     }
   }
@@ -126,7 +126,7 @@ TEST_F(EagerReaderTest, test_small_data) {
   thread_t *read_thread = thread_new("read_thread");
   eager_reader_register(reader, thread_get_reactor(read_thread), expect_data, (void *)small_data);
 
-  write(pipefd[1], small_data, strlen(small_data));
+  TEMP_FAILURE_RETRY(write(pipefd[1], small_data, strlen(small_data)));
 
   semaphore_wait(done);
   eager_reader_free(reader);
@@ -139,7 +139,7 @@ TEST_F(EagerReaderTest, test_large_data_multibyte) {
   thread_t *read_thread = thread_new("read_thread");
   eager_reader_register(reader, thread_get_reactor(read_thread), expect_data_multibyte, (void *)large_data);
 
-  write(pipefd[1], large_data, strlen(large_data));
+  TEMP_FAILURE_RETRY(write(pipefd[1], large_data, strlen(large_data)));
 
   semaphore_wait(done);
   eager_reader_free(reader);

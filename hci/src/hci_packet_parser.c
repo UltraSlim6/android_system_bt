@@ -18,13 +18,13 @@
 
 #define LOG_TAG "bt_hci"
 
-#include "hci_packet_parser.h"
-
 #include <assert.h>
 
 #include "buffer_allocator.h"
-#include "hci_layer.h"
+#include "bt_types.h"
 #include "hcimsgs.h"
+#include "hci_layer.h"
+#include "hci_packet_parser.h"
 #include "osi/include/log.h"
 
 static const command_opcode_t NO_OPCODE_CHECKING = 0;
@@ -74,12 +74,13 @@ static void parse_read_local_version_info_response(
 
 static void parse_read_local_supported_codecs_response(
     BT_HDR *response,
-    uint8_t *number_of_local_supported_codecs, uint8_t *local_supported_codecs) {
+    uint8_t *no_of_local_supported_codecs, uint8_t *local_supported_codecs) {
+  uint8_t i = 0;
 
   uint8_t *stream = read_command_complete_header(response, HCI_READ_LOCAL_SUPPORTED_CODECS, 0 /* bytes after */);
   if(stream) {
-    STREAM_TO_UINT8(*number_of_local_supported_codecs, stream);
-    for ( uint8_t i = 0; i < *number_of_local_supported_codecs; i++)
+    STREAM_TO_UINT8(*no_of_local_supported_codecs, stream);
+    for ( i = 0; i < *no_of_local_supported_codecs; i++)
     {
       STREAM_TO_UINT8(*local_supported_codecs, stream);
       local_supported_codecs++;
@@ -142,7 +143,7 @@ static void parse_read_local_extended_features_response(
     assert(*page_number_ptr < feature_pages_count);
     STREAM_TO_ARRAY(feature_pages[*page_number_ptr].as_array, stream, (int)sizeof(bt_device_features_t));
   } else {
-    LOG_ERROR(LOG_TAG, "%s() - WARNING: READING EXTENDED FEATURES FAILED. "
+    LOG_ERROR("%s() - WARNING: READING EXTENDED FEATURES FAILED. "
                 "THIS MAY INDICATE A FIRMWARE/CONTROLLER ISSUE.", __func__);
   }
 
@@ -254,7 +255,7 @@ static uint8_t *read_command_complete_header(
   STREAM_TO_UINT8(status, stream);
 
   if (status != HCI_SUCCESS){
-    LOG_ERROR(LOG_TAG, "%s: return status - 0x%x", __func__, status);
+    LOG_ERROR("%s: return status - 0x%x", __func__, status);
     return NULL;
   }
 

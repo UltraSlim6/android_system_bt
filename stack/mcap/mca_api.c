@@ -47,11 +47,13 @@
 ** Returns          void
 **
 *******************************************************************************/
-void mca_ccb_timer_timeout(void *data)
+void mca_process_timeout(TIMER_LIST_ENT *p_tle)
 {
-    tMCA_CCB *p_ccb = (tMCA_CCB *)data;
-
-    mca_ccb_event(p_ccb, MCA_CCB_RSP_TOUT_EVT, NULL);
+    if(p_tle->event == BTU_TTYPE_MCA_CCB_RSP)
+    {
+        p_tle->event = 0;
+        mca_ccb_event ((tMCA_CCB *) p_tle->param, MCA_CCB_RSP_TOUT_EVT, NULL);
+    }
 }
 
 /*******************************************************************************
@@ -193,8 +195,13 @@ void MCA_Deregister(tMCA_HANDLE handle)
     {
         L2CA_Deregister(p_rcb->reg.ctrl_psm);
         L2CA_Deregister(p_rcb->reg.data_psm);
+#if (defined(LE_L2CAP_CFC_INCLUDED) && (LE_L2CAP_CFC_INCLUDED == TRUE))
+        btm_sec_clr_service_by_psm (p_rcb->reg.ctrl_psm, BT_TRANSPORT_BR_EDR);
+        btm_sec_clr_service_by_psm (p_rcb->reg.data_psm, BT_TRANSPORT_BR_EDR);
+#else
         btm_sec_clr_service_by_psm (p_rcb->reg.ctrl_psm);
         btm_sec_clr_service_by_psm (p_rcb->reg.data_psm);
+#endif
     }
     mca_rcb_dealloc(handle);
 }
@@ -424,6 +431,7 @@ tMCA_RESULT MCA_CreateMdl(tMCA_CL mcl, tMCA_DEP dep, UINT16 data_psm,
 {
     tMCA_RESULT     result = MCA_BAD_HANDLE;
     tMCA_CCB        *p_ccb = mca_ccb_by_hdl(mcl);
+    tMCA_CCB_MSG    *p_evt_data;
     tMCA_DCB        *p_dcb;
 
     MCA_TRACE_API ("MCA_CreateMdl: %d dep=%d mdl_id=%d peer_dep_id=%d", mcl, dep, mdl_id, peer_dep_id);
@@ -454,24 +462,26 @@ tMCA_RESULT MCA_CreateMdl(tMCA_CL mcl, tMCA_DEP dep, UINT16 data_psm,
             /* save the info required by dcb connection */
             p_dcb->p_chnl_cfg       = p_chnl_cfg;
             p_dcb->mdl_id           = mdl_id;
-            tMCA_CCB_MSG *p_evt_data =
-                (tMCA_CCB_MSG *)osi_malloc(sizeof(tMCA_CCB_MSG));
-            if (!p_ccb->data_vpsm)
-                p_ccb->data_vpsm = L2CA_Register (data_psm, (tL2CAP_APPL_INFO *)&mca_l2c_int_appl);
-            if (p_ccb->data_vpsm) {
-                p_evt_data->dcb_idx     = mca_dcb_to_hdl (p_dcb);
-                p_evt_data->mdep_id     = peer_dep_id;
-                p_evt_data->mdl_id      = mdl_id;
-                p_evt_data->param       = cfg;
-                p_evt_data->op_code     = MCA_OP_MDL_CREATE_REQ;
-                p_evt_data->hdr.event   = MCA_CCB_API_REQ_EVT;
-                p_evt_data->hdr.layer_specific   = FALSE;
-                mca_ccb_event(p_ccb, MCA_CCB_API_REQ_EVT, (tMCA_CCB_EVT *)p_evt_data);
-                return MCA_SUCCESS;
-            } else {
-                osi_free(p_evt_data);
+            p_evt_data = (tMCA_CCB_MSG *)GKI_getbuf (sizeof(tMCA_CCB_MSG));
+            if (p_evt_data)
+            {
+                if (!p_ccb->data_vpsm)
+                    p_ccb->data_vpsm = L2CA_Register (data_psm, (tL2CAP_APPL_INFO *)&mca_l2c_int_appl);
+                if (p_ccb->data_vpsm)
+                {
+                    p_evt_data->dcb_idx     = mca_dcb_to_hdl (p_dcb);
+                    p_evt_data->mdep_id     = peer_dep_id;
+                    p_evt_data->mdl_id      = mdl_id;
+                    p_evt_data->param       = cfg;
+                    p_evt_data->op_code     = MCA_OP_MDL_CREATE_REQ;
+                    p_evt_data->hdr.event   = MCA_CCB_API_REQ_EVT;
+                    p_evt_data->hdr.layer_specific   = FALSE;
+                    mca_ccb_event(p_ccb, MCA_CCB_API_REQ_EVT, (tMCA_CCB_EVT *)p_evt_data);
+                    return MCA_SUCCESS;
+                }
+                else
+                    GKI_freebuf (p_evt_data);
             }
-
             mca_dcb_dealloc(p_dcb, NULL);
         }
     }
@@ -596,6 +606,7 @@ tMCA_RESULT MCA_ReconnectMdl(tMCA_CL mcl, tMCA_DEP dep, UINT16 data_psm,
 {
     tMCA_RESULT     result = MCA_BAD_HANDLE;
     tMCA_CCB        *p_ccb = mca_ccb_by_hdl(mcl);
+    tMCA_CCB_MSG    *p_evt_data;
     tMCA_DCB        *p_dcb;
 
     MCA_TRACE_API ("MCA_ReconnectMdl: %d ", mcl);
@@ -622,20 +633,23 @@ tMCA_RESULT MCA_ReconnectMdl(tMCA_CL mcl, tMCA_DEP dep, UINT16 data_psm,
 
         p_dcb = mca_dcb_alloc(p_ccb, dep);
         result = MCA_NO_RESOURCES;
-        if (p_dcb) {
-            tMCA_CCB_MSG *p_evt_data =
-                (tMCA_CCB_MSG *)osi_malloc(sizeof(tMCA_CCB_MSG));
-
+        if (p_dcb)
+        {
             p_dcb->p_chnl_cfg       = p_chnl_cfg;
             p_dcb->mdl_id           = mdl_id;
-            if (!p_ccb->data_vpsm)
-                p_ccb->data_vpsm = L2CA_Register (data_psm, (tL2CAP_APPL_INFO *)&mca_l2c_int_appl);
-            p_evt_data->dcb_idx     = mca_dcb_to_hdl(p_dcb);
-            p_evt_data->mdl_id      = mdl_id;
-            p_evt_data->op_code     = MCA_OP_MDL_RECONNECT_REQ;
-            p_evt_data->hdr.event   = MCA_CCB_API_REQ_EVT;
-            mca_ccb_event(p_ccb, MCA_CCB_API_REQ_EVT, (tMCA_CCB_EVT *)p_evt_data);
-            return MCA_SUCCESS;
+            p_evt_data = (tMCA_CCB_MSG *)GKI_getbuf (sizeof(tMCA_CCB_MSG));
+            if (p_evt_data)
+            {
+                if (!p_ccb->data_vpsm)
+                    p_ccb->data_vpsm = L2CA_Register (data_psm, (tL2CAP_APPL_INFO *)&mca_l2c_int_appl);
+                p_evt_data->dcb_idx     = mca_dcb_to_hdl(p_dcb);
+                p_evt_data->mdl_id      = mdl_id;
+                p_evt_data->op_code     = MCA_OP_MDL_RECONNECT_REQ;
+                p_evt_data->hdr.event   = MCA_CCB_API_REQ_EVT;
+                mca_ccb_event(p_ccb, MCA_CCB_API_REQ_EVT, (tMCA_CCB_EVT *)p_evt_data);
+                return MCA_SUCCESS;
+            }
+            mca_dcb_dealloc(p_dcb, NULL);
         }
     }
     return result;
@@ -773,6 +787,7 @@ tMCA_RESULT MCA_Abort(tMCA_CL mcl)
 {
     tMCA_RESULT     result = MCA_BAD_HANDLE;
     tMCA_CCB        *p_ccb = mca_ccb_by_hdl(mcl);
+    tMCA_CCB_MSG    *p_evt_data;
     tMCA_DCB        *p_dcb;
 
     MCA_TRACE_API ("MCA_Abort: %d", mcl);
@@ -793,12 +808,16 @@ tMCA_RESULT MCA_Abort(tMCA_CL mcl)
             return MCA_BUSY;
         }
 
-        tMCA_CCB_MSG *p_evt_data =
-            (tMCA_CCB_MSG *)osi_malloc(sizeof(tMCA_CCB_MSG));
-        result = MCA_SUCCESS;
-        p_evt_data->op_code     = MCA_OP_MDL_ABORT_REQ;
-        p_evt_data->hdr.event   = MCA_CCB_API_REQ_EVT;
-        mca_ccb_event(p_ccb, MCA_CCB_API_REQ_EVT, (tMCA_CCB_EVT *)p_evt_data);
+        result = MCA_NO_RESOURCES;
+        p_evt_data = (tMCA_CCB_MSG *)GKI_getbuf (sizeof(tMCA_CCB_MSG));
+        if (p_evt_data)
+        {
+            result = MCA_SUCCESS;
+            p_evt_data->op_code     = MCA_OP_MDL_ABORT_REQ;
+            p_evt_data->hdr.event   = MCA_CCB_API_REQ_EVT;
+            mca_ccb_event(p_ccb, MCA_CCB_API_REQ_EVT, (tMCA_CCB_EVT *)p_evt_data);
+        }
+
     }
     return result;
 }
@@ -818,6 +837,7 @@ tMCA_RESULT MCA_Delete(tMCA_CL mcl, UINT16 mdl_id)
 {
     tMCA_RESULT     result = MCA_BAD_HANDLE;
     tMCA_CCB        *p_ccb = mca_ccb_by_hdl(mcl);
+    tMCA_CCB_MSG    *p_evt_data;
 
     MCA_TRACE_API ("MCA_Delete: %d ", mcl);
     if (p_ccb)
@@ -832,13 +852,17 @@ tMCA_RESULT MCA_Delete(tMCA_CL mcl, UINT16 mdl_id)
             MCA_TRACE_ERROR ("bad mdl id: %d ", mdl_id);
             return MCA_BAD_PARAMS;
         }
-
-        tMCA_CCB_MSG *p_evt_data = (tMCA_CCB_MSG *)osi_malloc(sizeof(tMCA_CCB_MSG));
-        result = MCA_SUCCESS;
-        p_evt_data->mdl_id      = mdl_id;
-        p_evt_data->op_code     = MCA_OP_MDL_DELETE_REQ;
-        p_evt_data->hdr.event   = MCA_CCB_API_REQ_EVT;
-        mca_ccb_event(p_ccb, MCA_CCB_API_REQ_EVT, (tMCA_CCB_EVT *)p_evt_data);
+        p_evt_data = (tMCA_CCB_MSG *)GKI_getbuf (sizeof(tMCA_CCB_MSG));
+        if (p_evt_data)
+        {
+            result = MCA_SUCCESS;
+            p_evt_data->mdl_id      = mdl_id;
+            p_evt_data->op_code     = MCA_OP_MDL_DELETE_REQ;
+            p_evt_data->hdr.event   = MCA_CCB_API_REQ_EVT;
+            mca_ccb_event(p_ccb, MCA_CCB_API_REQ_EVT, (tMCA_CCB_EVT *)p_evt_data);
+        }
+        else
+            result = MCA_NO_RESOURCES;
     }
     return result;
 }

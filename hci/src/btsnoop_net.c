@@ -30,10 +30,9 @@
 #include <sys/prctl.h>
 #include <sys/socket.h>
 #include <sys/types.h>
-#include <unistd.h>
 
-#include "osi/include/log.h"
 #include "osi/include/osi.h"
+#include "osi/include/log.h"
 
 static void safe_close_(int *fd);
 static void *listen_fn_(void *context);
@@ -56,6 +55,7 @@ int client_socket_btsnoop = -1;
 static int listen_socket_local_ = -1;
 
 static int local_socket_create(void) {
+  int conn_sk, length;
 
   listen_socket_local_ = socket(AF_LOCAL, SOCK_STREAM, 0);
   if(listen_socket_local_ < 0) {
@@ -64,12 +64,12 @@ static int local_socket_create(void) {
 
   if(socket_local_server_bind(listen_socket_local_, LOCAL_SOCKET_NAME,
       ANDROID_SOCKET_NAMESPACE_ABSTRACT) < 0) {
-    LOG_ERROR(LOG_TAG, "Failed to create Local Socket (%s)", strerror(errno));
+    LOG_ERROR("Failed to create Local Socket (%s)", strerror(errno));
     return -1;
   }
 
   if (listen(listen_socket_local_, 1) < 0) {
-    LOG_ERROR(LOG_TAG, "Local socket listen failed (%s)", strerror(errno));
+    LOG_ERROR("Local socket listen failed (%s)", strerror(errno));
     close(listen_socket_local_);
     return -1;
   }
@@ -77,17 +77,15 @@ static int local_socket_create(void) {
 }
 
 void btsnoop_net_open() {
-
   listen_thread_valid_ = (pthread_create(&listen_thread_, NULL, listen_fn_, NULL) == 0);
   if (!listen_thread_valid_) {
-    LOG_ERROR(LOG_TAG, "%s pthread_create failed: %s", __func__, strerror(errno));
+    LOG_ERROR("%s pthread_create failed: %s", __func__, strerror(errno));
   } else {
-    LOG_DEBUG(LOG_TAG, "initialized");
+    LOG_DEBUG("initialized");
   }
 }
 
 void btsnoop_net_close() {
-
   if (listen_thread_valid_) {
 #if (defined(BT_NET_DEBUG) && (NET_DEBUG == TRUE))
     // Disable using network sockets for security reasons
@@ -106,12 +104,12 @@ void btsnoop_net_write(const void *data, size_t length) {
   pthread_mutex_lock(&client_socket_lock_);
   if (client_socket_btsnoop != -1) {
     do {
-      if ((ret = send(client_socket_btsnoop, data, length, 0)) == -1 && errno == ECONNRESET) {
+      if ((ret = TEMP_FAILURE_RETRY(send(client_socket_btsnoop, data, length, 0))) == -1 && errno == ECONNRESET) {
         safe_close_(&client_socket_btsnoop);
-        LOG_INFO(LOG_TAG, "%s conn closed", __func__);
+        LOG_INFO("%s conn closed", __func__);
       }
-      if ((size_t) ret < length) {
-        LOG_ERROR(LOG_TAG, "%s: send : not able to write complete packet", __func__);
+      if (ret < length) {
+        LOG_ERROR("%s: send : not able to write complete packet", __func__);
       }
       length -= ret;
     } while ((length > 0) && (ret != -1));
@@ -128,10 +126,11 @@ static void *listen_fn_(UNUSED_ATTR void *context) {
 
   FD_ZERO(&sock_fds);
 
+#if (defined(BT_NET_DEBUG) && (NET_DEBUG == TRUE))
   // Disable using network sockets for security reasons
   listen_socket_ = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (listen_socket_ == -1) {
-    LOG_ERROR(LOG_TAG, "%s socket creation failed: %s", __func__, strerror(errno));
+    LOG_ERROR("%s socket creation failed: %s", __func__, strerror(errno));
     goto cleanup;
   }
   FD_SET(listen_socket_, &sock_fds);
@@ -139,7 +138,7 @@ static void *listen_fn_(UNUSED_ATTR void *context) {
 
   int enable = 1;
   if (setsockopt(listen_socket_, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) == -1) {
-    LOG_ERROR(LOG_TAG, "%s unable to set SO_REUSEADDR: %s", __func__, strerror(errno));
+    LOG_ERROR("%s unable to set SO_REUSEADDR: %s", __func__, strerror(errno));
     goto cleanup;
   }
 
@@ -148,14 +147,15 @@ static void *listen_fn_(UNUSED_ATTR void *context) {
   addr.sin_addr.s_addr = htonl(LOCALHOST_);
   addr.sin_port = htons(LISTEN_PORT_);
   if (bind(listen_socket_, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
-    LOG_ERROR(LOG_TAG, "%s unable to bind listen socket: %s", __func__, strerror(errno));
+    LOG_ERROR("%s unable to bind listen socket: %s", __func__, strerror(errno));
     goto cleanup;
   }
 
   if (listen(listen_socket_, 10) == -1) {
-    LOG_ERROR(LOG_TAG, "%s unable to listen: %s", __func__, strerror(errno));
+    LOG_ERROR("%s unable to listen: %s", __func__, strerror(errno));
     goto cleanup;
   }
+#endif
 
   if (local_socket_create() != -1) {
     if (listen_socket_local_ > fd_max) {
@@ -165,41 +165,41 @@ static void *listen_fn_(UNUSED_ATTR void *context) {
   }
 
   if (fd_max == -1) {
-    LOG_ERROR(LOG_TAG, "%s No sockets to wait for conn..", __func__);
+    LOG_ERROR("%s No sockets to wait for conn..", __func__);
     return NULL;
   }
 
   for (;;) {
     int client_socket = -1;
 
-    LOG_DEBUG(LOG_TAG, "waiting for client connection");
+    LOG_DEBUG("waiting for client connection");
 
     if ((retval = select(fd_max + 1, &sock_fds, NULL, NULL, NULL)) == -1) {
-      LOG_ERROR(LOG_TAG, "%s select failed %s", __func__, strerror(errno));
+      LOG_ERROR("%s select failed %s", __func__, strerror(errno));
       goto cleanup;
     }
 
     if ((listen_socket_ != -1) && FD_ISSET(listen_socket_, &sock_fds)) {
-      client_socket = accept(listen_socket_, NULL, NULL);
+      client_socket = TEMP_FAILURE_RETRY(accept(listen_socket_, NULL, NULL));
       if (client_socket == -1) {
         if (errno == EINVAL || errno == EBADF) {
-          LOG_WARN(LOG_TAG, "%s error accepting TCP socket: %s", __func__, strerror(errno));
+          LOG_WARN("%s error accepting TCP socket: %s", __func__, strerror(errno));
           break;
         }
-        LOG_WARN(LOG_TAG, "%s error accepting TCP socket: %s", __func__, strerror(errno));
+        LOG_WARN("%s error accepting TCP socket: %s", __func__, strerror(errno));
         continue;
       }
     } else if ((listen_socket_local_ != -1) && FD_ISSET(listen_socket_local_, &sock_fds)){
       struct sockaddr_un cliaddr;
       int length;
 
-      client_socket = accept(listen_socket_local_, (struct sockaddr *)&cliaddr, (socklen_t *)&length);
+      client_socket = TEMP_FAILURE_RETRY(accept(listen_socket_local_, (struct sockaddr *)&cliaddr, &length));
       if (client_socket == -1) {
         if (errno == EINVAL || errno == EBADF) {
-          LOG_WARN(LOG_TAG, "%s error accepting LOCAL socket: %s", __func__, strerror(errno));
+          LOG_WARN("%s error accepting LOCAL socket: %s", __func__, strerror(errno));
           break;
         }
-        LOG_WARN(LOG_TAG, "%s error accepting LOCAL socket: %s", __func__, strerror(errno));
+        LOG_WARN("%s error accepting LOCAL socket: %s", __func__, strerror(errno));
         continue;
       }
     }
@@ -209,7 +209,7 @@ static void *listen_fn_(UNUSED_ATTR void *context) {
     pthread_mutex_lock(&client_socket_lock_);
     safe_close_(&client_socket_btsnoop);
     client_socket_btsnoop = client_socket;
-    send(client_socket_btsnoop, "btsnoop\0\0\0\0\1\0\0\x3\xea", 16, 0);
+    TEMP_FAILURE_RETRY(send(client_socket_btsnoop, "btsnoop\0\0\0\0\1\0\0\x3\xea", 16, 0));
     pthread_mutex_unlock(&client_socket_lock_);
 
     FD_ZERO(&sock_fds);

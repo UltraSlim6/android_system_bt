@@ -25,21 +25,19 @@
  *
  ***********************************************************************************/
 
-#define LOG_TAG "bt_btif_hf"
-
-#include <stdlib.h>
-#include <string.h>
-#include <time.h>
-#include <cutils/properties.h>
-
 #include <hardware/bluetooth.h>
 #include <hardware/bt_hf.h>
+#include <stdlib.h>
+#include <string.h>
+#include <cutils/properties.h>
 
-#include "bta_ag_api.h"
-#include "btcore/include/bdaddr.h"
+#define LOG_TAG "bt_btif_hf"
 #include "btif_common.h"
-#include "btif_profile_queue.h"
 #include "btif_util.h"
+#include "btif_profile_queue.h"
+
+#include "btcore/include/bdaddr.h"
+#include "bta_ag_api.h"
 #include "device/include/controller.h"
 
 /************************************************************************************
@@ -158,6 +156,7 @@ typedef struct _btif_hf_cb
 } btif_hf_cb_t;
 
 static btif_hf_cb_t btif_hf_cb[BTIF_HF_NUM_CB];
+
 
 /************************************************************************************
 **  Static functions
@@ -454,6 +453,7 @@ static bt_status_t btif_hf_check_if_slc_connected()
 **
 *****************************************************************************/
 
+
 /*******************************************************************************
 **
 ** Function         btif_hf_upstreams_evt
@@ -737,7 +737,6 @@ static void btif_hf_upstreams_evt(UINT16 event, char* p_param)
         case BTA_AG_AT_BIEV_EVT:
             HAL_CBACK(bt_hf_callbacks, biev_cmd_cb, p_data->val.str,
                                                &btif_hf_cb[idx].connected_bda);
-
             break;
         default:
             BTIF_TRACE_WARNING("%s: Unhandled event: %d", __FUNCTION__, event);
@@ -779,6 +778,7 @@ static void bte_hf_evt(tBTA_AG_EVT event, tBTA_AG *p_data)
     ASSERTC(status == BT_STATUS_SUCCESS, "context transfer failed", status);
 }
 
+
 /*******************************************************************************
 **
 ** Function         btif_in_hf_generic_evt
@@ -815,6 +815,7 @@ static void btif_in_hf_generic_evt(UINT16 event, char *p_param)
     }
 }
 
+
 /*******************************************************************************
 **
 ** Function         btif_hf_init
@@ -831,6 +832,10 @@ static bt_status_t init( bthf_callbacks_t* callbacks, int max_hf_clients)
 
     bt_hf_callbacks = callbacks;
     memset(&btif_hf_cb, 0, sizeof(btif_hf_cb));
+
+    memset(&btif_hf_cb, 0, sizeof(btif_hf_cb));
+    btif_max_hf_clients = max_hf_clients;
+    BTIF_TRACE_DEBUG("btif_max_hf_clients = %d", btif_max_hf_clients);
 
     /* Invoke the enable service API to the core to set the appropriate service_id
      * Internally, the HSP_SERVICE_ID shall also be enabled if HFP is enabled (phone)
@@ -1283,6 +1288,7 @@ static bt_status_t at_response(bthf_at_response_t response_code,
         return BT_STATUS_SUCCESS;
     }
 
+
     return BT_STATUS_FAIL;
 }
 
@@ -1665,13 +1671,13 @@ BOOLEAN btif_hf_call_terminated_recently()
 *******************************************************************************/
 static void  cleanup( void )
 {
-    BTIF_TRACE_IMP("%s", __FUNCTION__);
+    BTIF_TRACE_EVENT("%s", __FUNCTION__);
 
-#if (defined(BTIF_HF_SERVICES) && (BTIF_HF_SERVICES & BTA_HFP_SERVICE_MASK))
-    btif_disable_service(BTA_HFP_SERVICE_ID);
-#else
-    btif_disable_service(BTA_HSP_SERVICE_ID);
-#endif
+    if (bt_hf_callbacks)
+    {
+        btif_disable_service(BTA_HFP_SERVICE_ID);
+        bt_hf_callbacks = NULL;
+    }
 }
 
 /*******************************************************************************
@@ -1780,7 +1786,7 @@ static bt_status_t bind_string_response(const char* res,
         memset (&ag_res, 0, sizeof (ag_res));
 
         /* Format the response */
-        xx = snprintf (ag_res.str, sizeof(ag_res.str), "%s", res);
+        xx = snprintf (ag_res.str, sizeof(ag_res.str), res);
 
         BTA_AgResult (btif_hf_cb[idx].handle, BTA_AG_BIND_RES, &ag_res);
 
@@ -1893,9 +1899,6 @@ bt_status_t btif_hf_execute_service(BOOLEAN b_enable)
     uint8_t no_of_codecs = 0;
     uint8_t* codecs;
     char value[PROPERTY_VALUE_MAX];
-
-    BTIF_TRACE_IMP("%s: enable: %d", __FUNCTION__, b_enable);
-
     if (b_enable)
     {
         /* Enable and register with BTA-AG */
@@ -1927,11 +1930,6 @@ bt_status_t btif_hf_execute_service(BOOLEAN b_enable)
         }
     }
     else {
-        if (bt_hf_callbacks)
-        {
-            BTIF_TRACE_IMP("%s: setting call backs to NULL", __FUNCTION__);
-            bt_hf_callbacks = NULL;
-        }
         /* De-register AG */
         for (i = 0; i < btif_max_hf_clients; i++)
         {
@@ -1940,7 +1938,6 @@ bt_status_t btif_hf_execute_service(BOOLEAN b_enable)
         /* Disable AG */
         BTA_AgDisable();
     }
-    BTIF_TRACE_IMP("%s: enable: %d completed", __FUNCTION__, b_enable);
     return BT_STATUS_SUCCESS;
 }
 

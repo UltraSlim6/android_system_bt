@@ -1,10 +1,8 @@
 LOCAL_PATH:= $(call my-dir)
 
-# Bluetooth stack static library for target
-# ========================================================
 include $(CLEAR_VARS)
 
-LOCAL_C_INCLUDES:= \
+LOCAL_C_INCLUDES:= . \
                    $(LOCAL_PATH)/include \
                    $(LOCAL_PATH)/avct \
                    $(LOCAL_PATH)/btm \
@@ -25,6 +23,9 @@ LOCAL_C_INCLUDES:= \
                    $(LOCAL_PATH)/../btif/include \
                    $(LOCAL_PATH)/../hci/include \
                    $(LOCAL_PATH)/../include \
+                   $(LOCAL_PATH)/../gki/common \
+                   $(LOCAL_PATH)/../gki/ulinux \
+                   $(LOCAL_PATH)/../osi/include \
                    $(LOCAL_PATH)/../udrv/include \
                    $(LOCAL_PATH)/../rpc/include \
                    $(LOCAL_PATH)/../hcis \
@@ -33,14 +34,18 @@ LOCAL_C_INCLUDES:= \
                    $(LOCAL_PATH)/../bta/sys \
                    $(LOCAL_PATH)/../utils/include \
                    $(LOCAL_PATH)/../ \
-                   $(bluetooth_C_INCLUDES)
+                   $(bdroid_C_INCLUDES) \
+
+LOCAL_CFLAGS += $(bdroid_CFLAGS) -std=c99
+
+ifeq ($(BOARD_HAVE_BLUETOOTH_BCM),true)
+LOCAL_CFLAGS += \
+	-DBOARD_HAVE_BLUETOOTH_BCM
+endif
 
 LOCAL_SRC_FILES:= \
     ./a2dp/a2d_api.c \
     ./a2dp/a2d_sbc.c \
-    ./a2dp/a2d_aptx.c \
-    ./a2dp/a2d_aptx_hd.c \
-    ./a2dp/a2d_aac.c \
     ./avrc/avrc_api.c \
     ./avrc/avrc_sdp.c \
     ./avrc/avrc_opt.c \
@@ -51,6 +56,8 @@ LOCAL_SRC_FILES:= \
     ./avrc/avrc_utils.c \
     ./hid/hidh_api.c \
     ./hid/hidh_conn.c \
+    ./hid/hidd_api.c \
+    ./hid/hidd_conn.c \
     ./bnep/bnep_main.c \
     ./bnep/bnep_utils.c \
     ./bnep/bnep_api.c \
@@ -131,8 +138,11 @@ LOCAL_SRC_FILES:= \
     ./sdp/sdp_discovery.c \
     ./pan/pan_main.c \
     ./srvc/srvc_battery.c \
+    ./srvc/srvc_battery_int.h \
     ./srvc/srvc_dis.c \
+    ./srvc/srvc_dis_int.h \
     ./srvc/srvc_eng.c \
+    ./srvc/srvc_eng_int.h \
     ./pan/pan_api.c \
     ./pan/pan_utils.c \
     ./btu/btu_hcif.c \
@@ -150,15 +160,19 @@ LOCAL_SRC_FILES:= \
     ./gap/gap_api.c \
     ./gap/gap_ble.c \
     ./gap/gap_conn.c \
-    ./gap/gap_utils.c
+    ./gap/gap_utils.c \
+    ./l2cap/l2c_le_csm.c
 
-LOCAL_MODULE := libbt-stack
+LOCAL_MODULE := libbt-brcm_stack
+LOCAL_CLANG := false
+LOCAL_MODULE_TAGS := optional
+LOCAL_MODULE_CLASS := STATIC_LIBRARIES
 LOCAL_STATIC_LIBRARIES := libbt-hci
-LOCAL_SHARED_LIBRARIES := libcutils
-
-
-LOCAL_CFLAGS += $(bluetooth_CFLAGS)
-LOCAL_CONLYFLAGS += $(bluetooth_CONLYFLAGS)
-LOCAL_CPPFLAGS += $(bluetooth_CPPFLAGS)
+LOCAL_SHARED_LIBRARIES := libcutils libc
+LOCAL_MULTILIB := 32
+# gnu-variable-sized-type-not-at-end is needed for a variable-size header in
+# a struct.
+# const-logical-operand is needed for code in l2c_utils.c that looks intentional.
+LOCAL_CLANG_CFLAGS += -Wno-error=gnu-variable-sized-type-not-at-end -Wno-error=constant-logical-operand
 
 include $(BUILD_STATIC_LIBRARY)

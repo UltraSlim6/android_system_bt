@@ -26,7 +26,7 @@
 #include <string.h>
 
 #include "bt_target.h"
-#include "bt_common.h"
+#include "gki.h"
 #include "mca_api.h"
 #include "mca_defs.h"
 #include "mca_int.h"
@@ -255,7 +255,7 @@ void mca_free_tc_tbl_by_lcid(UINT16 lcid)
 void mca_set_cfg_by_tbl(tL2CAP_CFG_INFO *p_cfg, tMCA_TC_TBL *p_tbl)
 {
     tMCA_DCB   *p_dcb;
-    const tL2CAP_FCR_OPTS *p_opt = NULL;
+    const tL2CAP_FCR_OPTS *p_opt;
     tMCA_FCS_OPT    fcs = MCA_FCS_NONE;
 
     if (p_tbl->tcid == MCA_CTRL_TCID)
@@ -265,7 +265,7 @@ void mca_set_cfg_by_tbl(tL2CAP_CFG_INFO *p_cfg, tMCA_TC_TBL *p_tbl)
     else
     {
         p_dcb = mca_dcb_by_hdl(p_tbl->cb_idx);
-        if (p_dcb != NULL)
+        if (p_dcb !=NULL)
         {
             p_opt = &p_dcb->p_chnl_cfg->fcr_opt;
             fcs   = p_dcb->p_chnl_cfg->fcs;
@@ -275,8 +275,7 @@ void mca_set_cfg_by_tbl(tL2CAP_CFG_INFO *p_cfg, tMCA_TC_TBL *p_tbl)
     p_cfg->mtu_present = TRUE;
     p_cfg->mtu = p_tbl->my_mtu;
     p_cfg->fcr_present = TRUE;
-    if (p_opt != NULL)
-        memcpy(&p_cfg->fcr, p_opt, sizeof (tL2CAP_FCR_OPTS));
+    memcpy(&p_cfg->fcr, p_opt, sizeof (tL2CAP_FCR_OPTS));
     if (fcs & MCA_FCS_PRESNT_MASK)
     {
         p_cfg->fcs_present = TRUE;
@@ -376,7 +375,7 @@ void mca_tc_open_ind(tMCA_TC_TBL *p_tbl)
     if (p_tbl->tcid == MCA_CTRL_TCID)
     {
         p_ccb = mca_ccb_by_hdl((tMCA_CL)p_tbl->cb_idx);
-        if(p_ccb != NULL)
+        if(p_ccb !=NULL)
         {
             mca_ccb_event(p_ccb, MCA_CCB_LL_OPEN_EVT, (tMCA_CCB_EVT *)&open);
         }
@@ -421,7 +420,7 @@ void mca_tc_cong_ind(tMCA_TC_TBL *p_tbl, BOOLEAN is_congested)
     if (p_tbl->tcid == MCA_CTRL_TCID)
     {
         p_ccb = mca_ccb_by_hdl((tMCA_CL)p_tbl->cb_idx);
-        if (p_ccb != NULL)
+        if(p_ccb != NULL)
         {
             mca_ccb_event(p_ccb, MCA_CCB_LL_CONG_EVT, (tMCA_CCB_EVT *) &is_congested);
         }
@@ -499,7 +498,7 @@ void mca_tc_data_ind(tMCA_TC_TBL *p_tbl, BT_HDR *p_buf)
             mca_ccb_event(p_ccb, event, (tMCA_CCB_EVT *) p_buf);
         } /* got a valid ccb */
         else
-            osi_free(p_buf);
+            GKI_freebuf(p_buf);
     }
     /* else send event to dcb */
     else
@@ -510,7 +509,7 @@ void mca_tc_data_ind(tMCA_TC_TBL *p_tbl, BT_HDR *p_buf)
             mca_dcb_event(p_dcb, MCA_DCB_TC_DATA_EVT, (tMCA_DCB_EVT *) p_buf);
         }
         else
-            osi_free(p_buf);
+            GKI_freebuf(p_buf);
     }
 }
 
@@ -637,4 +636,22 @@ BOOLEAN mca_is_valid_dep_id(tMCA_RCB *p_rcb, tMCA_DEP dep)
         valid = TRUE;
     }
     return valid;
+}
+
+/*******************************************************************************
+**
+** Function         mca_free_buf
+**
+** Description      free memory for specified GKI packet
+**
+** Returns          void
+**
+*******************************************************************************/
+void mca_free_buf (void **p_buf)
+{
+    if (p_buf && *p_buf)
+    {
+        GKI_freebuf(*p_buf);
+        *p_buf = NULL;
+    }
 }

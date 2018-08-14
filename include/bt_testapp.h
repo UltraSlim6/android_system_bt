@@ -124,6 +124,16 @@ typedef struct {
     UINT8       (*GetChnlFcrMode)(UINT16 lcid);
     UINT16      (*SendFixedChnlData)(UINT16 fixed_cid, BD_ADDR rem_bda, BT_HDR *p_buf);
     void  (*Cleanup)(void);
+#if (defined(LE_L2CAP_CFC_INCLUDED) && (LE_L2CAP_CFC_INCLUDED == TRUE))
+    bt_status_t (*RegisterLePsm) (UINT16 le_psm, BOOLEAN ConnType, UINT16 SecLevel,
+                                    UINT8 enc_key_size);
+    bt_status_t (*LeDeregister)(UINT16 psm);
+    UINT16 (*LeConnect) (BD_ADDR address, tL2CAP_LE_CONN_INFO *conn_info);
+    BOOLEAN (*LeConnectRsp) (BD_ADDR p_bd_addr, UINT8 id, UINT16 lcid,
+                                tL2CAP_LE_CONN_INFO *conn_info);
+    BOOLEAN (*LeFlowControl) (UINT16 lcid, UINT16 credits);
+    void (*LeFreeBuf)(BT_HDR *p_buf);
+#endif
 } btl2cap_interface_t;
 
 typedef struct
@@ -183,6 +193,7 @@ typedef struct
 
 }btgatt_test_interface_t;
 
+#if SMP_INCLUDED == TRUE
 typedef struct
 {
     size_t    size;
@@ -194,6 +205,7 @@ typedef struct
     void (*PasskeyReply) (BD_ADDR bd_addr, UINT8 res, UINT32 passkey);
     BOOLEAN (*Encrypt) (UINT8 *key, UINT8 key_len, UINT8 *plain_text, UINT8 pt_len, tSMP_ENC *p_out);
 }btsmp_interface_t;
+#endif
 typedef struct
 {
     size_t    size;

@@ -12,11 +12,12 @@ of one or more modules.
 * audio_a2dp_hw - A2DP audio HAL implementation.
 * bta - *Bluetooth Application* - Strange collection of a-lot of things **Deprecate?**
 * btcore - *Bluetooth Core* - Bluetooth data type definitions and operations on those data types.
-* btif - *Bluetooth Interface* - JNI interface to Android.
+* btif - *Bluetooth Interface* - Bluedroid JNI interface to Android.
 * conf - *Configuration* - Various configuration text files.
 * doc - *Documentation* - Stack documentation.
 * embdrv - **Deprecated** - Bluetooth SBC Codec.
-* hci - *Host Controller Interface* - Communication protocol with Bluetooth chip.
+* gki - **Deprecated** *General Kernel Interface* - Eliminate - replaced by osi.
+* hci - *Host Controller Interface* - Communication protocol with bluetooth chip.
 * include - **Deprecated** - System global include files.
 * main - *Main stack entrypoint* - Provides HAL for stack access.
 * osi - *Operating System Interface* - General resource support for stack.

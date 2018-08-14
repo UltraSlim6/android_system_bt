@@ -30,20 +30,20 @@
 
 #define LOG_TAG "bt_btm_pm"
 
-#include <stddef.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+#include <stddef.h>
 
 #include "bt_types.h"
-#include "bt_utils.h"
+#include "gki.h"
+#include "hcimsgs.h"
+#include "btu.h"
 #include "btm_api.h"
 #include "btm_int.h"
-#include "btu.h"
-#include "bt_common.h"
-#include "hcidefs.h"
-#include "hcimsgs.h"
 #include "l2c_int.h"
+#include "hcidefs.h"
+#include "bt_utils.h"
 #include "osi/include/log.h"
 
 /*****************************************************************************/
@@ -184,6 +184,7 @@ tBTM_STATUS BTM_SetPowerMode (UINT8 pm_id, BD_ADDR remote_bda, tBTM_PM_PWR_MD *p
     tBTM_PM_MODE        mode;
     int                 temp_pm_id;
 
+
     if(pm_id >= BTM_MAX_PM_RECORDS)
         pm_id = BTM_PM_SET_ONLY_ID;
 
@@ -207,7 +208,7 @@ tBTM_STATUS BTM_SetPowerMode (UINT8 pm_id, BD_ADDR remote_bda, tBTM_PM_PWR_MD *p
         /* check if the requested mode is supported */
         ind = mode - BTM_PM_MD_HOLD; /* make it base 0 */
         p_features = BTM_ReadLocalFeatures();
-        if(ind < BTM_PM_NUM_SET_MODES && !(p_features[ btm_pm_mode_off[ind] ] & btm_pm_mode_msk[ind] ) )
+        if( ind < BTM_PM_NUM_SET_MODES && !(p_features[ btm_pm_mode_off[ind] ] & btm_pm_mode_msk[ind] ) )
             return BTM_MODE_UNSUPPORTED;
     }
 
@@ -257,6 +258,8 @@ tBTM_STATUS BTM_SetPowerMode (UINT8 pm_id, BD_ADDR remote_bda, tBTM_PM_PWR_MD *p
         }
         return BTM_CMD_STORED;
     }
+
+
 
     return btm_pm_snd_md_req(pm_id, acl_ind, p_mode);
 }
@@ -315,14 +318,15 @@ tBTM_STATUS BTM_ReadPowerMode (BD_ADDR remote_bda, tBTM_PM_MODE *p_mode)
 *******************************************************************************/
 tBTM_STATUS btm_read_power_mode_state (BD_ADDR remote_bda, tBTM_PM_STATE *pmState)
 {
-    int acl_ind = btm_pm_find_acl_ind(remote_bda);
+    int acl_ind;
 
-    if( acl_ind == MAX_L2CAP_LINKS)
+    if( (acl_ind = btm_pm_find_acl_ind(remote_bda)) == MAX_L2CAP_LINKS)
         return (BTM_UNKNOWN_ADDR);
 
     *pmState = btm_cb.pm_mode_db[acl_ind].state;
     return BTM_SUCCESS;
 }
+
 
 /*******************************************************************************
 **
@@ -386,11 +390,12 @@ void btm_pm_reset(void)
     tBTM_PM_STATUS_CBACK *cb = NULL;
 
     /* clear the pending request for application */
-    if( (btm_cb.pm_pend_id < BTM_PM_SET_ONLY_ID) &&
+    if( (btm_cb.pm_pend_id != BTM_PM_SET_ONLY_ID) &&
         (btm_cb.pm_reg_db[btm_cb.pm_pend_id].mask & BTM_PM_REG_NOTIF) )
     {
         cb = btm_cb.pm_reg_db[btm_cb.pm_pend_id].cback;
     }
+
 
     /* clear the register record */
     for(xx=0; xx<BTM_MAX_PM_RECORDS; xx++)
@@ -652,8 +657,7 @@ static tBTM_STATUS btm_pm_snd_md_req(UINT8 pm_id, int link_ind, tBTM_PM_PWR_MD *
     BTM_TRACE_DEBUG("btm_pm_snd_md_req state:0x%x, link_ind: %d", p_cb->state, link_ind);
 #endif  // BTM_PM_DEBUG
 
-    BTM_TRACE_DEBUG("%s switching from %s to %s.", __func__,
-                    mode_to_string(p_cb->state), mode_to_string(md_res.mode));
+    LOG_DEBUG("%s switching from %s to %s.", __func__, mode_to_string(p_cb->state), mode_to_string(md_res.mode));
     switch(md_res.mode)
     {
     case BTM_PM_MD_ACTIVE:
@@ -744,6 +748,7 @@ static void btm_pm_check_stored(void)
     }
 }
 
+
 /*******************************************************************************
 **
 ** Function         btm_pm_proc_cmd_status
@@ -780,7 +785,7 @@ void btm_pm_proc_cmd_status(UINT8 status)
     }
 
     /* notify the caller is appropriate */
-    if( (btm_cb.pm_pend_id < BTM_PM_SET_ONLY_ID) &&
+    if( (btm_cb.pm_pend_id != BTM_PM_SET_ONLY_ID) &&
         (btm_cb.pm_reg_db[btm_cb.pm_pend_id].mask & BTM_PM_REG_NOTIF) )
     {
         (*btm_cb.pm_reg_db[btm_cb.pm_pend_id].cback)(btm_cb.acl_db[btm_cb.pm_pend_link].remote_addr, pm_status, 0, status);
@@ -830,8 +835,7 @@ void btm_pm_proc_mode_change (UINT8 hci_status, UINT16 hci_handle, UINT8 mode, U
     p_cb->state     = mode;
     p_cb->interval  = interval;
 
-    BTM_TRACE_DEBUG("%s switched from %s to %s.", __func__,
-                    mode_to_string(old_state), mode_to_string(p_cb->state));
+    LOG_DEBUG("%s switched from %s to %s.", __func__, mode_to_string(old_state), mode_to_string(p_cb->state));
 
     if ((p_lcb = l2cu_find_lcb_by_bd_addr(p->remote_addr, BT_TRANSPORT_BR_EDR)) != NULL)
     {
@@ -874,6 +878,7 @@ void btm_pm_proc_mode_change (UINT8 hci_status, UINT16 hci_handle, UINT8 mode, U
             }
         }
     }
+
 
     /* notify registered parties */
     for(yy=0; yy<BTM_MAX_PM_RECORDS; yy++)
@@ -991,7 +996,7 @@ BOOLEAN btm_pm_device_in_scan_state(void)
     /* Scan state-paging, inquiry, and trying to connect */
 
     /* Check for paging */
-    if (btm_cb.is_paging || (!fixed_queue_is_empty(btm_cb.page_queue)) ||
+    if (btm_cb.is_paging || GKI_queue_length(&btm_cb.page_queue) > 0 ||
        BTM_BL_PAGING_STARTED == btm_cb.busy_level)
     {
        BTM_TRACE_DEBUG("btm_pm_device_in_scan_state- paging");

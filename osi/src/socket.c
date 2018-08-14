@@ -18,8 +18,6 @@
 
 #define LOG_TAG "bt_osi_socket"
 
-#include "osi/include/socket.h"
-
 #include <asm/ioctls.h>
 #include <assert.h>
 #include <errno.h>
@@ -27,12 +25,14 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include "osi/include/allocator.h"
-#include "osi/include/log.h"
 #include "osi/include/osi.h"
+#include "osi/include/log.h"
 #include "osi/include/reactor.h"
+#include "osi/include/socket.h"
 
 // The IPv4 loopback address: 127.0.0.1
 static const in_addr_t LOCALHOST_ = 0x7f000001;
@@ -50,21 +50,20 @@ static void internal_write_ready(void *context);
 
 socket_t *socket_new(void) {
   socket_t *ret = (socket_t *)osi_calloc(sizeof(socket_t));
-
-  if (ret == NULL) {
-    LOG_ERROR(LOG_TAG, "%s unable to allocate : %s", __func__, strerror(errno));
-    return NULL;
+  if (!ret) {
+    LOG_ERROR("%s unable to allocate memory for socket.", __func__);
+    goto error;
   }
 
   ret->fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (ret->fd == INVALID_FD) {
-    LOG_ERROR(LOG_TAG, "%s unable to create socket: %s", __func__, strerror(errno));
+    LOG_ERROR("%s unable to create socket: %s", __func__, strerror(errno));
     goto error;
   }
 
   int enable = 1;
   if (setsockopt(ret->fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) == -1) {
-    LOG_ERROR(LOG_TAG, "%s unable to set SO_REUSEADDR: %s", __func__, strerror(errno));
+    LOG_ERROR("%s unable to set SO_REUSEADDR: %s", __func__, strerror(errno));
     goto error;
   }
 
@@ -81,6 +80,10 @@ socket_t *socket_new_from_fd(int fd) {
   assert(fd != INVALID_FD);
 
   socket_t *ret = (socket_t *)osi_calloc(sizeof(socket_t));
+  if (!ret) {
+    LOG_ERROR("%s unable to allocate memory for socket.", __func__);
+    return NULL;
+  }
 
   ret->fd = fd;
   return ret;
@@ -103,12 +106,12 @@ bool socket_listen(const socket_t *socket, port_t port) {
   addr.sin_addr.s_addr = htonl(LOCALHOST_);
   addr.sin_port = htons(port);
   if (bind(socket->fd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
-    LOG_ERROR(LOG_TAG, "%s unable to bind socket to port %u: %s", __func__, port, strerror(errno));
+    LOG_ERROR("%s unable to bind socket to port %u: %s", __func__, port, strerror(errno));
     return false;
   }
 
   if (listen(socket->fd, 10) == -1) {
-    LOG_ERROR(LOG_TAG, "%s unable to listen on port %u: %s", __func__, port, strerror(errno));
+    LOG_ERROR("%s unable to listen on port %u: %s", __func__, port, strerror(errno));
     return false;
   }
 
@@ -118,14 +121,18 @@ bool socket_listen(const socket_t *socket, port_t port) {
 socket_t *socket_accept(const socket_t *socket) {
   assert(socket != NULL);
 
-  int fd;
-  OSI_NO_INTR(fd = accept(socket->fd, NULL, NULL));
+  int fd = TEMP_FAILURE_RETRY(accept(socket->fd, NULL, NULL));
   if (fd == INVALID_FD) {
-    LOG_ERROR(LOG_TAG, "%s unable to accept socket: %s", __func__, strerror(errno));
+    LOG_ERROR("%s unable to accept socket: %s", __func__, strerror(errno));
     return NULL;
   }
 
   socket_t *ret = (socket_t *)osi_calloc(sizeof(socket_t));
+  if (!ret) {
+    close(fd);
+    LOG_ERROR("%s unable to allocate memory for socket.", __func__);
+    return NULL;
+  }
 
   ret->fd = fd;
   return ret;
@@ -135,20 +142,14 @@ ssize_t socket_read(const socket_t *socket, void *buf, size_t count) {
   assert(socket != NULL);
   assert(buf != NULL);
 
-  ssize_t ret;
-  OSI_NO_INTR(ret = recv(socket->fd, buf, count, MSG_DONTWAIT));
-
-  return ret;
+  return TEMP_FAILURE_RETRY(recv(socket->fd, buf, count, MSG_DONTWAIT));
 }
 
 ssize_t socket_write(const socket_t *socket, const void *buf, size_t count) {
   assert(socket != NULL);
   assert(buf != NULL);
 
-  ssize_t ret;
-  OSI_NO_INTR(ret = send(socket->fd, buf, count, MSG_DONTWAIT));
-
-  return ret;
+  return TEMP_FAILURE_RETRY(send(socket->fd, buf, count, MSG_DONTWAIT));
 }
 
 ssize_t socket_write_and_transfer_fd(const socket_t *socket, const void *buf, size_t count, int fd) {
@@ -178,9 +179,7 @@ ssize_t socket_write_and_transfer_fd(const socket_t *socket, const void *buf, si
   header->cmsg_len = CMSG_LEN(sizeof(int));
   *(int *)CMSG_DATA(header) = fd;
 
-  ssize_t ret;
-  OSI_NO_INTR(ret = sendmsg(socket->fd, &msg, MSG_DONTWAIT));
-
+  ssize_t ret = TEMP_FAILURE_RETRY(sendmsg(socket->fd, &msg, MSG_DONTWAIT));
   close(fd);
   return ret;
 }
@@ -189,7 +188,7 @@ ssize_t socket_bytes_available(const socket_t *socket) {
   assert(socket != NULL);
 
   int size = 0;
-  if (ioctl(socket->fd, FIONREAD, &size) == -1)
+  if (TEMP_FAILURE_RETRY(ioctl(socket->fd, FIONREAD, &size)) == -1)
     return -1;
   return size;
 }

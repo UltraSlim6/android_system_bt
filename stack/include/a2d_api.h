@@ -85,9 +85,6 @@
 #define A2D_BAD_CP_TYPE       0xE0  /* The requested CP Type is not supported. */
 #define A2D_BAD_CP_FORMAT     0xE1  /* The format of Content Protection Service Capability/Content Protection Scheme Dependent Data is not correct. */
 
-
-#define A2D_NON_A2DP_MEDIA_CT 0xFF  /* NON A2DP media codec */
-
 typedef UINT8 tA2D_STATUS;
 
 /* the return values from A2D_BitsSet() */
@@ -105,6 +102,7 @@ typedef struct
 {
     UINT32              db_len;  /* Length, in bytes, of the discovery database */
     UINT16              num_attr;/* The number of attributes in p_attrs */
+    tSDP_DISCOVERY_DB  *p_db;    /* Pointer to the discovery database */
     UINT16             *p_attrs; /* The attributes filter. If NULL, A2DP API sets the attribute filter
                                   * to be ATTR_ID_SERVICE_CLASS_ID_LIST, ATTR_ID_BT_PROFILE_DESC_LIST,
                                   * ATTR_ID_SUPPORTED_FEATURES, ATTR_ID_SERVICE_NAME and ATTR_ID_PROVIDER_NAME.

@@ -39,7 +39,7 @@
 #include "bt_types.h"
 #include "bt_target.h"
 #include "device/include/controller.h"
-#include "bt_common.h"
+#include "gki.h"
 #include "hcimsgs.h"
 #include "btu.h"
 #include "btm_api.h"
@@ -48,34 +48,21 @@
 #include "hcidefs.h"
 #include "bt_utils.h"
 
-
-extern fixed_queue_t *btu_general_alarm_queue;
-
-#if (defined(BLE_INCLUDED) && (BLE_INCLUDED == TRUE))
 static void btm_read_remote_features (UINT16 handle);
-#endif
-
 static void btm_read_remote_ext_features (UINT16 handle, UINT8 page_number);
 static void btm_process_remote_ext_features (tACL_CONN *p_acl_cb, UINT8 num_read_pages);
 
-/* 3 seconds timeout waiting for responses */
-#define BTM_DEV_REPLY_TIMEOUT_MS (3 * 1000)
+#define BTM_DEV_REPLY_TIMEOUT   3       /* 3 second timeout waiting for responses */
 
 /* Black listed car kits/headsets for incoming role switch */
 static const UINT8 btm_role_switch_black_list_prefix1[][3] = {{0x00, 0x0d, 0xfd}  /* MOT EQ5 */
                                                              ,{0x00, 0x1b, 0xdc} /* BSHSBE20 */
                                                              ,{0x00, 0x07, 0x04} /* Infiniti G37 2011 */
                                                              ,{0xa4, 0x15, 0x66} /* Motorola Whisper */
-                                                             ,{0x00, 0x54, 0xaf} /* Jeep Uconnect */
                                                             };
 /* Black listed car kits/headsets for outgoing role switch */
 static const UINT8 btm_role_switch_black_list_prefix2[][3] = {{0xfc, 0xc2, 0xde}  /* Toyota Prius 2015 */
-                                                             ,{0x00, 0x26, 0xb4} /* NAC FORD,2013 Lincoln */
                                                              ,{0x00, 0x04, 0x3e} /* OBU II Bluetooth dongle */
-                                                             ,{0x00, 0x23, 0x01}  /* Roman R9020 */
-                                                             ,{0x00, 0x26, 0xb4} /* NAC FORD,2013 Lincoln */
-                                                             ,{0x1c, 0x48, 0xf9} /* Jabra Storm */
-                                                             ,{0x00, 0x54, 0xaf} /* Jeep Uconnect */
                                                             };
 
 /*******************************************************************************
@@ -167,7 +154,7 @@ void btm_acl_init (void)
 **                  NULL if not found.
 **
 *******************************************************************************/
-tACL_CONN *btm_bda_to_acl (const BD_ADDR bda, tBT_TRANSPORT transport)
+tACL_CONN *btm_bda_to_acl (BD_ADDR bda, tBT_TRANSPORT transport)
 {
     tACL_CONN   *p = &btm_cb.acl_db[0];
     UINT16       xx;
@@ -344,6 +331,7 @@ void btm_acl_created (BD_ADDR bda, DEV_CLASS dc, BD_NAME bdn,
             /* if BR/EDR do something more */
             if (transport == BT_TRANSPORT_BR_EDR)
             {
+                btsnd_hcic_read_rmt_clk_offset (p->hci_handle);
                 btsnd_hcic_rmt_ver_req (p->hci_handle);
             }
             p_dev_rec = btm_find_dev_by_handle (hci_handle);
@@ -566,51 +554,48 @@ void btm_acl_device_down (void)
 void btm_acl_update_busy_level (tBTM_BLI_EVENT event)
 {
     tBTM_BL_UPDATE_DATA  evt;
-    UINT8 busy_level = btm_cb.busy_level;
+    UINT8 busy_level;
     BTM_TRACE_DEBUG ("btm_acl_update_busy_level");
     BOOLEAN old_inquiry_state = btm_cb.is_inquiry;
     switch (event)
     {
         case BTM_BLI_ACL_UP_EVT:
             BTM_TRACE_DEBUG ("BTM_BLI_ACL_UP_EVT");
-            busy_level = BTM_GetNumAclLinks();
             break;
         case BTM_BLI_ACL_DOWN_EVT:
             BTM_TRACE_DEBUG ("BTM_BLI_ACL_DOWN_EVT");
-            busy_level = BTM_GetNumAclLinks();
             break;
         case BTM_BLI_PAGE_EVT:
             BTM_TRACE_DEBUG ("BTM_BLI_PAGE_EVT");
             btm_cb.is_paging = TRUE;
             evt.busy_level_flags= BTM_BL_PAGING_STARTED;
-            busy_level = BTM_BL_PAGING_STARTED;
             break;
         case BTM_BLI_PAGE_DONE_EVT:
             BTM_TRACE_DEBUG ("BTM_BLI_PAGE_DONE_EVT");
             btm_cb.is_paging = FALSE;
             evt.busy_level_flags = BTM_BL_PAGING_COMPLETE;
-            busy_level = BTM_BL_PAGING_COMPLETE;
             break;
         case BTM_BLI_INQ_EVT:
             BTM_TRACE_DEBUG ("BTM_BLI_INQ_EVT");
             btm_cb.is_inquiry = TRUE;
             evt.busy_level_flags = BTM_BL_INQUIRY_STARTED;
-            busy_level = BTM_BL_INQUIRY_STARTED;
             break;
         case BTM_BLI_INQ_CANCEL_EVT:
             BTM_TRACE_DEBUG ("BTM_BLI_INQ_CANCEL_EVT");
             btm_cb.is_inquiry = FALSE;
             evt.busy_level_flags = BTM_BL_INQUIRY_CANCELLED;
-            busy_level = BTM_BL_INQUIRY_COMPLETE;
             break;
         case BTM_BLI_INQ_DONE_EVT:
             BTM_TRACE_DEBUG ("BTM_BLI_INQ_DONE_EVT");
             btm_cb.is_inquiry = FALSE;
             evt.busy_level_flags = BTM_BL_INQUIRY_COMPLETE;
-            busy_level = BTM_BL_INQUIRY_COMPLETE;
             break;
     }
 
+    if (btm_cb.is_paging || btm_cb.is_inquiry)
+        busy_level = 10;
+    else
+        busy_level = BTM_GetNumAclLinks();
 
     if ((busy_level != btm_cb.busy_level) ||(old_inquiry_state != btm_cb.is_inquiry))
     {
@@ -649,8 +634,8 @@ tBTM_STATUS BTM_GetRole (BD_ADDR remote_bd_addr, UINT8 *p_role)
     *p_role = p->link_role;
     BTM_TRACE_WARNING ("BTM: Local device role : 0x%02x", *p_role );
     BTM_TRACE_WARNING ("BTM: RemBdAddr: %02x%02x%02x%02x%02x%02x",
-                        remote_bd_addr[0], remote_bd_addr[1], remote_bd_addr[2], remote_bd_addr[3],
-                        remote_bd_addr[4], remote_bd_addr[5]);
+                         remote_bd_addr[0], remote_bd_addr[1], remote_bd_addr[2], remote_bd_addr[3],
+                         remote_bd_addr[4], remote_bd_addr[5]);
     return(BTM_SUCCESS);
 }
 
@@ -685,7 +670,6 @@ tBTM_STATUS BTM_SwitchRole (BD_ADDR remote_bd_addr, UINT8 new_role, tBTM_CMPL_CB
 #if (BT_USE_TRACES == TRUE)
     BD_ADDR_PTR  p_bda;
 #endif
-
     /* Make sure the local device supports switching */
     if (!controller_get_interface()->supports_master_slave_role_switch())
         return(BTM_MODE_UNSUPPORTED);
@@ -808,9 +792,10 @@ tBTM_STATUS BTM_SwitchRole (BD_ADDR remote_bd_addr, UINT8 new_role, tBTM_CMPL_CB
         btm_cb.devcb.p_switch_role_cb = p_cb;
     }
     BTM_TRACE_WARNING ("BTM_SwitchRole BDA: %02x-%02x-%02x-%02x-%02x-%02x",
-    remote_bd_addr[0], remote_bd_addr[1], remote_bd_addr[2],
-    remote_bd_addr[3], remote_bd_addr[4], remote_bd_addr[5]);
-    BTM_TRACE_WARNING ("Requested New Role: %d", new_role)
+                 remote_bd_addr[0], remote_bd_addr[1], remote_bd_addr[2],
+                 remote_bd_addr[3], remote_bd_addr[4], remote_bd_addr[5]);
+    BTM_TRACE_WARNING ("Requested New Role: %d", new_role);
+
     return(BTM_CMD_STARTED);
 }
 
@@ -902,7 +887,7 @@ void btm_acl_encrypt_change (UINT16 handle, UINT8 status, UINT8 encr_enable)
                 btsnd_hcic_disconnect(p_dev_rec->hci_handle, HCI_ERR_PEER_USER);
             }
             BTM_TRACE_ERROR("btm_acl_encrypt_change: tBTM_SEC_DEV:0x%x rs_disc_pending=%d",
-                            PTR_TO_UINT(p_dev_rec), p_dev_rec->rs_disc_pending);
+                (UINT32)p_dev_rec, p_dev_rec->rs_disc_pending);
             p_dev_rec->rs_disc_pending = BTM_SEC_RS_NOT_PENDING;     /* reset flag */
         }
 #endif
@@ -1005,45 +990,6 @@ void BTM_SetDefaultLinkPolicy (UINT16 settings)
     btsnd_hcic_write_def_policy_set(settings);
 }
 
-#if (defined(BLE_INCLUDED) && (BLE_INCLUDED == TRUE))
-void btm_use_preferred_conn_params(BD_ADDR bda) {
-    tL2C_LCB *p_lcb = l2cu_find_lcb_by_bd_addr (bda, BT_TRANSPORT_LE);
-    tBTM_SEC_DEV_REC    *p_dev_rec = btm_find_or_alloc_dev (bda);
-
-    /* If there are any preferred connection parameters, set them now */
-    if ( (p_dev_rec->conn_params.min_conn_int     >= BTM_BLE_CONN_INT_MIN ) &&
-         (p_dev_rec->conn_params.min_conn_int     <= BTM_BLE_CONN_INT_MAX ) &&
-         (p_dev_rec->conn_params.max_conn_int     >= BTM_BLE_CONN_INT_MIN ) &&
-         (p_dev_rec->conn_params.max_conn_int     <= BTM_BLE_CONN_INT_MAX ) &&
-         (p_dev_rec->conn_params.slave_latency    <= BTM_BLE_CONN_LATENCY_MAX ) &&
-         (p_dev_rec->conn_params.supervision_tout >= BTM_BLE_CONN_SUP_TOUT_MIN) &&
-         (p_dev_rec->conn_params.supervision_tout <= BTM_BLE_CONN_SUP_TOUT_MAX) &&
-         ((p_lcb->min_interval < p_dev_rec->conn_params.min_conn_int &&
-          p_dev_rec->conn_params.min_conn_int != BTM_BLE_CONN_PARAM_UNDEF) ||
-          (p_lcb->min_interval > p_dev_rec->conn_params.max_conn_int) ||
-          (p_lcb->latency > p_dev_rec->conn_params.slave_latency) ||
-          (p_lcb->timeout > p_dev_rec->conn_params.supervision_tout)))
-    {
-        BTM_TRACE_DEBUG ("%s: HANDLE=%d min_conn_int=%d max_conn_int=%d slave_latency=%d supervision_tout=%d", __func__,
-                            p_lcb->handle, p_dev_rec->conn_params.min_conn_int, p_dev_rec->conn_params.max_conn_int,
-                            p_dev_rec->conn_params.slave_latency, p_dev_rec->conn_params.supervision_tout);
-
-        p_lcb->min_interval =  p_dev_rec->conn_params.min_conn_int;
-        p_lcb->max_interval = p_dev_rec->conn_params.max_conn_int;
-        p_lcb->timeout      = p_dev_rec->conn_params.supervision_tout;
-        p_lcb->latency      = p_dev_rec->conn_params.slave_latency;
-
-        btsnd_hcic_ble_upd_ll_conn_params (p_lcb->handle,
-                                           p_dev_rec->conn_params.min_conn_int,
-                                           p_dev_rec->conn_params.max_conn_int,
-                                           p_dev_rec->conn_params.slave_latency,
-                                           p_dev_rec->conn_params.supervision_tout,
-                                           0, 0);
-    }
-}
-#endif
-
-
 /*******************************************************************************
 **
 ** Function         btm_read_remote_version_complete
@@ -1075,26 +1021,21 @@ void btm_read_remote_version_complete (UINT8 *p)
                 STREAM_TO_UINT8  (p_acl_cb->lmp_version, p);
                 STREAM_TO_UINT16 (p_acl_cb->manufacturer, p);
                 STREAM_TO_UINT16 (p_acl_cb->lmp_subversion, p);
-#if (defined(BLE_INCLUDED) && (BLE_INCLUDED == TRUE))
+                BTM_TRACE_WARNING ("btm_read_remote_version_complete: BDA: %02x-%02x-%02x-%02x-%02x-%02x",
+                             p_acl_cb->remote_addr[0], p_acl_cb->remote_addr[1], p_acl_cb->remote_addr[2],
+                             p_acl_cb->remote_addr[3], p_acl_cb->remote_addr[4], p_acl_cb->remote_addr[5]);
+                BTM_TRACE_WARNING ("btm_read_remote_version_complete lmp_version %d manufacturer %d lmp_subversion %d",
+                                        p_acl_cb->lmp_version,p_acl_cb->manufacturer, p_acl_cb->lmp_subversion);
+#if BLE_INCLUDED == TRUE
                 if (p_acl_cb->transport == BT_TRANSPORT_BR_EDR)
-                {
-                    BTM_TRACE_DEBUG("Calling btm_read_remote_features");
-                    btm_read_remote_features (p_acl_cb->hci_handle);
-                }
 #endif
+                    btm_read_remote_features (p_acl_cb->hci_handle);
             }
 
-#if (defined(BLE_INCLUDED) && (BLE_INCLUDED == TRUE))
-            if (p_acl_cb->transport == BT_TRANSPORT_LE) {
+#if BLE_INCLUDED == TRUE
+            if (p_acl_cb->transport == BT_TRANSPORT_LE)
                 l2cble_notify_le_connection (p_acl_cb->remote_addr);
-                btm_use_preferred_conn_params(p_acl_cb->remote_addr);
-            }
-#endif  // (defined(BLE_INCLUDED) && (BLE_INCLUDED == TRUE))
-                BTM_TRACE_WARNING ("btm_read_remote_version_complete: BDA: %02x-%02x-%02x-%02x-%02x-%02x",
-                                     p_acl_cb->remote_addr[0], p_acl_cb->remote_addr[1], p_acl_cb->remote_addr[2],
-                                     p_acl_cb->remote_addr[3], p_acl_cb->remote_addr[4], p_acl_cb->remote_addr[5]);
-                BTM_TRACE_WARNING ("btm_read_remote_version_complete lmp_version %d manufacturer %d lmp_subversion %d",
-                                       p_acl_cb->lmp_version,p_acl_cb->manufacturer, p_acl_cb->lmp_subversion);
+#endif
             break;
         }
     }
@@ -1160,7 +1101,7 @@ void btm_process_remote_ext_features (tACL_CONN *p_acl_cb, UINT8 num_read_pages)
     }
 }
 
-#if (defined(BLE_INCLUDED) && (BLE_INCLUDED == TRUE))
+
 /*******************************************************************************
 **
 ** Function         btm_read_remote_features
@@ -1192,7 +1133,7 @@ void btm_read_remote_features (UINT16 handle)
     /* because we don't know whether the remote support extended feature command */
     btsnd_hcic_rmt_features_req (handle);
 }
-#endif
+
 
 /*******************************************************************************
 **
@@ -1572,7 +1513,7 @@ UINT16 btm_get_acl_disc_reason_code (void)
 ** Returns          the handle of the connection, or 0xFFFF if none.
 **
 *******************************************************************************/
-UINT16 BTM_GetHCIConnHandle (const BD_ADDR remote_bda, tBT_TRANSPORT transport)
+UINT16 BTM_GetHCIConnHandle (BD_ADDR remote_bda, tBT_TRANSPORT transport)
 {
     tACL_CONN   *p;
     BTM_TRACE_DEBUG ("BTM_GetHCIConnHandle");
@@ -1686,7 +1627,7 @@ void btm_acl_role_changed (UINT8 hci_status, BD_ADDR bd_addr, UINT8 new_role)
 
     BTM_TRACE_DEBUG ("btm_acl_role_changed");
     BTM_TRACE_WARNING ("btm_acl_role_changed: BDA: %02x-%02x-%02x-%02x-%02x-%02x",
-                          p_bda[0], p_bda[1], p_bda[2], p_bda[3], p_bda[4], p_bda[5]);
+                 p_bda[0], p_bda[1], p_bda[2], p_bda[3], p_bda[4], p_bda[5]);
     BTM_TRACE_WARNING ("btm_acl_role_changed: New role: %d", new_role);
     /* Ignore any stray events */
     if (p == NULL)
@@ -1768,7 +1709,7 @@ void btm_acl_role_changed (UINT8 hci_status, BD_ADDR bd_addr, UINT8 new_role)
             btsnd_hcic_disconnect(p_dev_rec->hci_handle, HCI_ERR_PEER_USER);
         }
         BTM_TRACE_ERROR("tBTM_SEC_DEV:0x%x rs_disc_pending=%d",
-                        PTR_TO_UINT(p_dev_rec), p_dev_rec->rs_disc_pending);
+                         (UINT32)p_dev_rec, p_dev_rec->rs_disc_pending);
         p_dev_rec->rs_disc_pending = BTM_SEC_RS_NOT_PENDING;     /* reset flag */
     }
 
@@ -2106,23 +2047,20 @@ tBTM_STATUS BTM_SetQoS (BD_ADDR bd, FLOW_SPEC *p_flow, tBTM_CMPL_CB *p_cb)
                     bd[3], bd[4], bd[5]);
 
     /* If someone already waiting on the version, do not allow another */
-    if (btm_cb.devcb.p_qos_setup_cmpl_cb)
+    if (btm_cb.devcb.p_qossu_cmpl_cb)
         return(BTM_BUSY);
 
     if ( (p = btm_bda_to_acl(bd, BT_TRANSPORT_BR_EDR)) != NULL)
     {
-        btm_cb.devcb.p_qos_setup_cmpl_cb = p_cb;
-        alarm_set_on_queue(btm_cb.devcb.qos_setup_timer,
-                           BTM_DEV_REPLY_TIMEOUT_MS,
-                           btm_qos_setup_timeout, NULL,
-                           btu_general_alarm_queue);
+        btu_start_timer (&btm_cb.devcb.qossu_timer, BTU_TTYPE_BTM_ACL, BTM_DEV_REPLY_TIMEOUT);
+        btm_cb.devcb.p_qossu_cmpl_cb = p_cb;
 
         if (!btsnd_hcic_qos_setup (p->hci_handle, p_flow->qos_flags, p_flow->service_type,
                                    p_flow->token_rate, p_flow->peak_bandwidth,
                                    p_flow->latency,p_flow->delay_variation))
         {
-            btm_cb.devcb.p_qos_setup_cmpl_cb = NULL;
-            alarm_cancel(btm_cb.devcb.qos_setup_timer);
+            btm_cb.devcb.p_qossu_cmpl_cb = NULL;
+            btu_stop_timer(&btm_cb.devcb.qossu_timer);
             return(BTM_NO_RESOURCES);
         }
         else
@@ -2135,23 +2073,6 @@ tBTM_STATUS BTM_SetQoS (BD_ADDR bd, FLOW_SPEC *p_flow, tBTM_CMPL_CB *p_cb)
 
 /*******************************************************************************
 **
-** Function         btm_qos_setup_timeout
-**
-** Description      Callback when QoS setup times out.
-**
-** Returns          void
-**
-*******************************************************************************/
-void btm_qos_setup_timeout(UNUSED_ATTR void *data)
-{
-    tBTM_CMPL_CB  *p_cb = btm_cb.devcb.p_qos_setup_cmpl_cb;
-    btm_cb.devcb.p_qos_setup_cmpl_cb = NULL;
-    if (p_cb)
-        (*p_cb)((void *) NULL);
-}
-
-/*******************************************************************************
-**
 ** Function         btm_qos_setup_complete
 **
 ** Description      This function is called when the command complete message
@@ -2160,16 +2081,15 @@ void btm_qos_setup_timeout(UNUSED_ATTR void *data)
 ** Returns          void
 **
 *******************************************************************************/
-void btm_qos_setup_complete(UINT8 status, UINT16 handle, FLOW_SPEC *p_flow)
+void btm_qos_setup_complete (UINT8 status, UINT16 handle, FLOW_SPEC *p_flow)
 {
-    tBTM_CMPL_CB            *p_cb = btm_cb.devcb.p_qos_setup_cmpl_cb;
+    tBTM_CMPL_CB            *p_cb = btm_cb.devcb.p_qossu_cmpl_cb;
     tBTM_QOS_SETUP_CMPL     qossu;
+    BTM_TRACE_DEBUG ("btm_qos_setup_complete");
+    btu_stop_timer (&btm_cb.devcb.qossu_timer);
 
-    BTM_TRACE_DEBUG("%s", __func__);
-    alarm_cancel(btm_cb.devcb.qos_setup_timer);
-    btm_cb.devcb.p_qos_setup_cmpl_cb = NULL;
+    btm_cb.devcb.p_qossu_cmpl_cb = NULL;
 
-    /* If there was a registered callback, call it */
     if (p_cb)
     {
         memset(&qossu, 0, sizeof(tBTM_QOS_SETUP_CMPL));
@@ -2189,6 +2109,7 @@ void btm_qos_setup_complete(UINT8 status, UINT16 handle, FLOW_SPEC *p_flow)
         (*p_cb)(&qossu);
     }
 }
+
 
 /*******************************************************************************
 **
@@ -2226,15 +2147,15 @@ tBTM_STATUS BTM_ReadRSSI (BD_ADDR remote_bda, tBTM_CMPL_CB *p_cb)
     p = btm_bda_to_acl(remote_bda, transport);
     if (p != (tACL_CONN *)NULL)
     {
+        btu_start_timer (&btm_cb.devcb.rssi_timer, BTU_TTYPE_BTM_ACL,
+                         BTM_DEV_REPLY_TIMEOUT);
+
         btm_cb.devcb.p_rssi_cmpl_cb = p_cb;
-        alarm_set_on_queue(btm_cb.devcb.read_rssi_timer,
-                           BTM_DEV_REPLY_TIMEOUT_MS, btm_read_rssi_timeout,
-                           NULL, btu_general_alarm_queue);
 
         if (!btsnd_hcic_read_rssi (p->hci_handle))
         {
             btm_cb.devcb.p_rssi_cmpl_cb = NULL;
-            alarm_cancel(btm_cb.devcb.read_rssi_timer);
+            btu_stop_timer (&btm_cb.devcb.rssi_timer);
             return(BTM_NO_RESOURCES);
         }
         else
@@ -2265,22 +2186,20 @@ tBTM_STATUS BTM_ReadLinkQuality (BD_ADDR remote_bda, tBTM_CMPL_CB *p_cb)
                     remote_bda[3], remote_bda[4], remote_bda[5]);
 
     /* If someone already waiting on the version, do not allow another */
-    if (btm_cb.devcb.p_link_qual_cmpl_cb)
+    if (btm_cb.devcb.p_lnk_qual_cmpl_cb)
         return(BTM_BUSY);
 
     p = btm_bda_to_acl(remote_bda, BT_TRANSPORT_BR_EDR);
     if (p != (tACL_CONN *)NULL)
     {
-        btm_cb.devcb.p_link_qual_cmpl_cb = p_cb;
-        alarm_set_on_queue(btm_cb.devcb.read_link_quality_timer,
-                           BTM_DEV_REPLY_TIMEOUT_MS,
-                           btm_read_link_quality_timeout, NULL,
-                           btu_general_alarm_queue);
+        btu_start_timer (&btm_cb.devcb.lnk_quality_timer, BTU_TTYPE_BTM_ACL,
+                         BTM_DEV_REPLY_TIMEOUT);
+        btm_cb.devcb.p_lnk_qual_cmpl_cb = p_cb;
 
         if (!btsnd_hcic_get_link_quality (p->hci_handle))
         {
-            btm_cb.devcb.p_link_qual_cmpl_cb = NULL;
-            alarm_cancel(btm_cb.devcb.read_link_quality_timer);
+            btu_stop_timer (&btm_cb.devcb.lnk_quality_timer);
+            btm_cb.devcb.p_lnk_qual_cmpl_cb = NULL;
             return(BTM_NO_RESOURCES);
         }
         else
@@ -2321,11 +2240,10 @@ tBTM_STATUS BTM_ReadTxPower (BD_ADDR remote_bda, tBT_TRANSPORT transport, tBTM_C
     p = btm_bda_to_acl(remote_bda, transport);
     if (p != (tACL_CONN *)NULL)
     {
+        btu_start_timer (&btm_cb.devcb.tx_power_timer, BTU_TTYPE_BTM_ACL,
+                         BTM_DEV_REPLY_TIMEOUT);
+
         btm_cb.devcb.p_tx_power_cmpl_cb = p_cb;
-        alarm_set_on_queue(btm_cb.devcb.read_tx_power_timer,
-                       BTM_DEV_REPLY_TIMEOUT_MS,
-                       btm_read_tx_power_timeout, NULL,
-                       btu_general_alarm_queue);
 
 #if BLE_INCLUDED == TRUE
         if (p->transport == BT_TRANSPORT_LE)
@@ -2341,7 +2259,7 @@ tBTM_STATUS BTM_ReadTxPower (BD_ADDR remote_bda, tBT_TRANSPORT transport, tBTM_C
         if (!ret)
         {
             btm_cb.devcb.p_tx_power_cmpl_cb = NULL;
-            alarm_cancel(btm_cb.devcb.read_tx_power_timer);
+            btu_stop_timer (&btm_cb.devcb.tx_power_timer);
             return(BTM_NO_RESOURCES);
         }
         else
@@ -2351,24 +2269,6 @@ tBTM_STATUS BTM_ReadTxPower (BD_ADDR remote_bda, tBT_TRANSPORT transport, tBTM_C
     /* If here, no BD Addr found */
     return (BTM_UNKNOWN_ADDR);
 }
-
-/*******************************************************************************
-**
-** Function         btm_read_tx_power_timeout
-**
-** Description      Callback when reading the tx power times out.
-**
-** Returns          void
-**
-*******************************************************************************/
-void btm_read_tx_power_timeout(UNUSED_ATTR void *data)
-{
-    tBTM_CMPL_CB  *p_cb = btm_cb.devcb.p_tx_power_cmpl_cb;
-    btm_cb.devcb.p_tx_power_cmpl_cb = NULL;
-    if (p_cb)
-        (*p_cb)((void *) NULL);
-}
-
 /*******************************************************************************
 **
 ** Function         btm_read_tx_power_complete
@@ -2379,19 +2279,19 @@ void btm_read_tx_power_timeout(UNUSED_ATTR void *data)
 ** Returns          void
 **
 *******************************************************************************/
-void btm_read_tx_power_complete(UINT8 *p, BOOLEAN is_ble)
+void btm_read_tx_power_complete (UINT8 *p, BOOLEAN is_ble)
 {
     tBTM_CMPL_CB            *p_cb = btm_cb.devcb.p_tx_power_cmpl_cb;
     tBTM_TX_POWER_RESULTS   results;
     UINT16                   handle;
     tACL_CONN               *p_acl_cb = &btm_cb.acl_db[0];
     UINT16                   index;
+    BTM_TRACE_DEBUG ("btm_read_tx_power_complete");
+    btu_stop_timer (&btm_cb.devcb.tx_power_timer);
 
-    BTM_TRACE_DEBUG("%s", __func__);
-    alarm_cancel(btm_cb.devcb.read_tx_power_timer);
+    /* If there was a callback registered for read rssi, call it */
     btm_cb.devcb.p_tx_power_cmpl_cb = NULL;
 
-    /* If there was a registered callback, call it */
     if (p_cb)
     {
         STREAM_TO_UINT8  (results.hci_status, p);
@@ -2434,23 +2334,6 @@ void btm_read_tx_power_complete(UINT8 *p, BOOLEAN is_ble)
 
 /*******************************************************************************
 **
-** Function         btm_read_rssi_timeout
-**
-** Description      Callback when reading the RSSI times out.
-**
-** Returns          void
-**
-*******************************************************************************/
-void btm_read_rssi_timeout(UNUSED_ATTR void *data)
-{
-    tBTM_CMPL_CB  *p_cb = btm_cb.devcb.p_rssi_cmpl_cb;
-    btm_cb.devcb.p_rssi_cmpl_cb = NULL;
-    if (p_cb)
-        (*p_cb)((void *) NULL);
-}
-
-/*******************************************************************************
-**
 ** Function         btm_read_rssi_complete
 **
 ** Description      This function is called when the command complete message
@@ -2466,12 +2349,12 @@ void btm_read_rssi_complete (UINT8 *p)
     UINT16                   handle;
     tACL_CONN               *p_acl_cb = &btm_cb.acl_db[0];
     UINT16                   index;
+    BTM_TRACE_DEBUG ("btm_read_rssi_complete");
+    btu_stop_timer (&btm_cb.devcb.rssi_timer);
 
-    BTM_TRACE_DEBUG("%s", __func__);
-    alarm_cancel(btm_cb.devcb.read_rssi_timer);
+    /* If there was a callback registered for read rssi, call it */
     btm_cb.devcb.p_rssi_cmpl_cb = NULL;
 
-    /* If there was a registered callback, call it */
     if (p_cb)
     {
         STREAM_TO_UINT8  (results.hci_status, p);
@@ -2505,23 +2388,6 @@ void btm_read_rssi_complete (UINT8 *p)
 
 /*******************************************************************************
 **
-** Function         btm_read_link_quality_timeout
-**
-** Description      Callback when reading the link quality times out.
-**
-** Returns          void
-**
-*******************************************************************************/
-void btm_read_link_quality_timeout(UNUSED_ATTR void *data)
-{
-    tBTM_CMPL_CB  *p_cb = btm_cb.devcb.p_link_qual_cmpl_cb;
-    btm_cb.devcb.p_link_qual_cmpl_cb = NULL;
-    if (p_cb)
-        (*p_cb)((void *) NULL);
-}
-
-/*******************************************************************************
-**
 ** Function         btm_read_link_quality_complete
 **
 ** Description      This function is called when the command complete message
@@ -2530,19 +2396,19 @@ void btm_read_link_quality_timeout(UNUSED_ATTR void *data)
 ** Returns          void
 **
 *******************************************************************************/
-void btm_read_link_quality_complete(UINT8 *p)
+void btm_read_link_quality_complete (UINT8 *p)
 {
-    tBTM_CMPL_CB            *p_cb = btm_cb.devcb.p_link_qual_cmpl_cb;
+    tBTM_CMPL_CB            *p_cb = btm_cb.devcb.p_lnk_qual_cmpl_cb;
     tBTM_LINK_QUALITY_RESULTS results;
     UINT16                   handle;
     tACL_CONN               *p_acl_cb = &btm_cb.acl_db[0];
     UINT16                   index;
+    BTM_TRACE_DEBUG ("btm_read_link_quality_complete");
+    btu_stop_timer (&btm_cb.devcb.lnk_quality_timer);
 
-    BTM_TRACE_DEBUG("%s", __func__);
-    alarm_cancel(btm_cb.devcb.read_link_quality_timer);
-    btm_cb.devcb.p_link_qual_cmpl_cb = NULL;
+    /* If there was a callback registered for read rssi, call it */
+    btm_cb.devcb.p_lnk_qual_cmpl_cb = NULL;
 
-    /* If there was a registered callback, call it */
     if (p_cb)
     {
         STREAM_TO_UINT8  (results.hci_status, p);
@@ -2708,7 +2574,7 @@ void btm_acl_resubmit_page (void)
     BD_ADDR bda;
     BTM_TRACE_DEBUG ("btm_acl_resubmit_page");
     /* If there were other page request schedule can start the next one */
-    if ((p_buf = (BT_HDR *)fixed_queue_try_dequeue(btm_cb.page_queue)) != NULL)
+    if ((p_buf = (BT_HDR *)GKI_dequeue (&btm_cb.page_queue)) != NULL)
     {
         /* skip 3 (2 bytes opcode and 1 byte len) to get to the bd_addr
          * for both create_conn and rmt_name */
@@ -2739,8 +2605,8 @@ void  btm_acl_reset_paging (void)
     BT_HDR *p;
     BTM_TRACE_DEBUG ("btm_acl_reset_paging");
     /* If we sent reset we are definitely not paging any more */
-    while ((p = (BT_HDR *)fixed_queue_try_dequeue(btm_cb.page_queue)) != NULL)
-        osi_free(p);
+    while ((p = (BT_HDR *)GKI_dequeue(&btm_cb.page_queue)) != NULL)
+        GKI_freebuf (p);
 
     btm_cb.paging = FALSE;
 }
@@ -2762,7 +2628,7 @@ void  btm_acl_paging (BT_HDR *p, BD_ADDR bda)
     if (btm_cb.discing)
     {
         btm_cb.paging = TRUE;
-        fixed_queue_enqueue(btm_cb.page_queue, p);
+        GKI_enqueue (&btm_cb.page_queue, p);
     }
     else
     {
@@ -2776,7 +2642,7 @@ void  btm_acl_paging (BT_HDR *p, BD_ADDR bda)
             if (btm_cb.paging &&
                 memcmp (bda, btm_cb.connecting_bda, BD_ADDR_LEN) != 0)
             {
-                fixed_queue_enqueue(btm_cb.page_queue, p);
+                GKI_enqueue (&btm_cb.page_queue, p);
             }
             else
             {

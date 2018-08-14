@@ -26,15 +26,15 @@
 
 #if defined(PAN_INCLUDED) && (PAN_INCLUDED == TRUE)
 
-#include <cutils/log.h>
-
+#include "btu.h"
 #include "bta_api.h"
 #include "bta_sys.h"
-#include "bt_common.h"
+#include "gki.h"
 #include "pan_api.h"
 #include "bta_pan_api.h"
 #include "bta_pan_int.h"
 #include "bta_pan_co.h"
+#include "btm_api.h"
 #include <string.h>
 #include "utl.h"
 
@@ -42,6 +42,9 @@
 /* RX and TX data flow mask */
 #define BTA_PAN_RX_MASK              0x0F
 #define BTA_PAN_TX_MASK              0xF0
+
+/* Intermediate Idle timeout(s)  for TX/RX*/
+#define BTA_PAN_IDLE_TIMEOUT 1
 
 /*******************************************************************************
  **
@@ -54,10 +57,19 @@
  ** Returns     void
  **
  *******************************************************************************/
-static void bta_pan_pm_conn_busy(tBTA_PAN_SCB *p_scb)
+void bta_pan_pm_conn_busy(tBTA_PAN_SCB *p_scb)
 {
     if ((p_scb != NULL) && (p_scb->state != BTA_PAN_IDLE_ST))
-        bta_sys_busy(BTA_ID_PAN, p_scb->app_id, p_scb->bd_addr);
+    {
+        tBTM_PM_MODE    mode = BTM_PM_MD_ACTIVE;
+        if (BTM_ReadPowerMode(p_scb->bd_addr, &mode) == BTM_SUCCESS) {
+            if (mode == BTM_PM_MD_SNIFF) {
+                bta_sys_busy(BTA_ID_PAN, p_scb->app_id, p_scb->bd_addr);
+            } else {
+                APPL_TRACE_DEBUG("bta_pan_pm_conn_busy:power mode: %d", mode);
+            }
+        }
+    }
 }
 
 /*******************************************************************************
@@ -71,10 +83,19 @@ static void bta_pan_pm_conn_busy(tBTA_PAN_SCB *p_scb)
  ** Returns     void
  **
  *******************************************************************************/
-static void bta_pan_pm_conn_idle(tBTA_PAN_SCB *p_scb)
+void bta_pan_pm_conn_idle(tBTA_PAN_SCB *p_scb)
 {
     if ((p_scb != NULL) && (p_scb->state != BTA_PAN_IDLE_ST))
-        bta_sys_idle(BTA_ID_PAN, p_scb->app_id, p_scb->bd_addr);
+    {
+        APPL_TRACE_DEBUG("bta_pan_pm_conn_idle, p_scb->is_idle_timer_started: %d",
+                p_scb->is_idle_timer_started);
+         if (p_scb->is_idle_timer_started == FALSE) {
+            // start intermediate idle timer for 1s
+            btu_start_timer(&p_scb->idle_tle, BTU_TTYPE_USER_FUNC,
+                    BTA_PAN_IDLE_TIMEOUT);
+            p_scb->is_idle_timer_started = TRUE;
+        }
+    }
 }
 
 /*******************************************************************************
@@ -90,45 +111,62 @@ static void bta_pan_pm_conn_idle(tBTA_PAN_SCB *p_scb)
 static void bta_pan_conn_state_cback(UINT16 handle, BD_ADDR bd_addr, tPAN_RESULT state,
                                      BOOLEAN is_role_change, UINT8 src_role, UINT8 dst_role)
 {
-    tBTA_PAN_SCB *p_scb;
-    tBTA_PAN_CONN *p_buf = (tBTA_PAN_CONN *)osi_malloc(sizeof(tBTA_PAN_CONN));
 
-    if ((state == PAN_SUCCESS) && !is_role_change) {
-        p_buf->hdr.event = BTA_PAN_CONN_OPEN_EVT;
-        if ((p_scb = bta_pan_scb_by_handle(handle)) == NULL) {
-            /* allocate an scb */
-            p_scb = bta_pan_scb_alloc();
+    tBTA_PAN_CONN * p_buf;
+    tBTA_PAN_SCB     *p_scb;
+
+
+    if ((p_buf = (tBTA_PAN_CONN *) GKI_getbuf(sizeof(tBTA_PAN_CONN))) != NULL)
+    {
+        if((state == PAN_SUCCESS) && !is_role_change)
+        {
+            p_buf->hdr.event = BTA_PAN_CONN_OPEN_EVT;
+            if((p_scb = bta_pan_scb_by_handle(handle)) == NULL)
+            {
+                /* allocate an scb */
+                p_scb = bta_pan_scb_alloc();
+
+            }
+            /* we have exceeded maximum number of connections */
+            if(!p_scb)
+            {
+                PAN_Disconnect (handle);
+                return;
+            }
+
+            p_scb->handle = handle;
+            p_scb->local_role = src_role;
+            p_scb->peer_role = dst_role;
+            p_scb->pan_flow_enable = TRUE;
+            bdcpy(p_scb->bd_addr, bd_addr);
+            GKI_init_q(&p_scb->data_queue);
+
+            if(src_role == PAN_ROLE_CLIENT)
+                p_scb->app_id = bta_pan_cb.app_id[0];
+            else if (src_role == PAN_ROLE_GN_SERVER)
+                p_scb->app_id = bta_pan_cb.app_id[1];
+            else if (src_role == PAN_ROLE_NAP_SERVER)
+                p_scb->app_id = bta_pan_cb.app_id[2];
+
         }
-        /* we have exceeded maximum number of connections */
-        if (!p_scb) {
-            PAN_Disconnect (handle);
+        else if((state != PAN_SUCCESS) && !is_role_change)
+        {
+            p_buf->hdr.event = BTA_PAN_CONN_CLOSE_EVT;
+
+        }
+        else
+        {
             return;
         }
 
-        p_scb->handle = handle;
-        p_scb->local_role = src_role;
-        p_scb->peer_role = dst_role;
-        p_scb->pan_flow_enable = TRUE;
-        bdcpy(p_scb->bd_addr, bd_addr);
-        p_scb->data_queue = fixed_queue_new(SIZE_MAX);
+        p_buf->result = state;
+        p_buf->hdr.layer_specific = handle;
+        bta_sys_sendmsg(p_buf);
 
-        if (src_role == PAN_ROLE_CLIENT)
-            p_scb->app_id = bta_pan_cb.app_id[0];
-        else if (src_role == PAN_ROLE_GN_SERVER)
-            p_scb->app_id = bta_pan_cb.app_id[1];
-        else if (src_role == PAN_ROLE_NAP_SERVER)
-            p_scb->app_id = bta_pan_cb.app_id[2];
-    }
-    else if ((state != PAN_SUCCESS) && !is_role_change) {
-        p_buf->hdr.event = BTA_PAN_CONN_CLOSE_EVT;
-    } else {
-        return;
     }
 
-    p_buf->result = state;
-    p_buf->hdr.layer_specific = handle;
 
-    bta_sys_sendmsg(p_buf);
+
 }
 
 /*******************************************************************************
@@ -143,22 +181,34 @@ static void bta_pan_conn_state_cback(UINT16 handle, BD_ADDR bd_addr, tPAN_RESULT
 *******************************************************************************/
 static void bta_pan_data_flow_cb(UINT16 handle, tPAN_RESULT result)
 {
+    BT_HDR  *p_buf;
     tBTA_PAN_SCB *p_scb;
 
-    if ((p_scb = bta_pan_scb_by_handle(handle)) == NULL)
+    if((p_scb = bta_pan_scb_by_handle(handle)) == NULL)
         return;
 
-    if (result == PAN_TX_FLOW_ON) {
-        BT_HDR *p_buf = (BT_HDR *) osi_malloc(sizeof(BT_HDR));
-        p_buf->layer_specific = handle;
-        p_buf->event = BTA_PAN_BNEP_FLOW_ENABLE_EVT;
-        bta_sys_sendmsg(p_buf);
+    if(result == PAN_TX_FLOW_ON)
+    {
+        if ((p_buf = (BT_HDR *) GKI_getbuf(sizeof(BT_HDR))) != NULL)
+        {
+            p_buf->layer_specific = handle;
+            p_buf->event = BTA_PAN_BNEP_FLOW_ENABLE_EVT;
+            bta_sys_sendmsg(p_buf);
+        }
         bta_pan_co_rx_flow(handle, p_scb->app_id, TRUE);
-    } else if (result == PAN_TX_FLOW_OFF) {
+
+    }
+    else if(result == PAN_TX_FLOW_OFF)
+    {
+
         p_scb->pan_flow_enable = FALSE;
         bta_pan_co_rx_flow(handle, p_scb->app_id, FALSE);
+
     }
+
+
 }
+
 
 /*******************************************************************************
 **
@@ -174,28 +224,29 @@ static void bta_pan_data_buf_ind_cback(UINT16 handle, BD_ADDR src, BD_ADDR dst, 
                                    BOOLEAN ext, BOOLEAN forward)
 {
     tBTA_PAN_SCB *p_scb;
+    BT_HDR * p_event;
     BT_HDR *p_new_buf;
 
-    p_scb = bta_pan_scb_by_handle(handle);
-    if (p_scb == NULL) {
-        return;
-    }
-
-    if (sizeof(tBTA_PAN_DATA_PARAMS) > p_buf->offset) {
+    if ( sizeof(tBTA_PAN_DATA_PARAMS) > p_buf->offset )
+    {
         /* offset smaller than data structure in front of actual data */
-        if (sizeof(BT_HDR) + sizeof(tBTA_PAN_DATA_PARAMS) + p_buf->len >
-            PAN_BUF_SIZE) {
-            android_errorWriteLog(0x534e4554, "63146237");
-            APPL_TRACE_ERROR("%s: received buffer length too large: %d", __func__,
-                             p_buf->len);
+        p_new_buf = (BT_HDR *)GKI_getpoolbuf( PAN_POOL_ID );
+        if(!p_new_buf)
+        {
+            APPL_TRACE_WARNING("Cannot get a PAN GKI buffer");
+            GKI_freebuf( p_buf );
             return;
         }
-        p_new_buf = (BT_HDR *)osi_malloc(PAN_BUF_SIZE);
-        memcpy((UINT8 *)(p_new_buf + 1) + sizeof(tBTA_PAN_DATA_PARAMS),
-               (UINT8 *)(p_buf + 1) + p_buf->offset, p_buf->len);
-        p_new_buf->len    = p_buf->len;
-        p_new_buf->offset = sizeof(tBTA_PAN_DATA_PARAMS);
-    } else {
+        else
+        {
+            memcpy( (UINT8 *)(p_new_buf+1)+sizeof(tBTA_PAN_DATA_PARAMS), (UINT8 *)(p_buf+1)+p_buf->offset, p_buf->len );
+            p_new_buf->len    = p_buf->len;
+            p_new_buf->offset = sizeof(tBTA_PAN_DATA_PARAMS);
+            GKI_freebuf( p_buf );
+        }
+    }
+    else
+    {
         p_new_buf = p_buf;
     }
     /* copy params into the space before the data */
@@ -205,12 +256,24 @@ static void bta_pan_data_buf_ind_cback(UINT16 handle, BD_ADDR src, BD_ADDR dst, 
     ((tBTA_PAN_DATA_PARAMS *)p_new_buf)->ext = ext;
     ((tBTA_PAN_DATA_PARAMS *)p_new_buf)->forward = forward;
 
-    fixed_queue_enqueue(p_scb->data_queue, p_new_buf);
-    BT_HDR *p_event = (BT_HDR *)osi_malloc(sizeof(BT_HDR));
-    p_event->layer_specific = handle;
-    p_event->event = BTA_PAN_RX_FROM_BNEP_READY_EVT;
-    bta_sys_sendmsg(p_event);
+
+    if((p_scb = bta_pan_scb_by_handle(handle)) == NULL)
+    {
+
+        GKI_freebuf( p_new_buf );
+        return;
+    }
+
+    GKI_enqueue(&p_scb->data_queue, p_new_buf);
+    if ((p_event = (BT_HDR *) GKI_getbuf(sizeof(BT_HDR))) != NULL)
+    {
+        p_event->layer_specific = handle;
+        p_event->event = BTA_PAN_RX_FROM_BNEP_READY_EVT;
+        bta_sys_sendmsg(p_event);
+    }
+
 }
+
 
 /*******************************************************************************
 **
@@ -446,9 +509,14 @@ void bta_pan_disable(void)
     {
         if (p_scb->in_use)
         {
-            while ((p_buf = (BT_HDR *)fixed_queue_try_dequeue(p_scb->data_queue)) != NULL)
-                osi_free(p_buf);
+            while((p_buf = (BT_HDR *)GKI_dequeue(&p_scb->data_queue)) != NULL)
+                GKI_freebuf(p_buf);
 
+            if (p_scb->is_idle_timer_started == TRUE)
+            {
+                /* Ensure that timer is stopped */
+                btu_stop_timer (&p_scb->idle_tle);
+            }
             bta_pan_co_close(p_scb->handle, p_scb->app_id);
 
         }
@@ -518,21 +586,24 @@ void bta_pan_open(tBTA_PAN_SCB *p_scb, tBTA_PAN_DATA *p_data)
 *******************************************************************************/
 void bta_pan_api_close (tBTA_PAN_SCB *p_scb, tBTA_PAN_DATA *p_data)
 {
-    tBTA_PAN_CONN *p_buf = (tBTA_PAN_CONN *)osi_malloc(sizeof(tBTA_PAN_CONN));
-
+    tBTA_PAN_CONN * p_buf;
     UNUSED(p_data);
 
-    PAN_Disconnect(p_scb->handle);
+    PAN_Disconnect (p_scb->handle);
 
-    /*
-     * Send an event to BTA so that application will get the connection
-     * close event.
-     */
-    p_buf->hdr.event = BTA_PAN_CONN_CLOSE_EVT;
-    p_buf->hdr.layer_specific = p_scb->handle;
 
-    bta_sys_sendmsg(p_buf);
+    /* send an event to BTA so that application will get the connection
+       close event */
+    if ((p_buf = (tBTA_PAN_CONN *) GKI_getbuf(sizeof(tBTA_PAN_CONN))) != NULL)
+    {
+        p_buf->hdr.event = BTA_PAN_CONN_CLOSE_EVT;
+
+        p_buf->hdr.layer_specific = p_scb->handle;
+        bta_sys_sendmsg(p_buf);
+
+    }
 }
+
 
 /*******************************************************************************
 **
@@ -607,8 +678,10 @@ void bta_pan_conn_close(tBTA_PAN_SCB *p_scb, tBTA_PAN_DATA *p_data)
     bta_sys_conn_close( BTA_ID_PAN ,p_scb->app_id, p_scb->bd_addr);
 
     /* free all queued up data buffers */
-    while ((p_buf = (BT_HDR *)fixed_queue_try_dequeue(p_scb->data_queue)) != NULL)
-        osi_free(p_buf);
+    while((p_buf = (BT_HDR *)GKI_dequeue(&p_scb->data_queue)) != NULL)
+        GKI_freebuf(p_buf);
+
+    GKI_init_q(&p_scb->data_queue);
 
     bta_pan_scb_dealloc(p_scb);
 
@@ -663,6 +736,7 @@ void bta_pan_rx_path(tBTA_PAN_SCB *p_scb, tBTA_PAN_DATA *p_data)
 *******************************************************************************/
 void bta_pan_tx_path(tBTA_PAN_SCB *p_scb, tBTA_PAN_DATA *p_data)
 {
+    BT_HDR * p_buf;
     UNUSED(p_data);
 
     /* if data path configured for tx pull */
@@ -673,8 +747,8 @@ void bta_pan_tx_path(tBTA_PAN_SCB *p_scb, tBTA_PAN_DATA *p_data)
         bta_pan_co_tx_path(p_scb->handle, p_scb->app_id);
 
         /* free data that exceeds queue level */
-        while (fixed_queue_length(p_scb->data_queue) > bta_pan_cb.q_level)
-            osi_free(fixed_queue_try_dequeue(p_scb->data_queue));
+        while(GKI_queue_length(&p_scb->data_queue) > bta_pan_cb.q_level)
+            GKI_freebuf(GKI_dequeue(&p_scb->data_queue));
         bta_pan_pm_conn_idle(p_scb);
     }
     /* if configured for zero copy push */
@@ -683,10 +757,8 @@ void bta_pan_tx_path(tBTA_PAN_SCB *p_scb, tBTA_PAN_DATA *p_data)
         /* if app can accept data */
         if (p_scb->app_flow_enable == TRUE)
         {
-            BT_HDR *p_buf;
-
             /* read data from the queue */
-            if ((p_buf = (BT_HDR *)fixed_queue_try_dequeue(p_scb->data_queue)) != NULL)
+            if ((p_buf = (BT_HDR *)GKI_dequeue(&p_scb->data_queue)) != NULL)
             {
                 /* send data to application */
                 bta_pan_co_tx_writebuf(p_scb->handle,
@@ -700,18 +772,22 @@ void bta_pan_tx_path(tBTA_PAN_SCB *p_scb, tBTA_PAN_DATA *p_data)
 
             }
             /* free data that exceeds queue level  */
-            while (fixed_queue_length(p_scb->data_queue) > bta_pan_cb.q_level)
-                osi_free(fixed_queue_try_dequeue(p_scb->data_queue));
+            while(GKI_queue_length(&p_scb->data_queue) > bta_pan_cb.q_level)
+                GKI_freebuf(GKI_dequeue(&p_scb->data_queue));
 
             /* if there is more data to be passed to
             upper layer */
-            if (!fixed_queue_is_empty(p_scb->data_queue))
+            if(!GKI_queue_is_empty(&p_scb->data_queue))
             {
-                p_buf = (BT_HDR *)osi_malloc(sizeof(BT_HDR));
-                p_buf->layer_specific = p_scb->handle;
-                p_buf->event = BTA_PAN_RX_FROM_BNEP_READY_EVT;
-                bta_sys_sendmsg(p_buf);
+                if ((p_buf = (BT_HDR *) GKI_getbuf(sizeof(BT_HDR))) != NULL)
+                {
+                    p_buf->layer_specific = p_scb->handle;
+                    p_buf->event = BTA_PAN_RX_FROM_BNEP_READY_EVT;
+                    bta_sys_sendmsg(p_buf);
+                }
+
             }
+
         }
     }
 }
@@ -771,7 +847,29 @@ void bta_pan_write_buf(tBTA_PAN_SCB *p_scb, tBTA_PAN_DATA *p_data)
 void bta_pan_free_buf(tBTA_PAN_SCB *p_scb, tBTA_PAN_DATA *p_data)
 {
     UNUSED(p_scb);
-    osi_free(p_data);
+
+    GKI_freebuf(p_data);
+
+}
+
+/*******************************************************************************
+**
+** Function         bta_pan_idle_timeout_handler
+**
+** Description      Bta pan specific idle timeout handler
+**
+**
+** Returns          void
+**
+*******************************************************************************/
+void bta_pan_idle_timeout_handler(TIMER_LIST_ENT *tle) {
+    tBTA_PAN_SCB *p_scb = (tBTA_PAN_SCB *)tle->data;;
+    APPL_TRACE_DEBUG("%s p_scb: %p", __func__, p_scb);
+
+    if ((p_scb != NULL) && (p_scb->state != BTA_PAN_IDLE_ST)) {
+        p_scb->is_idle_timer_started = FALSE;
+        bta_sys_idle(BTA_ID_PAN, p_scb->app_id, p_scb->bd_addr);
+    }
 }
 
 #endif /* PAN_INCLUDED */

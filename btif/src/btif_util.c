@@ -1,5 +1,7 @@
 /******************************************************************************
  *
+ *  Copyright (c) 2013, The Linux Foundation. All rights reserved.
+ *  Not a Contribution.
  *  Copyright (c) 2014 The Android Open Source Project
  *  Copyright (C) 2009-2012 Broadcom Corporation
  *
@@ -26,30 +28,30 @@
  *
  ***********************************************************************************/
 
-#define LOG_TAG "bt_btif_util"
-
-#include "btif_util.h"
-
-#include <assert.h>
-#include <ctype.h>
+#include <hardware/bluetooth.h>
+#include <hardware/bt_hf.h>
+#include <hardware/bt_av.h>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
-#include <hardware/bt_av.h>
 
-#include "avrc_defs.h"
-#include "bta_ag_api.h"
-#include "bta_api.h"
-#include "bta_av_api.h"
-#include "bta_hf_client_api.h"
-#include "bta_hh_api.h"
-#include "bte.h"
+#define LOG_TAG "bt_btif_util"
 #include "btif_common.h"
-#include "btif_dm.h"
+#include "bta_api.h"
+#include "gki.h"
 #include "btu.h"
-#include "bt_common.h"
+#include "bte.h"
+#include "btif_dm.h"
+#include "btif_util.h"
+#include "bta_ag_api.h"
+#include "bta_av_api.h"
+#include "bta_hh_api.h"
+#include "bta_hf_client_api.h"
+#include "bta_hd_api.h"
+#include "avrc_defs.h"
 #include "btif_av.h"
 
 /************************************************************************************
@@ -113,19 +115,13 @@ void uuid16_to_uuid128(uint16_t uuid16, bt_uuid_t* uuid128)
     memcpy(uuid128->uu + 2, &uuid16_bo, sizeof(uint16_t));
 }
 
-bool string_to_uuid(const char *str, bt_uuid_t *p_uuid)
+void string_to_uuid(char *str, bt_uuid_t *p_uuid)
 {
-    assert(p_uuid);
-    if (str == NULL)
-        return false;
-
     uint32_t uuid0, uuid4;
     uint16_t uuid1, uuid2, uuid3, uuid5;
 
-    int rc = sscanf(str, "%08x-%04hx-%04hx-%04hx-%08x%04hx",
+    sscanf(str, "%08x-%04hx-%04hx-%04hx-%08x%04hx",
                 &uuid0, &uuid1, &uuid2, &uuid3, &uuid4, &uuid5);
-    if (rc != 6)
-        return false;
 
     uuid0 = htonl(uuid0);
     uuid1 = htons(uuid1);
@@ -141,7 +137,8 @@ bool string_to_uuid(const char *str, bt_uuid_t *p_uuid)
     memcpy(&(p_uuid->uu[10]), &uuid4, 4);
     memcpy(&(p_uuid->uu[14]), &uuid5, 2);
 
-    return true;
+    return;
+
 }
 
 void uuid_to_string_legacy(bt_uuid_t *p_uuid, char *str)
@@ -170,7 +167,7 @@ void uuid_to_string_legacy(bt_uuid_t *p_uuid, char *str)
 **
 **  Returns         the number of hex bytes filled.
 */
-int ascii_2_hex (const char *p_ascii, int len, UINT8 *p_hex)
+int ascii_2_hex (char *p_ascii, int len, UINT8 *p_hex)
 {
     int     x;
     UINT8   c;
@@ -198,6 +195,7 @@ int ascii_2_hex (const char *p_ascii, int len, UINT8 *p_hex)
     return (x);
 }
 
+
 const char* dump_dm_search_event(UINT16 event)
 {
     switch(event)
@@ -214,6 +212,7 @@ const char* dump_dm_search_event(UINT16 event)
             return "UNKNOWN MSG ID";
      }
 }
+
 
 const char* dump_property_type(bt_property_type_t type)
 {
@@ -371,6 +370,27 @@ const char* dump_hh_event(UINT16 event)
      }
 }
 
+const char* dump_hd_event(UINT16 event)
+{
+    switch(event)
+    {
+        CASE_RETURN_STR(BTA_HD_ENABLE_EVT)
+        CASE_RETURN_STR(BTA_HD_DISABLE_EVT)
+        CASE_RETURN_STR(BTA_HD_REGISTER_APP_EVT)
+        CASE_RETURN_STR(BTA_HD_UNREGISTER_APP_EVT)
+        CASE_RETURN_STR(BTA_HD_OPEN_EVT)
+        CASE_RETURN_STR(BTA_HD_CLOSE_EVT)
+        CASE_RETURN_STR(BTA_HD_GET_REPORT_EVT)
+        CASE_RETURN_STR(BTA_HD_SET_REPORT_EVT)
+        CASE_RETURN_STR(BTA_HD_SET_PROTOCOL_EVT)
+        CASE_RETURN_STR(BTA_HD_INTR_DATA_EVT)
+        CASE_RETURN_STR(BTA_HD_VC_UNPLUG_EVT)
+        CASE_RETURN_STR(BTA_HD_API_ERR_EVT)
+        default:
+            return "UNKNOWN MSG ID";
+     }
+}
+
 const char* dump_hf_conn_state(UINT16 event)
 {
     switch(event)
@@ -412,6 +432,7 @@ const char* dump_thread_evt(bt_cb_thread_evt evt)
             return "unknown thread evt";
     }
 }
+
 
 const char* dump_hf_audio_state(UINT16 event)
 {
@@ -539,11 +560,6 @@ const char*  dump_rc_pdu(UINT8 pdu)
         CASE_RETURN_STR(AVRC_PDU_SET_ADDRESSED_PLAYER)
         CASE_RETURN_STR(AVRC_PDU_CHANGE_PATH)
         CASE_RETURN_STR(AVRC_PDU_GET_CAPABILITIES)
-        CASE_RETURN_STR(AVRC_PDU_GET_ITEM_ATTRIBUTES)
-        CASE_RETURN_STR(AVRC_PDU_GET_FOLDER_ITEMS)
-        CASE_RETURN_STR(AVRC_PDU_SET_BROWSED_PLAYER)
-        CASE_RETURN_STR(AVRC_PDU_PLAY_ITEM)
-        CASE_RETURN_STR(AVRC_PDU_GET_TOTAL_NUMBER_OF_ITEMS)
         default:
             return "Unknown PDU";
     }

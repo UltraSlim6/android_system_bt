@@ -27,10 +27,6 @@
 #ifndef BTIF_SM_H
 #define BTIF_SM_H
 
-#include <hardware/bluetooth.h>
-
-#include "stack/include/bt_types.h"
-
 /*****************************************************************************
 **  Constants & Macros
 ******************************************************************************/
@@ -39,6 +35,7 @@
 #define BTIF_SM_ENTER_EVT 0xFFFF
 #define BTIF_SM_EXIT_EVT  0xFFFE
 
+
 /*****************************************************************************
 **  Type definitions and return values
 ******************************************************************************/
@@ -46,6 +43,7 @@ typedef UINT32 btif_sm_state_t;
 typedef UINT32 btif_sm_event_t;
 typedef void* btif_sm_handle_t;
 typedef BOOLEAN(*btif_sm_handler_t)(btif_sm_event_t event, void *data, int index);
+
 
 /*****************************************************************************
 **  Functions

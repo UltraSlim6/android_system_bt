@@ -176,6 +176,15 @@ typedef struct t_sdp_di_get_record
     tSDP_DI_RECORD  rec;
 }tSDP_DI_GET_RECORD;
 
+
+/*****************************************************************************
+**  External Function Declarations
+*****************************************************************************/
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
 /* API into the SDP layer for service discovery. */
 
 /*******************************************************************************
@@ -187,7 +196,7 @@ typedef struct t_sdp_di_get_record
 ** Returns          TRUE if successful, FALSE if one or more parameters are bad
 **
 *******************************************************************************/
-BOOLEAN SDP_InitDiscoveryDb (tSDP_DISCOVERY_DB *p_db, UINT32 len,
+extern BOOLEAN SDP_InitDiscoveryDb (tSDP_DISCOVERY_DB *p_db, UINT32 len,
                                     UINT16 num_uuid,
                                     tSDP_UUID *p_uuid_list,
                                     UINT16 num_attr,
@@ -202,7 +211,7 @@ BOOLEAN SDP_InitDiscoveryDb (tSDP_DISCOVERY_DB *p_db, UINT32 len,
 ** Returns          TRUE if discovery cancelled, FALSE if a matching activity is not found.
 **
 *******************************************************************************/
-BOOLEAN SDP_CancelServiceSearch (tSDP_DISCOVERY_DB *p_db);
+extern BOOLEAN SDP_CancelServiceSearch (tSDP_DISCOVERY_DB *p_db);
 
 /*******************************************************************************
 **
@@ -213,7 +222,7 @@ BOOLEAN SDP_CancelServiceSearch (tSDP_DISCOVERY_DB *p_db);
 ** Returns          TRUE if discovery started, FALSE if failed.
 **
 *******************************************************************************/
-BOOLEAN SDP_ServiceSearchRequest (UINT8 *p_bd_addr,
+extern BOOLEAN SDP_ServiceSearchRequest (UINT8 *p_bd_addr,
                                          tSDP_DISCOVERY_DB *p_db,
                                          tSDP_DISC_CMPL_CB *p_cb);
 
@@ -231,7 +240,7 @@ BOOLEAN SDP_ServiceSearchRequest (UINT8 *p_bd_addr,
 ** Returns          TRUE if discovery started, FALSE if failed.
 **
 *******************************************************************************/
-BOOLEAN SDP_ServiceSearchAttributeRequest (UINT8 *p_bd_addr,
+extern BOOLEAN SDP_ServiceSearchAttributeRequest (UINT8 *p_bd_addr,
                                                   tSDP_DISCOVERY_DB *p_db,
                                                   tSDP_DISC_CMPL_CB *p_cb);
 
@@ -249,7 +258,7 @@ BOOLEAN SDP_ServiceSearchAttributeRequest (UINT8 *p_bd_addr,
 ** Returns          TRUE if discovery started, FALSE if failed.
 **
 *******************************************************************************/
-BOOLEAN SDP_ServiceSearchAttributeRequest2 (UINT8 *p_bd_addr,
+extern BOOLEAN SDP_ServiceSearchAttributeRequest2 (UINT8 *p_bd_addr,
                                                    tSDP_DISCOVERY_DB *p_db,
                                                    tSDP_DISC_CMPL_CB2 *p_cb, void * user_data);
 
@@ -267,7 +276,7 @@ BOOLEAN SDP_ServiceSearchAttributeRequest2 (UINT8 *p_bd_addr,
 ** Returns          Pointer to matching record, or NULL
 **
 *******************************************************************************/
-tSDP_DISC_REC *SDP_FindAttributeInDb (tSDP_DISCOVERY_DB *p_db,
+extern tSDP_DISC_REC *SDP_FindAttributeInDb (tSDP_DISCOVERY_DB *p_db,
                                              UINT16 attr_id,
                                              tSDP_DISC_REC *p_start_rec);
 
@@ -282,7 +291,7 @@ tSDP_DISC_REC *SDP_FindAttributeInDb (tSDP_DISCOVERY_DB *p_db,
 ** Returns          Pointer to matching attribute entry, or NULL
 **
 *******************************************************************************/
-tSDP_DISC_ATTR *SDP_FindAttributeInRec (tSDP_DISC_REC *p_rec,
+extern tSDP_DISC_ATTR *SDP_FindAttributeInRec (tSDP_DISC_REC *p_rec,
                                                UINT16 attr_id);
 
 
@@ -298,7 +307,7 @@ tSDP_DISC_ATTR *SDP_FindAttributeInRec (tSDP_DISC_REC *p_rec,
 ** Returns          Pointer to record containing service class, or NULL
 **
 *******************************************************************************/
-tSDP_DISC_REC *SDP_FindServiceInDb (tSDP_DISCOVERY_DB *p_db,
+extern tSDP_DISC_REC *SDP_FindServiceInDb (tSDP_DISCOVERY_DB *p_db,
                                            UINT16 service_uuid,
                                            tSDP_DISC_REC *p_start_rec);
 
@@ -319,7 +328,7 @@ tSDP_DISC_REC *SDP_FindServiceInDb (tSDP_DISCOVERY_DB *p_db,
 ** Returns          Pointer to record containing service class, or NULL
 **
 *******************************************************************************/
-tSDP_DISC_REC *SDP_FindServiceUUIDInDb (tSDP_DISCOVERY_DB *p_db,
+extern tSDP_DISC_REC *SDP_FindServiceUUIDInDb (tSDP_DISCOVERY_DB *p_db,
                                                tBT_UUID *p_uuid,
                                                tSDP_DISC_REC *p_start_rec);
 
@@ -336,7 +345,7 @@ tSDP_DISC_REC *SDP_FindServiceUUIDInDb (tSDP_DISCOVERY_DB *p_db,
 ** Returns          TRUE if found, otherwise FALSE.
 **
 *******************************************************************************/
-BOOLEAN SDP_FindServiceUUIDInRec_128bit(tSDP_DISC_REC *p_rec, tBT_UUID * p_uuid);
+extern BOOLEAN SDP_FindServiceUUIDInRec_128bit(tSDP_DISC_REC *p_rec, tBT_UUID * p_uuid);
 
 /*******************************************************************************
 **
@@ -350,7 +359,7 @@ BOOLEAN SDP_FindServiceUUIDInRec_128bit(tSDP_DISC_REC *p_rec, tBT_UUID * p_uuid)
 ** Returns          Pointer to record containing service class, or NULL
 **
 *******************************************************************************/
-tSDP_DISC_REC *SDP_FindServiceInDb_128bit(tSDP_DISCOVERY_DB *p_db,
+extern tSDP_DISC_REC *SDP_FindServiceInDb_128bit(tSDP_DISCOVERY_DB *p_db,
                                                  tSDP_DISC_REC *p_start_rec);
 
 /*******************************************************************************
@@ -364,7 +373,7 @@ tSDP_DISC_REC *SDP_FindServiceInDb_128bit(tSDP_DISCOVERY_DB *p_db,
 **                  If found, the passed protocol list element is filled in.
 **
 *******************************************************************************/
-BOOLEAN SDP_FindProtocolListElemInRec (tSDP_DISC_REC *p_rec,
+extern BOOLEAN SDP_FindProtocolListElemInRec (tSDP_DISC_REC *p_rec,
                                               UINT16 layer_uuid,
                                               tSDP_PROTOCOL_ELEM *p_elem);
 
@@ -380,7 +389,7 @@ BOOLEAN SDP_FindProtocolListElemInRec (tSDP_DISC_REC *p_rec,
 **                  If found, the passed protocol list element is filled in.
 **
 *******************************************************************************/
-BOOLEAN SDP_FindAddProtoListsElemInRec (tSDP_DISC_REC *p_rec,
+extern BOOLEAN SDP_FindAddProtoListsElemInRec (tSDP_DISC_REC *p_rec,
                                                UINT16 layer_uuid,
                                                tSDP_PROTOCOL_ELEM *p_elem);
 
@@ -399,7 +408,7 @@ BOOLEAN SDP_FindAddProtoListsElemInRec (tSDP_DISC_REC *p_rec,
 **                  in are filled in.
 **
 *******************************************************************************/
-BOOLEAN SDP_FindProfileVersionInRec (tSDP_DISC_REC *p_rec,
+extern BOOLEAN SDP_FindProfileVersionInRec (tSDP_DISC_REC *p_rec,
                                             UINT16 profile_uuid,
                                             UINT16 *p_version);
 
@@ -418,7 +427,7 @@ BOOLEAN SDP_FindProfileVersionInRec (tSDP_DISC_REC *p_rec,
 ** Returns          Record handle if OK, else 0.
 **
 *******************************************************************************/
-UINT32 SDP_CreateRecord (void);
+extern UINT32 SDP_CreateRecord (void);
 
 
 /*******************************************************************************
@@ -434,7 +443,7 @@ UINT32 SDP_CreateRecord (void);
 ** Returns          TRUE if succeeded, else FALSE
 **
 *******************************************************************************/
-BOOLEAN SDP_DeleteRecord (UINT32 handle);
+extern BOOLEAN SDP_DeleteRecord (UINT32 handle);
 
 
 /*******************************************************************************
@@ -450,7 +459,7 @@ BOOLEAN SDP_DeleteRecord (UINT32 handle);
 **                  The size of data copied into p_data is in *p_data_len.
 **
 *******************************************************************************/
-INT32 SDP_ReadRecord(UINT32 handle, UINT8 *p_data, INT32 *p_data_len);
+extern INT32 SDP_ReadRecord(UINT32 handle, UINT8 *p_data, INT32 *p_data_len);
 
 /*******************************************************************************
 **
@@ -466,7 +475,7 @@ INT32 SDP_ReadRecord(UINT32 handle, UINT8 *p_data, INT32 *p_data_len);
 ** Returns          TRUE if added OK, else FALSE
 **
 *******************************************************************************/
-BOOLEAN SDP_AddAttribute (UINT32 handle, UINT16 attr_id,
+extern BOOLEAN SDP_AddAttribute (UINT32 handle, UINT16 attr_id,
                                  UINT8 attr_type, UINT32 attr_len,
                                  UINT8 *p_val);
 
@@ -485,7 +494,7 @@ BOOLEAN SDP_AddAttribute (UINT32 handle, UINT16 attr_id,
 ** Returns          TRUE if added OK, else FALSE
 **
 *******************************************************************************/
-BOOLEAN SDP_AddSequence (UINT32 handle,  UINT16 attr_id,
+extern BOOLEAN SDP_AddSequence (UINT32 handle,  UINT16 attr_id,
                                 UINT16 num_elem, UINT8 type[],
                                 UINT8 len[], UINT8 *p_val[]);
 
@@ -502,7 +511,7 @@ BOOLEAN SDP_AddSequence (UINT32 handle,  UINT16 attr_id,
 ** Returns          TRUE if added OK, else FALSE
 **
 *******************************************************************************/
-BOOLEAN SDP_AddUuidSequence (UINT32 handle,  UINT16 attr_id,
+extern BOOLEAN SDP_AddUuidSequence (UINT32 handle,  UINT16 attr_id,
                                     UINT16 num_uuids, UINT16 *p_uuids);
 
 
@@ -518,7 +527,7 @@ BOOLEAN SDP_AddUuidSequence (UINT32 handle,  UINT16 attr_id,
 ** Returns          TRUE if added OK, else FALSE
 **
 *******************************************************************************/
-BOOLEAN SDP_AddProtocolList (UINT32 handle, UINT16 num_elem,
+extern BOOLEAN SDP_AddProtocolList (UINT32 handle, UINT16 num_elem,
                                     tSDP_PROTOCOL_ELEM *p_elem_list);
 
 
@@ -534,7 +543,7 @@ BOOLEAN SDP_AddProtocolList (UINT32 handle, UINT16 num_elem,
 ** Returns          TRUE if added OK, else FALSE
 **
 *******************************************************************************/
-BOOLEAN SDP_AddAdditionProtoLists (UINT32 handle, UINT16 num_elem,
+extern BOOLEAN SDP_AddAdditionProtoLists (UINT32 handle, UINT16 num_elem,
                                           tSDP_PROTO_LIST_ELEM *p_proto_list);
 
 
@@ -550,9 +559,10 @@ BOOLEAN SDP_AddAdditionProtoLists (UINT32 handle, UINT16 num_elem,
 ** Returns          TRUE if added OK, else FALSE
 **
 *******************************************************************************/
-BOOLEAN SDP_AddProfileDescriptorList (UINT32 handle,
+extern BOOLEAN SDP_AddProfileDescriptorList (UINT32 handle,
                                              UINT16 profile_uuid,
                                              UINT16 version);
+
 
 /*******************************************************************************
 **
@@ -566,9 +576,10 @@ BOOLEAN SDP_AddProfileDescriptorList (UINT32 handle,
 ** Returns          TRUE if added OK, else FALSE
 **
 *******************************************************************************/
-BOOLEAN SDP_AddLanguageBaseAttrIDList (UINT32 handle,
+extern BOOLEAN SDP_AddLanguageBaseAttrIDList (UINT32 handle,
                                               UINT16 lang, UINT16 char_enc,
                                               UINT16 base_id);
+
 
 /*******************************************************************************
 **
@@ -582,9 +593,10 @@ BOOLEAN SDP_AddLanguageBaseAttrIDList (UINT32 handle,
 ** Returns          TRUE if added OK, else FALSE
 **
 *******************************************************************************/
-BOOLEAN SDP_AddServiceClassIdList (UINT32 handle,
+extern BOOLEAN SDP_AddServiceClassIdList (UINT32 handle,
                                           UINT16 num_services,
                                           UINT16 *p_service_uuids);
+
 
 /*******************************************************************************
 **
@@ -596,7 +608,8 @@ BOOLEAN SDP_AddServiceClassIdList (UINT32 handle,
 ** Returns          TRUE if deleted OK, else FALSE if not found
 **
 *******************************************************************************/
-BOOLEAN SDP_DeleteAttribute (UINT32 handle, UINT16 attr_id);
+extern BOOLEAN SDP_DeleteAttribute (UINT32 handle, UINT16 attr_id);
+
 
 /* Device Identification APIs */
 
@@ -609,7 +622,7 @@ BOOLEAN SDP_DeleteAttribute (UINT32 handle, UINT16 attr_id);
 ** Returns          Returns SDP_SUCCESS if record added successfully, else error
 **
 *******************************************************************************/
-UINT16 SDP_SetLocalDiRecord (tSDP_DI_RECORD *device_info,
+extern UINT16 SDP_SetLocalDiRecord (tSDP_DI_RECORD *device_info,
                                     UINT32 *p_handle);
 
 /*******************************************************************************
@@ -621,9 +634,10 @@ UINT16 SDP_SetLocalDiRecord (tSDP_DI_RECORD *device_info,
 ** Returns          SDP_SUCCESS if query started successfully, else error
 **
 *******************************************************************************/
-UINT16 SDP_DiDiscover (BD_ADDR remote_device,
+extern UINT16 SDP_DiDiscover (BD_ADDR remote_device,
                               tSDP_DISCOVERY_DB *p_db, UINT32 len,
                               tSDP_DISC_CMPL_CB *p_cb);
+
 
 /*******************************************************************************
 **
@@ -634,7 +648,8 @@ UINT16 SDP_DiDiscover (BD_ADDR remote_device,
 ** Returns          number of DI records found
 **
 *******************************************************************************/
-UINT8  SDP_GetNumDiRecords (tSDP_DISCOVERY_DB *p_db);
+extern UINT8  SDP_GetNumDiRecords (tSDP_DISCOVERY_DB *p_db);
+
 
 /*******************************************************************************
 **
@@ -646,9 +661,10 @@ UINT8  SDP_GetNumDiRecords (tSDP_DISCOVERY_DB *p_db);
 ** Returns          SDP_SUCCESS if record retrieved, else error
 **
 *******************************************************************************/
-UINT16 SDP_GetDiRecord (UINT8 getRecordIndex,
+extern UINT16 SDP_GetDiRecord (UINT8 getRecordIndex,
                                tSDP_DI_GET_RECORD *device_info,
                                tSDP_DISCOVERY_DB *p_db);
+
 
 /*******************************************************************************
 **
@@ -660,7 +676,44 @@ UINT16 SDP_GetDiRecord (UINT8 getRecordIndex,
 ** Returns          the new (current) trace level
 **
 *******************************************************************************/
-UINT8 SDP_SetTraceLevel (UINT8 new_level);
+extern UINT8 SDP_SetTraceLevel (UINT8 new_level);
+
+/*******************************************************************************
+**
+** Function         SDP_ConnOpen
+**
+** Description      This function creates a connection to the SDP server on the
+**                  given device.
+**
+** Returns          0, if failed to initiate connection. Otherwise, the handle.
+**
+*******************************************************************************/
+UINT32 SDP_ConnOpen (UINT8 *p_bd_addr, tSDP_DISC_RES_CB *p_rcb,
+                     tSDP_DISC_CMPL_CB *p_cb);
+
+/*******************************************************************************
+**
+** Function         SDP_WriteData
+**
+** Description      This function sends data to the connected SDP server.
+**
+** Returns          TRUE if data is sent, FALSE if failed.
+**
+*******************************************************************************/
+BOOLEAN SDP_WriteData (UINT32 handle, BT_HDR  *p_msg);
+
+/*******************************************************************************
+**
+** Function         SDP_ConnClose
+**
+** Description      This function is called to close a SDP connection.
+**
+** Parameters:      handle      - Handle of the connection returned by SDP_ConnOpen
+**
+** Returns          TRUE if connection is closed, FALSE if failed to find the handle.
+**
+*******************************************************************************/
+BOOLEAN SDP_ConnClose (UINT32 handle);
 
 /*******************************************************************************
 **
@@ -688,5 +741,10 @@ BOOLEAN SDP_FindServiceUUIDInRec(tSDP_DISC_REC *p_rec, tBT_UUID *p_uuid);
 **
 ********************************************************************************/
 BOOLEAN SDP_Dev_Blacklisted_For_Avrcp15 (BD_ADDR addr);
+
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif  /* SDP_API_H */

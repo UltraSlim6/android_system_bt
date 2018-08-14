@@ -1,7 +1,6 @@
 Properties
 ===
-This document describes all of the Android properties used by the Bluetooth
-stack.
+This document describes all of the Android properties used by bluedroid.
 
 Please keep the following list in alphabetical order.
 

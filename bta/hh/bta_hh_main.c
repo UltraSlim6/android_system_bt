@@ -30,7 +30,7 @@
 
 #include "bta_hh_api.h"
 #include "bta_hh_int.h"
-#include "bt_common.h"
+#include "gki.h"
 
 /*****************************************************************************
 ** Constants and types
@@ -322,7 +322,10 @@ void bta_hh_sm_execute(tBTA_HH_DEV_CB *p_cb, UINT16 event, tBTA_HH_DATA * p_data
             case BTA_HH_API_WRITE_DEV_EVT:
                 cback_event = (p_data->api_sndcmd.t_type - BTA_HH_FST_BTE_TRANS_EVT) +
                         BTA_HH_FST_TRANS_CB_EVT;
-                osi_free_and_reset((void **)&p_data->api_sndcmd.p_data);
+                if (p_data->api_sndcmd.p_data != NULL)
+                {
+                    GKI_freebuf(p_data->api_sndcmd.p_data);
+                }
                 if (p_data->api_sndcmd.t_type == HID_TRANS_SET_PROTOCOL ||
                     p_data->api_sndcmd.t_type == HID_TRANS_SET_REPORT ||
                     p_data->api_sndcmd.t_type == HID_TRANS_SET_IDLE)
@@ -365,8 +368,11 @@ void bta_hh_sm_execute(tBTA_HH_DEV_CB *p_cb, UINT16 event, tBTA_HH_DATA * p_data
                 /* invalid handle, call bad API event */
                 APPL_TRACE_ERROR("wrong device handle: [%d]", p_data->hdr.layer_specific);
                 /* Free the callback buffer now */
-                if (p_data != NULL)
-                    osi_free_and_reset((void **)&p_data->hid_cback.p_data);
+                if (p_data != NULL && p_data->hid_cback.p_data != NULL)
+                {
+                    GKI_freebuf(p_data->hid_cback.p_data);
+                    p_data->hid_cback.p_data = NULL;
+                }
                 break;
             }
            if (cback_event)
@@ -459,16 +465,18 @@ BOOLEAN bta_hh_hdl_event(BT_HDR *p_msg)
                 else /* else remove device by handle */
                 {
                     index = bta_hh_dev_handle_to_cb_idx((UINT8)p_msg->layer_specific);
+// btla-specific ++
                     /* If BT disable is done while the HID device is connected and Link_Key uses unauthenticated combination
                       * then we can get into a situation where remove_bonding is called with the index set to 0 (without getting
                       * cleaned up). Only when VIRTUAL_UNPLUG is called do we cleanup the index and make it MAX_KNOWN.
                       * So if REMOVE_DEVICE is called and in_use is FALSE then we should treat this as a NULL p_cb. Hence we
                       * force the index to be IDX_INVALID
                       */
-                    if ((index != BTA_HH_IDX_INVALID) && (index < BTA_HH_MAX_DEVICE) &&
-                        (bta_hh_cb.kdev[index].in_use == FALSE)) {
+                    if ((index != BTA_HH_IDX_INVALID) && (index < BTA_HH_MAX_DEVICE)
+                        && (bta_hh_cb.kdev[index].in_use == FALSE)) {
                         index = BTA_HH_IDX_INVALID;
                     }
+// btla-specific --
                 }
             }
             else if (p_msg->event == BTA_HH_INT_OPEN_EVT)

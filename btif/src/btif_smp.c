@@ -37,6 +37,7 @@
 #define LOG_NDDEBUG 0
 #define LOG_TAG "bluedroid"
 
+#include "gki.h"
 #include "btif_api.h"
 #include "bt_utils.h"
 #include "smp_api.h"
@@ -94,6 +95,7 @@ static BOOLEAN Encrypt(UINT8 *key, UINT8 key_len,
     return Ret;
 }
 
+#if SMP_INCLUDED == TRUE
 static const btsmp_interface_t btsmpInterface = {
     sizeof(btsmp_interface_t),
     SmpInit,
@@ -112,4 +114,5 @@ const btsmp_interface_t *btif_smp_get_interface(void)
     return &btsmpInterface;
 }
 
+#endif
 #endif   //TEST_APP_INTERFACE

@@ -16,8 +16,6 @@
  *
  ******************************************************************************/
 
-#define LOG_TAG "bt_bte"
-
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,21 +24,20 @@
 #include <sys/time.h>
 #include <time.h>
 
-#include "avrc_api.h"
-#include "bta_api.h"
 #include "bte.h"
-#include "btm_api.h"
+#include "bta_api.h"
 #include "btu.h"
-#include "gap_api.h"
-#include "bt_common.h"
-#include "l2c_api.h"
 #include "osi/include/config.h"
+#include "gki.h"
+#include "l2c_api.h"
 #include "osi/include/log.h"
-#include "osi/include/log.h"
-#include "port_api.h"
-#include "sdp_api.h"
 #include "stack_config.h"
 
+#include "port_api.h"
+#if (AVDT_INCLUDED==TRUE)
+#include "avdt_api.h"
+#endif
+#include "avrc_api.h"
 #if (AVDT_INCLUDED==TRUE)
 #include "avdt_api.h"
 #endif
@@ -50,13 +47,28 @@
 #if (BNEP_INCLUDED==TRUE)
 #include "bnep_api.h"
 #endif
+#include "btm_api.h"
+#include "gap_api.h"
 #if (PAN_INCLUDED==TRUE)
 #include "pan_api.h"
 #endif
+#if (HID_HOST_INCLUDED==TRUE)
+#include "hidh_api.h"
+#endif
+#if (HID_DEV_INCLUDED==TRUE)
+#include "hidd_api.h"
+#endif
+#include "sdp_api.h"
+
 #if (BLE_INCLUDED==TRUE)
 #include "gatt_api.h"
 #include "smp_api.h"
 #endif
+
+#define LOGI0(t,s) __android_log_write(ANDROID_LOG_INFO, t, s)
+#define LOGD0(t,s) __android_log_write(ANDROID_LOG_DEBUG, t, s)
+#define LOGW0(t,s) __android_log_write(ANDROID_LOG_WARN, t, s)
+#define LOGE0(t,s) __android_log_write(ANDROID_LOG_ERROR, t, s)
 
 #ifndef DEFAULT_CONF_TRACE_LEVEL
 #define DEFAULT_CONF_TRACE_LEVEL BT_TRACE_LEVEL_WARNING
@@ -98,7 +110,7 @@ static const char * const bt_layer_tags[] = {
   "bt_ftp",
   "bt_opp",
   "bt_btu",
-  "bt_gki",                             /* OBSOLETED */
+  "bt_gki",
   "bt_bnep",
   "bt_pan",
   "bt_hfp",
@@ -132,6 +144,9 @@ static tBTTRC_FUNC_MAP bttrc_set_level_map[] = {
   {BTTRC_ID_STK_BTU, BTTRC_ID_STK_HCI, BTU_SetTraceLevel, "TRC_HCI", DEFAULT_CONF_TRACE_LEVEL},
   {BTTRC_ID_STK_L2CAP, BTTRC_ID_STK_L2CAP, L2CA_SetTraceLevel, "TRC_L2CAP", DEFAULT_CONF_TRACE_LEVEL},
   {BTTRC_ID_STK_RFCOMM, BTTRC_ID_STK_RFCOMM_DATA, PORT_SetTraceLevel, "TRC_RFCOMM", DEFAULT_CONF_TRACE_LEVEL},
+#if (AVCT_INCLUDED==TRUE)
+  {BTTRC_ID_STK_AVCT, BTTRC_ID_STK_AVCT, AVCT_SetTraceLevel, "TRC_AVCT", DEFAULT_CONF_TRACE_LEVEL},
+#endif
 #if (AVDT_INCLUDED==TRUE)
   {BTTRC_ID_STK_AVDT, BTTRC_ID_STK_AVDT, AVDT_SetTraceLevel, "TRC_AVDT", DEFAULT_CONF_TRACE_LEVEL},
 #endif
@@ -146,6 +161,9 @@ static tBTTRC_FUNC_MAP bttrc_set_level_map[] = {
   {BTTRC_ID_STK_BNEP, BTTRC_ID_STK_BNEP, BNEP_SetTraceLevel, "TRC_BNEP", DEFAULT_CONF_TRACE_LEVEL},
 #endif
   {BTTRC_ID_STK_BTM_ACL, BTTRC_ID_STK_BTM_SEC, BTM_SetTraceLevel, "TRC_BTM", DEFAULT_CONF_TRACE_LEVEL},
+#if (HID_HOST_INCLUDED==TRUE)
+  {BTTRC_ID_STK_HID, BTTRC_ID_STK_HID, HID_HostSetTraceLevel, "TRC_HID_HOST", DEFAULT_CONF_TRACE_LEVEL},
+#endif
   {BTTRC_ID_STK_GAP, BTTRC_ID_STK_GAP, GAP_SetTraceLevel, "TRC_GAP", DEFAULT_CONF_TRACE_LEVEL},
 #if (PAN_INCLUDED==TRUE)
   {BTTRC_ID_STK_PAN, BTTRC_ID_STK_PAN, PAN_SetTraceLevel, "TRC_PAN", DEFAULT_CONF_TRACE_LEVEL},
@@ -154,6 +172,9 @@ static tBTTRC_FUNC_MAP bttrc_set_level_map[] = {
 #if (BLE_INCLUDED==TRUE)
   {BTTRC_ID_STK_GATT, BTTRC_ID_STK_GATT, GATT_SetTraceLevel, "TRC_GATT", DEFAULT_CONF_TRACE_LEVEL},
   {BTTRC_ID_STK_SMP, BTTRC_ID_STK_SMP, SMP_SetTraceLevel, "TRC_SMP", DEFAULT_CONF_TRACE_LEVEL},
+#endif
+#if (HID_DEV_INCLUDED==TRUE)
+  {BTTRC_ID_STK_HIDD, BTTRC_ID_STK_HIDD, HID_DevSetTraceLevel, "TRC_HID_DEV", DEFAULT_CONF_TRACE_LEVEL},
 #endif
 #if (BT_TRACE_LATENCY_AUDIO == TRUE)
     {BTTRC_ID_LATENCY_AUDIO, BTTRC_ID_LATENCY_AUDIO, AUDIO_Latency_SetTraceLevel, "TRC_LATENCY_AUDIO", DEFAULT_CONF_TRACE_LEVEL},
@@ -166,6 +187,8 @@ static tBTTRC_FUNC_MAP bttrc_set_level_map[] = {
 
   {0, 0, NULL, NULL, DEFAULT_CONF_TRACE_LEVEL}
 };
+
+static const UINT16 bttrc_map_size = sizeof(bttrc_set_level_map)/sizeof(tBTTRC_FUNC_MAP);
 
 void LogMsg(uint32_t trace_set_mask, const char *fmt_str, ...) {
   static char buffer[BTE_LOG_BUF_SIZE];
@@ -180,20 +203,20 @@ void LogMsg(uint32_t trace_set_mask, const char *fmt_str, ...) {
 
   switch ( TRACE_GET_TYPE(trace_set_mask) ) {
     case TRACE_TYPE_ERROR:
-      LOG_ERROR(bt_layer_tags[trace_layer], "%s", buffer);
+      LOGE0(bt_layer_tags[trace_layer], buffer);
       break;
     case TRACE_TYPE_WARNING:
-      LOG_WARN(bt_layer_tags[trace_layer], "%s", buffer);
+      LOGW0(bt_layer_tags[trace_layer], buffer);
       break;
     case TRACE_TYPE_API:
     case TRACE_TYPE_EVENT:
-      LOG_INFO(bt_layer_tags[trace_layer], "%s", buffer);
+      LOGI0(bt_layer_tags[trace_layer], buffer);
       break;
     case TRACE_TYPE_DEBUG:
-      LOG_DEBUG(bt_layer_tags[trace_layer], "%s", buffer);
+      LOGD0(bt_layer_tags[trace_layer], buffer);
       break;
     default:
-      LOG_ERROR(bt_layer_tags[trace_layer], "%s", buffer);      /* we should never get this */
+      LOGE0(bt_layer_tags[trace_layer], buffer);      /* we should never get this */
       break;
   }
 }
@@ -224,19 +247,19 @@ static uint8_t AUDIO_Latency_SetTraceLevel( uint8_t new_level )
 
 static uint8_t BTU_SetTraceLevel(uint8_t new_level) {
   if (new_level != 0xFF)
-    btu_trace_level = new_level;
-
-  return btu_trace_level;
+    btu_cb.trace_level = new_level;
+  return btu_cb.trace_level;
 }
 
 static void load_levels_from_config(const config_t *config) {
   assert(config != NULL);
 
   for (tBTTRC_FUNC_MAP *functions = &bttrc_set_level_map[0]; functions->trc_name; ++functions) {
-    LOG_INFO(LOG_TAG, "BTE_InitTraceLevels -- %s", functions->trc_name);
     int value = config_get_int(config, CONFIG_DEFAULT_SECTION, functions->trc_name, -1);
     if (value != -1)
       functions->trace_level = value;
+
+    LOG_INFO("BTE_InitTraceLevels -- %s : Level %d", functions->trc_name, functions->trace_level);
 
     if (functions->p_f)
       functions->p_f(functions->trace_level);
@@ -246,14 +269,14 @@ static void load_levels_from_config(const config_t *config) {
 static future_t *init(void) {
   const stack_config_t *stack_config = stack_config_get_interface();
   if (!stack_config->get_trace_config_enabled()) {
-    LOG_INFO(LOG_TAG, "using compile default trace settings");
+    LOG_INFO("[bttrc] using compile default trace settings");
     return NULL;
   }
   load_levels_from_config(stack_config->get_all());
   return NULL;
 }
 
-EXPORT_SYMBOL const module_t bte_logmsg_module = {
+const module_t bte_logmsg_module = {
   .name = BTE_LOGMSG_MODULE,
   .init = init,
   .start_up = NULL,

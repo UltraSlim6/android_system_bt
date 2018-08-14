@@ -175,9 +175,9 @@ void bta_hh_clean_up_kdev(tBTA_HH_DEV_CB *p_cb)
     index = p_cb->index;                        /* Preserve index for this control block */
 
     /* Free buffer for report descriptor info */
-    osi_free_and_reset((void **)&p_cb->dscp_info.descriptor.dsc_list);
+    utl_freebuf((void **)&p_cb->dscp_info.descriptor.dsc_list);
 
-    memset(p_cb, 0, sizeof(tBTA_HH_DEV_CB));    /* Reset control block */
+    memset(p_cb, 0, sizeof (tBTA_HH_DEV_CB));   /* Reset control block */
 
     p_cb->index = index;                        /* Restore index for this control block */
     p_cb->state      = BTA_HH_IDLE_ST;
@@ -243,17 +243,20 @@ void bta_hh_add_device_to_list(tBTA_HH_DEV_CB *p_cb, UINT8 handle,
     p_cb->dscp_info.ssr_min_tout    = ssr_min_tout;
 
     /* store report descriptor info */
-    if (p_dscp_info) {
-        osi_free_and_reset((void **)&p_cb->dscp_info.descriptor.dsc_list);
+    if ( p_dscp_info)
+    {
+        utl_freebuf((void **)&p_cb->dscp_info.descriptor.dsc_list);
 
-        if (p_dscp_info->dl_len) {
-            p_cb->dscp_info.descriptor.dsc_list =
-              (UINT8 *)osi_malloc(p_dscp_info->dl_len);
+        if (p_dscp_info->dl_len &&
+        (p_cb->dscp_info.descriptor.dsc_list =
+            (UINT8 *)GKI_getbuf(p_dscp_info->dl_len)) != NULL)
+        {
             p_cb->dscp_info.descriptor.dl_len = p_dscp_info->dl_len;
             memcpy(p_cb->dscp_info.descriptor.dsc_list, p_dscp_info->dsc_list,
-                   p_dscp_info->dl_len);
+                    p_dscp_info->dl_len);
         }
     }
+    return;
 }
 
 /*******************************************************************************
@@ -504,19 +507,18 @@ void bta_hh_cleanup_disable(tBTA_HH_STATUS status)
 {
     UINT8   xx;
     /* free buffer in CB holding report descriptors */
-    for (xx = 0; xx < BTA_HH_MAX_DEVICE; xx ++) {
-        osi_free_and_reset((void **)&bta_hh_cb.kdev[xx].dscp_info.descriptor.dsc_list);
+    for(xx = 0; xx < BTA_HH_MAX_DEVICE; xx ++)
+    {
+        utl_freebuf((void **)&bta_hh_cb.kdev[xx].dscp_info.descriptor.dsc_list);
     }
+    utl_freebuf((void **)&bta_hh_cb.p_disc_db);
 
-    if (bta_hh_cb.p_disc_db) {
-        /* Cancel SDP if it had been started. */
-        (void)SDP_CancelServiceSearch (bta_hh_cb.p_disc_db);
-        osi_free_and_reset((void **)&bta_hh_cb.p_disc_db);
+    if (bta_hh_cb.p_cback)
+    {
+        (* bta_hh_cb.p_cback)(BTA_HH_DISABLE_EVT, (tBTA_HH *)&status);
+        /* all connections are down, no waiting for diconnect */
+        memset(&bta_hh_cb, 0, sizeof(tBTA_HH_CB));
     }
-
-    (* bta_hh_cb.p_cback)(BTA_HH_DISABLE_EVT, (tBTA_HH *)&status);
-    /* all connections are down, no waiting for diconnect */
-    memset(&bta_hh_cb, 0, sizeof(tBTA_HH_CB));
 }
 
 /*******************************************************************************

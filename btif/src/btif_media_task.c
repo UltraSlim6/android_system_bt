@@ -1,11 +1,7 @@
 /******************************************************************************
- *  Copyright (c) 2016, The Linux Foundation. All rights reserved.
- *
- *  Not a contribution.
- ******************************************************************************/
-/******************************************************************************
  *
  *  Copyright (C) 2009-2012 Broadcom Corporation
+ *  Copyright (c) 2013, Linux Foundation. All rights reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -30,6 +26,7 @@
  **                 audio & video processing
  **
  ******************************************************************************/
+//#define BT_AUDIO_SYSTRACE_LOG
 #ifdef BT_AUDIO_SYSTRACE_LOG
 #define ATRACE_TAG ATRACE_TAG_ALWAYS
 #endif
@@ -37,68 +34,59 @@
 #define LOG_TAG "bt_btif_media"
 
 #include <assert.h>
+#include <string.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <fcntl.h>
-#include <limits.h>
+#include <unistd.h>
 #include <pthread.h>
 #include <stdint.h>
-#include <stdio.h>
-#include <dlfcn.h>
-#include <string.h>
-#include <sys/stat.h>
 #include <sys/time.h>
-#include <sys/types.h>
-#include <unistd.h>
-#include <audio_utils/primitives.h>
-#include <audio_utils/format.h>
+#include <errno.h>
 
-#include <hardware/bluetooth.h>
-
-#include "osi/include/alarm.h"
-#include "osi/include/fixed_queue.h"
-#include "osi/include/log.h"
-#include "osi/include/metrics.h"
-#include "osi/include/mutex.h"
-#include "osi/include/thread.h"
-#include "bt_utils.h"
-#include "a2d_api.h"
-#include "a2d_int.h"
-#include "a2d_sbc.h"
-#include "a2d_aptx.h"
-#include "a2d_aptx_hd.h"
-#include "a2d_aac.h"
-#include "audio_a2dp_hw.h"
 #include "bt_target.h"
+#include "osi/include/fixed_queue.h"
+#include "gki.h"
 #include "bta_api.h"
-#include "bta_av_api.h"
-#include "bta_av_ci.h"
-#include "bta_av_sbc.h"
-#include "bta_av_aac.h"
+#include "btu.h"
 #include "bta_sys.h"
 #include "bta_sys_int.h"
-#include "btif_av.h"
+
+#include "bta_av_api.h"
+#include "a2d_api.h"
+#include "a2d_sbc.h"
+#include "a2d_int.h"
+#include "bta_av_sbc.h"
+#include "bta_av_ci.h"
+#include "l2c_api.h"
+
 #include "btif_av_co.h"
 #include "btif_media.h"
-#include "btif_sm.h"
-#include "btif_util.h"
-#include "btu.h"
-#include "bt_common.h"
-#include "device/include/controller.h"
-#include "l2c_api.h"
+
+#include "osi/include/alarm.h"
+#include "osi/include/log.h"
+#include "osi/include/thread.h"
 
 #if (BTA_AV_INCLUDED == TRUE)
 #include "sbc_encoder.h"
 #endif
 
+#include <hardware/bluetooth.h>
+#include "audio_a2dp_hw.h"
+#include "btif_av.h"
+#include "btif_sm.h"
+#include "btif_util.h"
 #if (BTA_AV_SINK_INCLUDED == TRUE)
 #include "oi_codec_sbc.h"
 #include "oi_status.h"
 #endif
-
 #ifdef USE_AUDIO_TRACK
-#include "btif_avrcp_audio_track.h"
+#include "bluetoothTrack.h"
 #endif
+#include "stdio.h"
+#include <dlfcn.h>
 
-#include "bthost_ipc.h"
 #if (BTA_AV_SINK_INCLUDED == TRUE)
 OI_CODEC_SBC_DECODER_CONTEXT context;
 OI_UINT32 contextData[CODEC_DATA_WORDS(2, SBC_CODEC_FAST_FILTER_BUFFERS)];
@@ -118,6 +106,7 @@ OI_INT16 pcmData[15*SBC_MAX_SAMPLES_PER_FRAME*SBC_MAX_CHANNELS];
 /*****************************************************************************
  **  Constants
  *****************************************************************************/
+
 #ifndef AUDIO_CHANNEL_OUT_MONO
 #define AUDIO_CHANNEL_OUT_MONO 0x01
 #endif
@@ -142,8 +131,10 @@ enum
     BTIF_MEDIA_AUDIO_FEEDING_INIT,
     BTIF_MEDIA_AUDIO_RECEIVING_INIT,
     BTIF_MEDIA_AUDIO_SINK_CFG_UPDATE,
-    BTIF_MEDIA_AUDIO_SINK_CLEAR_TRACK,
-    BTIF_MEDIA_AUDIO_SINK_SET_FOCUS_STATE
+    BTIF_MEDIA_AUDIO_SINK_CLEAR_TRACK
+#ifdef USE_AUDIO_TRACK
+    ,BTIF_MEDIA_AUDIO_SINK_SET_FOCUS_STATE
+#endif
 #ifdef BTA_AV_SPLIT_A2DP_ENABLED
     ,BTIF_MEDIA_START_VS_CMD,
     BTIF_MEDIA_STOP_VS_CMD,
@@ -154,10 +145,7 @@ enum
     BTIF_MEDIA_VS_A2DP_WRITE_SBC_CFG_SUCCESS,
     BTIF_MEDIA_VS_A2DP_PREF_BIT_RATE_SUCCESS,
     BTIF_MEDIA_VS_A2DP_SET_SCMST_HDR_SUCCESS,
-    BTIF_MEDIA_VS_A2DP_STOP_FAILURE,
-    BTIF_MEDIA_VS_A2DP_START_FAILURE,
-    BTIF_MEDIA_VS_A2DP_SELECTED_CODEC_SUCCESS,
-    BTIF_MEDIA_VS_A2DP_TRANSPORT_CFG_SUCCESS
+    BTIF_MEDIA_VS_A2DP_STOP_FAILURE
 #endif
 };
 
@@ -166,6 +154,7 @@ enum {
     MEDIA_TASK_STATE_ON = 1,
     MEDIA_TASK_STATE_SHUTTING_DOWN = 2
 };
+
 /* Macro to multiply the media task tick */
 #ifndef BTIF_MEDIA_NUM_TICK
 #define BTIF_MEDIA_NUM_TICK      1
@@ -176,11 +165,12 @@ enum {
 
 #define BTIF_MEDIA_TIME_TICK                     (20 * BTIF_MEDIA_NUM_TICK)
 #define A2DP_DATA_READ_POLL_MS    (BTIF_MEDIA_TIME_TICK / 2)
-#define BTIF_SINK_MEDIA_TIME_TICK_MS             (20 * BTIF_MEDIA_NUM_TICK)
+#define BTIF_SINK_MEDIA_TIME_TICK                (20 * BTIF_MEDIA_NUM_TICK)
 
 
 /* buffer pool */
-#define BTIF_MEDIA_AA_BUF_SIZE  BT_DEFAULT_BUFFER_SIZE
+#define BTIF_MEDIA_AA_POOL_ID GKI_POOL_ID_3
+#define BTIF_MEDIA_AA_BUF_SIZE GKI_BUF3_SIZE
 
 /* offset */
 #if (BTA_AV_CO_CP_SCMS_T == TRUE)
@@ -189,32 +179,19 @@ enum {
 #define BTIF_MEDIA_AA_SBC_OFFSET (AVDT_MEDIA_OFFSET + BTA_AV_SBC_HDR_SIZE)
 #endif
 
-#if (BTA_AV_CO_CP_SCMS_T == TRUE)
-#define BTIF_MEDIA_AA_AAC_OFFSET (AVDT_MEDIA_OFFSET + BTA_AV_AAC_HDR_SIZE + 1)
-#else
-#define BTIF_MEDIA_AA_AAC_OFFSET (AVDT_MEDIA_OFFSET + BTA_AV_AAC_HDR_SIZE)
-#endif
-
-#if (BTA_AV_CO_CP_SCMS_T == TRUE)
-#define BTIF_MEDIA_AA_APTX_OFFSET (AVDT_MEDIA_OFFSET + 1)
-#define BTIF_MEDIA_AA_APTX_HD_OFFSET (AVDT_MEDIA_OFFSET + 1)
-#else
-#define BTIF_MEDIA_AA_APTX_OFFSET (AVDT_MEDIA_OFFSET - AVDT_MEDIA_HDR_SIZE) //no RTP header for aptX classic
-#define BTIF_MEDIA_AA_APTX_HD_OFFSET (AVDT_MEDIA_OFFSET) //there is an RTP header for aptX HD, but no CP byte
-#endif
 /* Define the bitrate step when trying to match bitpool value */
 #ifndef BTIF_MEDIA_BITRATE_STEP
 #define BTIF_MEDIA_BITRATE_STEP 5
 #endif
 
 #ifdef BTA_AV_SPLIT_A2DP_DEF_FREQ_48KHZ
-#define BTIF_A2DP_DEFAULT_BITRATE 345
+#define DEFAULT_SBC_BITRATE 345
 
 #ifndef BTIF_A2DP_NON_EDR_MAX_RATE
 #define BTIF_A2DP_NON_EDR_MAX_RATE 237
 #endif
 #else
-#define BTIF_A2DP_DEFAULT_BITRATE 328
+#define DEFAULT_SBC_BITRATE 328
 
 #ifndef BTIF_A2DP_NON_EDR_MAX_RATE
 #define BTIF_A2DP_NON_EDR_MAX_RATE 229
@@ -230,12 +207,13 @@ enum {
 #define MAX_SBC_HQ_FRAME_SIZE_44_1  119
 #define MAX_SBC_HQ_FRAME_SIZE_48    115
 
-/* 2DH5 payload size of 679 bytes - (4 bytes L2CAP Header + 12 bytes AVDTP Header) */
+/* 2DH5 payload size (679 bytes) - (4 bytes L2CAP Header + 12 bytes AVDTP Header) */
 #define MAX_2MBPS_AVDTP_MTU         663
+
 #define USEC_PER_SEC 1000000L
 #define TPUT_STATS_INTERVAL_US (3000*1000)
 
-/**
+/*
  * CONGESTION COMPENSATION CTRL ::
  *
  * Thus setting controls how many buffers we will hold in media task
@@ -247,102 +225,25 @@ enum {
  * jitterbuffer runlevel including any intermediate buffers on the way
  * towards the sinks codec.
  */
+
+/* fixme -- define this in pcm time instead of buffer count */
+
+/* The typical runlevel of the tx queue size is ~1 buffer
+   but due to link flow control or thread preemption in lower
+   layers we might need to temporarily buffer up data */
+/* 18 frames is equivalent to 6.89*18*2.9 ~= 360 ms @ 44.1 khz, 20 ms mediatick */
+#define MAX_OUTPUT_A2DP_FRAME_QUEUE_SZ 10
 #ifndef MAX_PCM_FRAME_NUM_PER_TICK
 #define MAX_PCM_FRAME_NUM_PER_TICK     14
 #endif
-#define MAX_PCM_ITER_NUM_PER_TICK      3
-
-/**
- * The typical runlevel of the tx queue size is ~1 buffer
- * but due to link flow control or thread preemption in lower
- * layers we might need to temporarily buffer up data.
- */
-#define MAX_OUTPUT_A2DP_FRAME_QUEUE_SZ (MAX_PCM_FRAME_NUM_PER_TICK * 2)
+#define MAX_PCM_ITER_NUM_PER_TICK     3
 
 /* In case of A2DP SINK, we will delay start by 5 AVDTP Packets*/
-#define MAX_A2DP_DELAYED_START_FRAME_COUNT 5
+#define MAX_A2DP_DELAYED_START_FRAME_COUNT 3
 #define PACKET_PLAYED_PER_TICK_48 8
 #define PACKET_PLAYED_PER_TICK_44 7
 #define PACKET_PLAYED_PER_TICK_32 5
 #define PACKET_PLAYED_PER_TICK_16 3
-#define MAX_MEDIA_WORKQUEUE_SEM_COUNT 1024
-
-/* Readability constants */
-#define SBC_FRAME_HEADER_SIZE_BYTES 4 // A2DP Spec v1.3, 12.4, Table 12.12
-#define SBC_SCALE_FACTOR_BITS       4 // A2DP Spec v1.3, 12.4, Table 12.13
-
-typedef struct {
-    // Counter for total updates
-    size_t total_updates;
-
-    // Last update timestamp (in us)
-    uint64_t last_update_us;
-
-    // Counter for overdue scheduling
-    size_t overdue_scheduling_count;
-
-    // Accumulated overdue scheduling deviations (in us)
-    uint64_t total_overdue_scheduling_delta_us;
-
-    // Max. overdue scheduling delta time (in us)
-    uint64_t max_overdue_scheduling_delta_us;
-
-    // Counter for premature scheduling
-    size_t premature_scheduling_count;
-
-    // Accumulated premature scheduling deviations (in us)
-    uint64_t total_premature_scheduling_delta_us;
-
-    // Max. premature scheduling delta time (in us)
-    uint64_t max_premature_scheduling_delta_us;
-
-    // Counter for exact scheduling
-    size_t exact_scheduling_count;
-
-    // Accumulated and counted scheduling time (in us)
-    uint64_t total_scheduling_time_us;
-} scheduling_stats_t;
-
-typedef struct {
-    uint64_t session_start_us;
-    uint64_t session_end_us;
-
-    scheduling_stats_t tx_queue_enqueue_stats;
-    scheduling_stats_t tx_queue_dequeue_stats;
-
-    size_t tx_queue_total_frames;
-    size_t tx_queue_max_frames_per_packet;
-
-    uint64_t tx_queue_total_queueing_time_us;
-    uint64_t tx_queue_max_queueing_time_us;
-
-    size_t tx_queue_total_readbuf_calls;
-    uint64_t tx_queue_last_readbuf_us;
-
-    size_t tx_queue_total_flushed_messages;
-    uint64_t tx_queue_last_flushed_us;
-
-    size_t tx_queue_total_dropped_messages;
-    size_t tx_queue_max_dropped_messages;
-    size_t tx_queue_dropouts;
-    uint64_t tx_queue_last_dropouts_us;
-
-    size_t media_read_total_underflow_bytes;
-    size_t media_read_total_underflow_count;
-    uint64_t media_read_last_underflow_us;
-
-    size_t media_read_total_underrun_bytes;
-    size_t media_read_total_underrun_count;
-    uint64_t media_read_last_underrun_us;
-
-    size_t media_read_total_expected_frames;
-    size_t media_read_max_expected_frames;
-    size_t media_read_expected_count;
-
-    size_t media_read_total_limited_frames;
-    size_t media_read_max_limited_frames;
-    size_t media_read_limited_count;
-} btif_media_stats_t;
 
 typedef struct
 {
@@ -369,8 +270,10 @@ typedef union
 typedef struct
 {
 #if (BTA_AV_INCLUDED == TRUE)
-    fixed_queue_t *TxAaQ;
-    fixed_queue_t *RxSbcQ;
+    BUFFER_Q TxAaQ;
+    BUFFER_Q RxSbcQ;
+    BOOLEAN is_tx_timer;
+    BOOLEAN is_rx_timer;
     UINT16 TxAaMtuSize;
     UINT32 timestamp;
     UINT8 TxTranscoding;
@@ -378,11 +281,6 @@ typedef struct
     tBTIF_AV_MEDIA_FEEDINGS media_feeding;
     tBTIF_AV_MEDIA_FEEDINGS_STATE media_feeding_state;
     SBC_ENC_PARAMS encoder;
-    UINT16 offset;
-    A2D_APTX_ENC_PARAMS aptxEncoderParams;
-    A2D_APTX_HD_ENC_PARAMS aptxhdEncoderParams;
-    UINT16 as16PcmBuffer[1024];
-    UINT32 as32PcmBuffer[1024];
     UINT8 busy_level;
     void* av_sm_hdl;
     UINT8 a2dp_cmd_pending; /* we can have max one command pending */
@@ -390,30 +288,26 @@ typedef struct
     BOOLEAN rx_flush; /* discards any incoming data when true */
     UINT8 peer_sep;
     BOOLEAN data_channel_open;
-    UINT8 frames_to_process;
-    UINT8 tx_sbc_frames;
+    UINT8   frames_to_process;
 
     UINT32  sample_rate;
     UINT8   channel_count;
 #ifdef USE_AUDIO_TRACK
     btif_media_audio_focus_state rx_audio_focus_state;
-    void *audio_track;
 #endif
     alarm_t *media_alarm;
     alarm_t *decode_alarm;
-    btif_media_stats_t stats;
-    btif_media_stats_t accumulated_stats;
-//#ifdef BTA_AV_SPLIT_A2DP_ENABLED
+    UINT8 TxNumSBCFrames;
+#ifdef BTA_AV_SPLIT_A2DP_ENABLED
     UINT8 max_bitpool;
     UINT8 min_bitpool;
     BOOLEAN vs_configs_exchanged;
     BOOLEAN tx_started;
     BOOLEAN tx_stop_initiated;
-    BOOLEAN tx_start_initiated;
-    BOOLEAN tx_enc_update_initiated;
-//#endif
+#endif
 
 #endif
+
 } tBTIF_MEDIA_CB;
 
 typedef struct {
@@ -442,11 +336,11 @@ extern OI_STATUS OI_CODEC_SBC_DecoderReset(OI_CODEC_SBC_DECODER_CONTEXT *context
                                            OI_UINT8 pcmStride,
                                            OI_BOOL enhanced);
 #endif
-static void btif_media_flush_q(fixed_queue_t *p_q);
+static void btif_media_flush_q(BUFFER_Q *p_q);
 static void btif_media_task_aa_handle_stop_decoding(void );
 static void btif_media_task_aa_rx_flush(void);
 
-static UINT8 calculate_max_frames_per_packet();
+static UINT8 check_for_max_number_of_frames_per_packet();
 static const char *dump_media_event(UINT16 event);
 static void btif_media_thread_init(void *context);
 static void btif_media_thread_cleanup(void *context);
@@ -457,10 +351,8 @@ static void btif_media_thread_handle_cmd(fixed_queue_t *queue, void *context);
 static void btif_media_task_handle_inc_media(tBT_SBC_HDR*p_msg);
 #endif
 
-BOOLEAN bta_av_co_audio_get_codec_config(UINT8 *p_config, UINT16 *p_minmtu, UINT8 type);
-
 #if (BTA_AV_INCLUDED == TRUE)
-static void btif_media_send_aa_frame(uint64_t timestamp_us);
+static void btif_media_send_aa_frame(void);
 static void btif_media_task_feeding_state_reset(void);
 static void btif_media_task_aa_start_tx(void);
 static void btif_media_task_aa_stop_tx(void);
@@ -468,7 +360,7 @@ static void btif_media_task_enc_init(BT_HDR *p_msg);
 static void btif_media_task_enc_update(BT_HDR *p_msg);
 static void btif_media_task_audio_feeding_init(BT_HDR *p_msg);
 static void btif_media_task_aa_tx_flush(BT_HDR *p_msg);
-static void btif_media_aa_prep_2_send(UINT8 nb_frame, uint64_t timestamp_us);
+static void btif_media_aa_prep_2_send(UINT8 nb_frame);
 #if (BTA_AV_SINK_INCLUDED == TRUE)
 static void btif_media_task_aa_handle_decoder_reset(BT_HDR *p_msg);
 static void btif_media_task_aa_handle_clear_track(void);
@@ -480,14 +372,8 @@ BOOLEAN btif_media_task_clear_track(void);
 static void btif_media_task_aa_handle_timer(UNUSED_ATTR void *context);
 static void btif_media_task_avk_handle_timer(UNUSED_ATTR void *context);
 extern BOOLEAN btif_hf_is_call_idle();
-extern int btif_get_latest_playing_device_idx();
-extern tBTA_AV_HNDL btif_av_get_playing_device_hdl();
-extern int btif_get_num_playing_devices();
-extern UINT16 btif_av_get_num_playing_devices(void);
-extern BOOLEAN btif_av_get_multicast_state();
+
 #ifdef BTA_AV_SPLIT_A2DP_ENABLED
-extern tBTA_AV_HNDL btif_av_get_av_hdl_from_idx(UINT8 idx);
-extern BOOLEAN btif_av_is_under_handoff();
 void btif_media_send_reset_vendor_state();
 void btif_media_on_start_vendor_command();
 void btif_media_start_vendor_command();
@@ -497,27 +383,6 @@ BOOLEAN btif_media_send_vendor_write_sbc_cfg();
 BOOLEAN btif_media_send_vendor_media_chn_cfg();
 BOOLEAN btif_media_send_vendor_stop();
 BOOLEAN btif_media_send_vendor_start();
-void disconnect_a2dp_on_vendor_start_failure();
-BOOLEAN btif_media_send_vendor_selected_codec();
-BOOLEAN btif_media_send_vendor_transport_cfg();
-BOOLEAN btif_media_send_vendor_scmst_hdr();
-#else
-#define btif_av_get_av_hdl_from_idx(idx) (0)
-#define btif_av_is_under_handoff() (0)
-#define btif_media_send_reset_vendor_state() (0)
-#define btif_media_on_start_vendor_command() (0)
-#define btif_media_start_vendor_command()    (0)
-#define btif_media_on_stop_vendor_command()  (0)
-#define btif_media_send_vendor_pref_bit_rate() (0)
-#define btif_media_send_vendor_write_sbc_cfg() (0)
-#define btif_media_send_vendor_media_chn_cfg() (0)
-#define btif_media_send_vendor_stop()        (0)
-#define btif_media_send_vendor_start()       (0)
-#define disconnect_a2dp_on_vendor_start_failure() (0)
-#define btif_media_send_vendor_selected_codec() (0)
-#define btif_media_send_vendor_transport_cfg()  (0)
-#define btif_media_send_vendor_scmst_hdr()      (0)
-
 #endif
 
 
@@ -527,141 +392,27 @@ static int media_task_running = MEDIA_TASK_STATE_OFF;
 static fixed_queue_t *btif_media_cmd_msg_queue;
 static thread_t *worker_thread;
 
-BOOLEAN bta_av_co_audio_get_codec_config(UINT8 *p_config, UINT16 *p_minmtu, UINT8 type);
-
-extern BOOLEAN bt_split_a2dp_enabled;
-extern int btif_max_av_clients;
-static uint8_t multicast_query = FALSE;
 /*****************************************************************************
  **  Misc helper functions
  *****************************************************************************/
-void btif_a2dp_source_accumulate_scheduling_stats(scheduling_stats_t* src,
-                                                  scheduling_stats_t* dst) {
-    dst->total_updates += src->total_updates;
-    dst->last_update_us = src->last_update_us;
-    dst->overdue_scheduling_count += src->overdue_scheduling_count;
-    dst->total_overdue_scheduling_delta_us += src->total_overdue_scheduling_delta_us;
-    if (src->max_overdue_scheduling_delta_us > dst->max_overdue_scheduling_delta_us) {
-        dst->max_overdue_scheduling_delta_us = src->max_overdue_scheduling_delta_us;
-    }
-    dst->premature_scheduling_count += src->premature_scheduling_count;
-    dst->total_premature_scheduling_delta_us += src->total_premature_scheduling_delta_us;
-    if (src->max_premature_scheduling_delta_us > dst->max_premature_scheduling_delta_us) {
-        dst->max_premature_scheduling_delta_us = src->max_premature_scheduling_delta_us;
-    }
-    dst->exact_scheduling_count += src->exact_scheduling_count;
-    dst->total_scheduling_time_us += src->total_scheduling_time_us;
-}
 
-void btif_a2dp_source_accumulate_stats(btif_media_stats_t* src,
-                                       btif_media_stats_t* dst) {
-    dst->tx_queue_total_frames += src->tx_queue_total_frames;
-    if (src->tx_queue_max_frames_per_packet > dst->tx_queue_max_frames_per_packet) {
-        dst->tx_queue_max_frames_per_packet = src->tx_queue_max_frames_per_packet;
-    }
-    dst->tx_queue_total_queueing_time_us += src->tx_queue_total_queueing_time_us;
-    if (src->tx_queue_max_queueing_time_us > dst->tx_queue_max_queueing_time_us) {
-        dst->tx_queue_max_queueing_time_us = src->tx_queue_max_queueing_time_us;
-    }
-    dst->tx_queue_total_readbuf_calls += src->tx_queue_total_readbuf_calls;
-    dst->tx_queue_last_readbuf_us = src->tx_queue_last_readbuf_us;
-    dst->tx_queue_total_flushed_messages += src->tx_queue_total_flushed_messages;
-    dst->tx_queue_last_flushed_us = src->tx_queue_last_flushed_us;
-    dst->tx_queue_total_dropped_messages += src->tx_queue_total_dropped_messages;
-    if (src->tx_queue_max_dropped_messages > dst->tx_queue_max_dropped_messages) {
-        dst->tx_queue_max_dropped_messages = src->tx_queue_max_dropped_messages;
-    }
-    dst->tx_queue_dropouts += src->tx_queue_dropouts;
-    dst->tx_queue_last_dropouts_us = src->tx_queue_last_dropouts_us;
-    dst->media_read_total_underflow_bytes +=
-      src->media_read_total_underflow_bytes;
-    dst->media_read_total_underflow_count +=
-      src->media_read_total_underflow_count;
-    dst->media_read_last_underflow_us = src->media_read_last_underflow_us;
-    dst->media_read_total_underrun_bytes += src->media_read_total_underrun_bytes;
-    dst->media_read_total_underflow_count += src->media_read_total_underrun_count;
-    dst->media_read_last_underrun_us = src->media_read_last_underrun_us;
-    dst->media_read_total_expected_frames += src->media_read_total_expected_frames;
-    if (src->media_read_max_expected_frames > dst->media_read_max_expected_frames) {
-        dst->media_read_max_expected_frames = src->media_read_max_expected_frames;
-    }
-    dst->media_read_expected_count += src->media_read_expected_count;
-    dst->media_read_total_limited_frames += src->media_read_total_limited_frames;
-    if (src->media_read_max_limited_frames > dst->media_read_max_limited_frames) {
-        dst->media_read_max_limited_frames = src->media_read_max_limited_frames;
-    }
-    dst->media_read_limited_count += src->media_read_limited_count;
-    btif_a2dp_source_accumulate_scheduling_stats(&src->tx_queue_enqueue_stats,
-                                               &dst->tx_queue_enqueue_stats);
-    btif_a2dp_source_accumulate_scheduling_stats(&src->tx_queue_dequeue_stats,
-                                               &dst->tx_queue_dequeue_stats);
-    memset(src, 0, sizeof(btif_media_stats_t));
-}
-
-static void update_scheduling_stats(scheduling_stats_t *stats,
-                                    uint64_t now_us, uint64_t expected_delta)
-{
-    uint64_t last_us = stats->last_update_us;
-
-    stats->total_updates++;
-    stats->last_update_us = now_us;
-
-    if (last_us == 0)
-      return;           // First update: expected delta doesn't apply
-
-    uint64_t deadline_us = last_us + expected_delta;
-    if (deadline_us < now_us) {
-        // Overdue scheduling
-        uint64_t delta_us = now_us - deadline_us;
-        // Ignore extreme outliers
-        if (delta_us < 10 * expected_delta) {
-            if (stats->max_overdue_scheduling_delta_us < delta_us)
-                stats->max_overdue_scheduling_delta_us = delta_us;
-            stats->total_overdue_scheduling_delta_us += delta_us;
-            stats->overdue_scheduling_count++;
-            stats->total_scheduling_time_us += now_us - last_us;
-        }
-    } else if (deadline_us > now_us) {
-        // Premature scheduling
-        uint64_t delta_us = deadline_us - now_us;
-        // Ignore extreme outliers
-        if (delta_us < 10 * expected_delta) {
-            if (stats->max_premature_scheduling_delta_us < delta_us)
-                stats->max_premature_scheduling_delta_us = delta_us;
-            stats->total_premature_scheduling_delta_us += delta_us;
-            stats->premature_scheduling_count++;
-            stats->total_scheduling_time_us += now_us - last_us;
-        }
-    } else {
-        // On-time scheduling
-        stats->exact_scheduling_count++;
-        stats->total_scheduling_time_us += now_us - last_us;
-    }
-}
-
-static UINT64 time_now_us()
-{
-    struct timespec ts_now;
-    clock_gettime(CLOCK_BOOTTIME, &ts_now);
-    return ((UINT64)ts_now.tv_sec * USEC_PER_SEC) + ((UINT64)ts_now.tv_nsec / 1000);
-}
-
-static void log_tstamps_us(char *comment, uint64_t now_us)
+static void log_tstamps_us(char *comment)
 {
     #define USEC_PER_MSEC 1000L
-    static uint64_t prev_us = 0;
-    static uint64_t diff_us = 0;
+    static UINT64 prev_us = 0;
+    const UINT64 now_us = time_now_us();
+    static UINT64 diff_us = 0;
 
     diff_us = now_us - prev_us;
     if ((diff_us / USEC_PER_MSEC) > (BTIF_MEDIA_TIME_TICK + 10))
     {
         APPL_TRACE_ERROR("[%s] ts %08llu, diff : %08llu, queue sz %d", comment, now_us, diff_us,
-                fixed_queue_length(btif_media_cb.TxAaQ));
+                GKI_queue_length(&btif_media_cb.TxAaQ));
     }
     else
     {
         APPL_TRACE_DEBUG("[%s] ts %08llu, diff : %08llu, queue sz %d", comment, now_us, diff_us,
-                fixed_queue_length(btif_media_cb.TxAaQ));
+                GKI_queue_length(&btif_media_cb.TxAaQ));
     }
 
     prev_us = now_us;
@@ -669,7 +420,7 @@ static void log_tstamps_us(char *comment, uint64_t now_us)
 
 UNUSED_ATTR static const char *dump_media_event(UINT16 event)
 {
-    switch (event)
+    switch(event)
     {
         CASE_RETURN_STR(BTIF_MEDIA_START_AA_TX)
         CASE_RETURN_STR(BTIF_MEDIA_STOP_AA_TX)
@@ -685,34 +436,12 @@ UNUSED_ATTR static const char *dump_media_event(UINT16 event)
         CASE_RETURN_STR(BTIF_MEDIA_AUDIO_RECEIVING_INIT)
         CASE_RETURN_STR(BTIF_MEDIA_AUDIO_SINK_CFG_UPDATE)
         CASE_RETURN_STR(BTIF_MEDIA_AUDIO_SINK_CLEAR_TRACK)
+#ifdef USE_AUDIO_TRACK
         CASE_RETURN_STR(BTIF_MEDIA_AUDIO_SINK_SET_FOCUS_STATE)
-
+#endif
         default:
             return "UNKNOWN MEDIA EVENT";
     }
-}
-
-static void btm_read_rssi_cb(void *data)
-{
-    if (data == NULL)
-    {
-        LOG_ERROR(LOG_TAG, "%s RSSI request timed out", __func__);
-        return;
-    }
-
-    tBTM_RSSI_RESULTS *result = (tBTM_RSSI_RESULTS*)data;
-    if (result->status != BTM_SUCCESS)
-    {
-        LOG_ERROR(LOG_TAG, "%s unable to read remote RSSI (status %d)",
-            __func__, result->status);
-        return;
-    }
-
-    char temp_buffer[20] = {0};
-    LOG_WARN(LOG_TAG, "%s device: %s, rssi: %d", __func__,
-        bdaddr_to_string((bt_bdaddr_t *)result->rem_bda, temp_buffer,
-            sizeof(temp_buffer)),
-        result->rssi);
 }
 
 /*****************************************************************************
@@ -721,19 +450,13 @@ static void btm_read_rssi_cb(void *data)
 
 static const char* dump_a2dp_ctrl_event(UINT8 event)
 {
-    switch (event)
+    switch(event)
     {
         CASE_RETURN_STR(A2DP_CTRL_CMD_NONE)
         CASE_RETURN_STR(A2DP_CTRL_CMD_CHECK_READY)
         CASE_RETURN_STR(A2DP_CTRL_CMD_START)
         CASE_RETURN_STR(A2DP_CTRL_CMD_STOP)
         CASE_RETURN_STR(A2DP_CTRL_CMD_SUSPEND)
-        CASE_RETURN_STR(A2DP_CTRL_CMD_OFFLOAD_START)
-        CASE_RETURN_STR(A2DP_CTRL_CMD_OFFLOAD_SUPPORTED)
-        CASE_RETURN_STR(A2DP_CTRL_CMD_OFFLOAD_NOT_SUPPORTED)
-        CASE_RETURN_STR(A2DP_CTRL_GET_CODEC_CONFIG)
-        CASE_RETURN_STR(A2DP_CTRL_GET_MULTICAST_STATUS)
-        CASE_RETURN_STR(A2DP_CTRL_GET_CONNECTION_STATUS)
         default:
             return "UNKNOWN MSG ID";
     }
@@ -745,7 +468,8 @@ static void btif_audiopath_detached(void)
 
     /*  send stop request only if we are actively streaming and haven't received
         a stop request. Potentially audioflinger detached abnormally */
-    if (alarm_is_scheduled(btif_media_cb.media_alarm)) {
+    if (btif_media_cb.is_tx_timer)
+    {
         /* post stop event and wait for audio path to stop */
         btif_dispatch_sm_event(BTIF_AV_STOP_STREAM_REQ_EVT, NULL, 0);
     }
@@ -794,14 +518,12 @@ static void btif_recv_ctrl_data(void)
 
     btif_media_cb.a2dp_cmd_pending = cmd;
 
-    switch (cmd)
+    switch(cmd)
     {
         case A2DP_CTRL_CMD_CHECK_READY:
 
             if (media_task_running == MEDIA_TASK_STATE_SHUTTING_DOWN)
             {
-                APPL_TRACE_WARNING("%s: A2DP command %s while media task shutting down",
-                                   __func__, dump_a2dp_ctrl_event(cmd));
                 a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
                 return;
             }
@@ -813,8 +535,6 @@ static void btif_recv_ctrl_data(void)
             }
             else
             {
-                APPL_TRACE_WARNING("%s: A2DP command %s while AV stream is not ready",
-                                   __func__, dump_a2dp_ctrl_event(cmd));
                 a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
             }
             break;
@@ -837,10 +557,9 @@ static void btif_recv_ctrl_data(void)
                 break;
             }
 
-            if (alarm_is_scheduled(btif_media_cb.media_alarm))
+            if (btif_media_cb.is_tx_timer == TRUE)
             {
-                APPL_TRACE_WARNING("%s: A2DP command %s when media alarm already scheduled",
-                                   __func__, dump_a2dp_ctrl_event(cmd));
+                APPL_TRACE_IMP("Unexpected HAL Start. Stream in started state, bail out");
                 a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
                 break;
             }
@@ -852,34 +571,27 @@ static void btif_recv_ctrl_data(void)
             * and ACK the audio HAL.*/
             if (btif_av_stream_started_ready())
             {
-                if (!bt_split_a2dp_enabled)
-                {
-                    /* already started, setup audio data channel listener
-                    * and ack back immediately */
-                    UIPC_Open(UIPC_CH_ID_AV_AUDIO, btif_a2dp_data_cb);
-                }
-                else
-                {
-                    //UIPC_Open(UIPC_CH_ID_AV_AUDIO, btif_a2dp_data_cb);//Test Remove later
-                    APPL_TRACE_DEBUG("Av stream alreday started");
-                    if (btif_media_cb.peer_sep == AVDT_TSEP_SNK)
-                        btif_a2dp_encoder_update();
-                }
+#ifndef BTA_AV_SPLIT_A2DP_ENABLED
+                /* already started, setup audio data channel listener
+                * and ack back immediately */
+                UIPC_Open(UIPC_CH_ID_AV_AUDIO, btif_a2dp_data_cb);
+#else
+                APPL_TRACE_DEBUG("Av stream alreday started");
+                if (btif_media_cb.peer_sep == AVDT_TSEP_SNK)
+                    btif_a2dp_encoder_update();
+#endif
                 a2dp_cmd_acknowledge(A2DP_CTRL_ACK_SUCCESS);
             }
             else if (btif_av_stream_ready() == TRUE)
             {
                 /* setup audio data channel listener */
-                if (!bt_split_a2dp_enabled)
-                {
+#ifndef BTA_AV_SPLIT_A2DP_ENABLED
                     /* already started, setup audio data channel listener
                     * and ack back immediately */
-                    UIPC_Open(UIPC_CH_ID_AV_AUDIO, btif_a2dp_data_cb);
-                }
-                else
-                {
-                    APPL_TRACE_DEBUG("Av stream ready");
-                }
+                UIPC_Open(UIPC_CH_ID_AV_AUDIO, btif_a2dp_data_cb);
+#else
+                APPL_TRACE_DEBUG("Av stream ready");
+#endif
                 /* post start event and wait for audio path to open */
                 btif_dispatch_sm_event(BTIF_AV_START_STREAM_REQ_EVT, NULL, 0);
 
@@ -890,18 +602,17 @@ static void btif_recv_ctrl_data(void)
             }
             else
             {
-                APPL_TRACE_WARNING("%s: A2DP command %s while AV stream is not ready",
-                                   __func__, dump_a2dp_ctrl_event(cmd));
                 a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
                 break;
             }
             break;
 
         case A2DP_CTRL_CMD_STOP:
-            if ((!bt_split_a2dp_enabled && btif_media_cb.peer_sep == AVDT_TSEP_SNK &&
-                 (!alarm_is_scheduled(btif_media_cb.media_alarm))) ||
-                (bt_split_a2dp_enabled &&  btif_media_cb.peer_sep == AVDT_TSEP_SNK &&
-                 btif_media_cb.tx_started == FALSE))
+#ifndef BTA_AV_SPLIT_A2DP_ENABLED
+            if (btif_media_cb.peer_sep == AVDT_TSEP_SNK && btif_media_cb.is_tx_timer == FALSE)
+#else
+            if (btif_media_cb.peer_sep == AVDT_TSEP_SNK && btif_media_cb.tx_started == FALSE)
+#endif
             {
                 /* we are already stopped, just ack back */
                 a2dp_cmd_acknowledge(A2DP_CTRL_ACK_SUCCESS);
@@ -920,13 +631,6 @@ static void btif_recv_ctrl_data(void)
             {
                 APPL_TRACE_DEBUG("Suspend stream request to Av");
                 btif_dispatch_sm_event(BTIF_AV_SUSPEND_STREAM_REQ_EVT, NULL, 0);
-            }
-            else if (bt_split_a2dp_enabled && btif_av_is_under_handoff())
-            {
-                /* Do nothing when handoff is in progress. On suspend cfm, a2dp cmd will
-                   be acknowledged. ACKing might lead to wrong codec config will be updated
-                   to hal during multi-codec connection */
-                APPL_TRACE_DEBUG("AV is under handoff");
             }
             else
             {
@@ -948,182 +652,7 @@ static void btif_recv_ctrl_data(void)
             UIPC_Send(UIPC_CH_ID_AV_CTRL, 0, &channel_count, 1);
             break;
         }
-        case A2DP_CTRL_CMD_OFFLOAD_START:
-                btif_dispatch_sm_event(BTIF_AV_OFFLOAD_START_REQ_EVT, NULL, 0);
-            break;
-        case A2DP_CTRL_GET_CODEC_CONFIG:
-        {
-            UINT16 min_mtu;
-            uint8_t param[MAX_CODEC_CFG_SIZE],idx,bta_hdl,codec_id = 0;
-            uint32_t bitrate = 0;
-            uint8_t i = 0;
-            UIPC_Read(UIPC_CH_ID_AV_CTRL, NULL, &idx, 1);
-            memset(param,0,MAX_CODEC_CFG_SIZE);
 
-            if (btif_av_stream_started_ready() == FALSE)
-            {
-                BTIF_TRACE_ERROR("A2DP_CTRL_GET_CODEC_CONFIG: stream not started");
-                a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
-                break;
-            }
-            /*
-            If multicast is supported, codec config will be queried
-            successively for num of playing devices
-            */
-            if (multicast_query)
-            {
-                if (idx == (btif_max_av_clients-1))
-                {
-                    multicast_query = FALSE;
-                    //Get AV handle of index 1
-                }
-                BTIF_TRACE_DEBUG("Mulitcast Enabled, querying index =%d",idx);
-
-                bta_hdl = btif_av_get_av_hdl_from_idx(idx);
-                if (bta_hdl < 0)
-                {
-                    a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
-                    break;
-                }
-                //TODO Maintain selected codec info for Multicast with different codecs
-            }
-            else //get playing device hdl
-            {
-                codec_id =  bta_av_co_get_current_codec();
-            }
-
-            a2dp_cmd_acknowledge(A2DP_CTRL_ACK_SUCCESS);
-            BTIF_TRACE_DEBUG("codec_id = %x",codec_id);
-
-            if (get_soc_type() == BT_SOC_SMD)
-            {
-                //For Pronto PLs Audio pumps raw PCM data for others its encoded data to SOC
-                param[1] = 4; //RAW PCM
-                param[2] = AVDT_MEDIA_AUDIO;
-                param[3] = BTIF_AV_CODEC_PCM;
-                param[4] = btif_media_cb.media_feeding.cfg.pcm.sampling_freq;
-                param[5] = btif_media_cb.media_feeding.cfg.pcm.num_channel;
-            }
-            else if (codec_id == BTIF_AV_CODEC_SBC)
-            {
-                tA2D_SBC_CIE codec_cfg;
-                bta_av_co_audio_get_sbc_config(&codec_cfg, &min_mtu);
-                A2D_BldSbcInfo(AVDT_MEDIA_AUDIO,&codec_cfg,&param[1]);
-                bitrate = btif_media_cb.encoder.u16BitRate * 1000;
-            }
-#if defined(AAC_ENCODER_INCLUDED) && (AAC_ENCODER_INCLUDED == TRUE)
-            else if (codec_id == BTIF_AV_CODEC_M24) {
-                tA2D_AAC_CIE aac_cfg;
-                bta_av_co_audio_get_aac_config(&aac_cfg, &min_mtu);
-                A2D_BldAacInfo(AVDT_MEDIA_AUDIO,&aac_cfg,&param[1]);
-                bitrate = btif_media_cb.encoder.u16BitRate * 1000;
-            }
-#endif
-            else if (codec_id == A2D_NON_A2DP_MEDIA_CT) //this is changed to non-a2dp VS codec
-            {
-               //ADD APTX support
-                UINT8* ptr = bta_av_co_get_current_codecInfo();
-                int j;
-                UINT8 *p_ptr = ptr;
-                for(j=0; j< (int)sizeof(tA2D_APTX_CIE);j++)
-                {
-                    BTIF_TRACE_DEBUG("codec[%d] = %x",j,*p_ptr++);
-                }
-                if (ptr)
-                {
-                    tA2D_APTX_CIE* codecInfo = 0;
-                    codecInfo = (tA2D_APTX_CIE*) &ptr[BTA_AV_CFG_START_IDX];
-                    if (codecInfo && codecInfo->vendorId == A2D_APTX_VENDOR_ID
-                        && codecInfo->codecId == A2D_APTX_CODEC_ID_BLUETOOTH)
-                    {
-                        tA2D_APTX_CIE aptx_config;
-                        memset(&aptx_config,0,sizeof(tA2D_APTX_CIE));
-                        aptx_config.vendorId = codecInfo->vendorId;
-                        aptx_config.codecId = codecInfo->codecId;
-                        aptx_config.sampleRate = codecInfo->sampleRate;
-                        aptx_config.channelMode = codecInfo->channelMode;
-                        BTIF_TRACE_DEBUG("vendor id = %x",aptx_config.vendorId);
-                        BTIF_TRACE_DEBUG("codec id = %x",aptx_config.codecId);
-                        BTIF_TRACE_DEBUG("sample rate  = %x",aptx_config.sampleRate);
-                        BTIF_TRACE_DEBUG("ch mode  = %x",aptx_config.channelMode);
-                        A2D_BldAptxInfo(AVDT_MEDIA_AUDIO,&aptx_config,&param[1]);
-
-                        /* For aptxClassic BR = (Sampl_Rate * PCM_DEPTH * CHNL)/Compression_Ratio */
-                        bitrate = ((btif_media_cb.media_feeding.cfg.pcm.sampling_freq * 16 * 2)/4);
-                    } else {
-                        tA2D_APTX_HD_CIE* cI = 0;
-                        cI = (tA2D_APTX_HD_CIE*) &ptr[BTA_AV_CFG_START_IDX];
-                        if (cI && cI->vendorId == A2D_APTX_HD_VENDOR_ID
-                        && cI->codecId == A2D_APTX_HD_CODEC_ID_BLUETOOTH)
-                        {
-                            tA2D_APTX_HD_CIE aptxhd_config;
-                            memset(&aptxhd_config,0,sizeof(tA2D_APTX_HD_CIE));
-                            aptxhd_config.vendorId = codecInfo->vendorId;
-                            aptxhd_config.codecId = codecInfo->codecId;
-                            aptxhd_config.sampleRate = codecInfo->sampleRate;
-                            aptxhd_config.channelMode = codecInfo->channelMode;
-                            BTIF_TRACE_DEBUG("vendor id = %x",aptxhd_config.vendorId);
-                            BTIF_TRACE_DEBUG("codec id = %x",aptxhd_config.codecId);
-                            BTIF_TRACE_DEBUG("sample rate  = %x",aptxhd_config.sampleRate);
-                            BTIF_TRACE_DEBUG("ch mode  = %x",aptxhd_config.channelMode);
-                            A2D_BldAptx_hdInfo(AVDT_MEDIA_AUDIO,&aptxhd_config,&param[1]);
-
-                            /* For aptxHD BR = (Sampl_Rate * PCM_DEPTH * CHNL)/Compression_Ratio,
-                               derived from classic */
-                            bitrate = ((btif_media_cb.media_feeding.cfg.pcm.sampling_freq * 16 * 2)/4);
-                       }
-                   }
-                }
-            }
-            param[0] = btif_get_latest_playing_device_idx();
-            i = param[1] + 2; //LOSC
-            param[i++] = (UINT8)(btif_media_cb.TxAaMtuSize & 0x00FF);
-            param[i++] = (UINT8)(((btif_media_cb.TxAaMtuSize & 0xFF00) >> 8) & 0x00FF);
-            param[i++] = (UINT8)(bitrate & 0x00FF);
-            param[i++] = (UINT8)(((bitrate & 0xFF00) >> 8) & 0x00FF);
-            param[i++] = (UINT8)(((bitrate & 0xFF0000) >> 16) & 0x00FF);
-            param[i++] = (UINT8)(((bitrate & 0xFF000000) >> 24) & 0x00FF);
-            UIPC_Send(UIPC_CH_ID_AV_CTRL, 0, &i, 1);
-            UIPC_Send(UIPC_CH_ID_AV_CTRL, 0, (UINT8 *)&param, i);
-            break;
-        }
-
-        case A2DP_CTRL_GET_MULTICAST_STATUS:
-        {
-            uint8_t playing_devices = (uint8_t)btif_av_get_num_playing_devices();
-            BOOLEAN multicast_state = btif_av_get_multicast_state();
-            a2dp_cmd_acknowledge(A2DP_CTRL_ACK_SUCCESS);
-            multicast_query = FALSE;
-            if ((btif_max_av_clients > 1 && playing_devices == btif_max_av_clients) &&
-                multicast_state)
-            {
-                multicast_query = TRUE;
-            }
-            BTIF_TRACE_ERROR("multicast status = %d",multicast_query);
-            UIPC_Send(UIPC_CH_ID_AV_CTRL, 0, &multicast_query, 1);
-            UIPC_Send(UIPC_CH_ID_AV_CTRL, 0, &playing_devices, 1);
-
-            break;
-        }
-        case A2DP_CTRL_CMD_OFFLOAD_SUPPORTED:
-            BTIF_TRACE_ERROR("Split A2DP supported");
-            bt_split_a2dp_enabled = TRUE;
-            a2dp_cmd_acknowledge(A2DP_CTRL_ACK_SUCCESS);
-            break;
-        case A2DP_CTRL_CMD_OFFLOAD_NOT_SUPPORTED:
-            BTIF_TRACE_ERROR("Split A2DP not supported");
-            bt_split_a2dp_enabled = FALSE; //Change to FALSE later
-            a2dp_cmd_acknowledge(A2DP_CTRL_ACK_SUCCESS);
-            break;
-        case A2DP_CTRL_GET_CONNECTION_STATUS:
-            if (btif_av_is_connected())
-            {
-                BTIF_TRACE_DEBUG("got valid connection");
-                a2dp_cmd_acknowledge(A2DP_CTRL_ACK_SUCCESS);
-            }
-            else
-                a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
-            break;
         default:
             APPL_TRACE_ERROR("UNSUPPORTED CMD (%d)", cmd);
             a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
@@ -1138,7 +667,7 @@ static void btif_a2dp_ctrl_cb(tUIPC_CH_ID ch_id, tUIPC_EVENT event)
 
     APPL_TRACE_IMP("A2DP-CTRL-CHANNEL EVENT %s", dump_uipc_event(event));
 
-    switch (event)
+    switch(event)
     {
         case UIPC_OPEN_EVT:
             /* fetch av statemachine handle */
@@ -1167,7 +696,7 @@ static void btif_a2dp_data_cb(tUIPC_CH_ID ch_id, tUIPC_EVENT event)
 
     APPL_TRACE_DEBUG("BTIF MEDIA (A2DP-DATA) EVENT %s", dump_uipc_event(event));
 
-    switch (event)
+    switch(event)
     {
         case UIPC_OPEN_EVT:
 
@@ -1178,9 +707,11 @@ static void btif_a2dp_data_cb(tUIPC_CH_ID ch_id, tUIPC_EVENT event)
                        (void *)A2DP_DATA_READ_POLL_MS);
 
             if (btif_media_cb.peer_sep == AVDT_TSEP_SNK) {
+                /* Start the media task to encode SBC */
+                btif_media_task_start_aa_req();
+
                 /* make sure we update any changed sbc encoder params */
-                /*post a message to btif_av to serialize encode update and encode init*/
-                btif_dispatch_sm_event(BTIF_AV_UPDATE_ENCODER_REQ_EVT, NULL, 0);
+                btif_a2dp_encoder_update();
             }
             btif_media_cb.data_channel_open = TRUE;
 
@@ -1199,45 +730,6 @@ static void btif_a2dp_data_cb(tUIPC_CH_ID ch_id, tUIPC_EVENT event)
     }
 }
 
-static BOOLEAN btif_media_task_is_aptx_configured()
-{
-    BOOLEAN result = FALSE;
-    UINT8 codectype = bta_av_co_get_current_codec();
-
-    if (codectype == A2D_NON_A2DP_MEDIA_CT) {
-        UINT8* ptr = bta_av_co_get_current_codecInfo();
-        if (ptr) {
-            tA2D_APTX_CIE* codecInfo = (tA2D_APTX_CIE*) &ptr[BTA_AV_CFG_START_IDX];
-            /* Fix for below Klockwork Issue
-             * Pointer 'codecInfo' checked for NULL at line 1089 may be dereferenced at line 1092.*/
-            if ((codecInfo && codecInfo->vendorId == A2D_APTX_VENDOR_ID && codecInfo->codecId == A2D_APTX_CODEC_ID_BLUETOOTH)
-                || (codecInfo && codecInfo->vendorId == A2D_APTX_HD_VENDOR_ID && codecInfo->codecId == A2D_APTX_HD_CODEC_ID_BLUETOOTH)) {
-                APPL_TRACE_DEBUG("%s codecId %d", __func__, codecInfo->codecId);
-                APPL_TRACE_DEBUG("%s vendorId %x", __func__, codecInfo->vendorId);
-                result = TRUE;
-            }
-        }
-    }
-    return result;
-}
-
-A2D_AptXCodecType btif_media_task_get_aptX_codec_type()
-{
-    A2D_AptXCodecType codec = APTX_CODEC_NONE;
-    UINT8 a2dp_codectype = bta_av_co_get_current_codec();
-
-    if (a2dp_codectype == A2D_NON_A2DP_MEDIA_CT) {
-        UINT8* ptr = bta_av_co_get_current_codecInfo();
-        if (ptr) {
-            tA2D_APTX_CIE* codecInfo = (tA2D_APTX_CIE*) &ptr[BTA_AV_CFG_START_IDX];
-            if (codecInfo && codecInfo->vendorId == A2D_APTX_VENDOR_ID && codecInfo->codecId == A2D_APTX_CODEC_ID_BLUETOOTH)
-                codec = APTX_CODEC;
-            else if (codecInfo && codecInfo->vendorId == A2D_APTX_HD_VENDOR_ID && codecInfo->codecId == A2D_APTX_HD_CODEC_ID_BLUETOOTH)
-                codec = APTX_HD_CODEC;
-        }
-    }
-    return codec;
-}
 
 /*****************************************************************************
  **  BTIF ADAPTATION
@@ -1245,7 +737,7 @@ A2D_AptXCodecType btif_media_task_get_aptX_codec_type()
 
 static UINT16 btif_media_task_get_sbc_rate(void)
 {
-    UINT16 rate = BTIF_A2DP_DEFAULT_BITRATE;
+    UINT16 rate = DEFAULT_SBC_BITRATE;
 
     /* restrict bitrate if a2dp link is non-edr */
     if (!btif_av_is_peer_edr())
@@ -1257,15 +749,12 @@ static UINT16 btif_media_task_get_sbc_rate(void)
     return rate;
 }
 
-static void btif_a2dp_encoder_init(tBTA_AV_HNDL hdl)
+static void btif_a2dp_encoder_init(void)
 {
     UINT16 minmtu;
     tBTIF_MEDIA_INIT_AUDIO msg;
     tA2D_SBC_CIE sbc_config;
-    tA2D_APTX_CIE* codecInfo = 0;
-#if defined(AAC_ENCODER_INCLUDED) && (AAC_ENCODER_INCLUDED == TRUE)
-    tA2D_AAC_CIE aac_config;
-#endif
+
     /* lookup table for converting channel mode */
     UINT16 codec_mode_tbl[5] = { SBC_JOINT_STEREO, SBC_STEREO, SBC_DUAL, 0, SBC_MONO };
 
@@ -1277,92 +766,14 @@ static void btif_a2dp_encoder_init(tBTA_AV_HNDL hdl)
 
     APPL_TRACE_DEBUG("btif_a2dp_encoder_init");
 
-    btif_media_cb.aptxEncoderParams.encoder = 0;
-
-    memset(&msg, 0, sizeof(msg));
-#if (BTA_AV_CO_CP_SCMS_T == TRUE)
-    ALOGI("%s SCMS_T ENABLED", __func__);
-#else
-    ALOGI("%s SCMS_T DISABLED", __func__);
-#endif
-
-    UINT8 codectype;
-    codectype = bta_av_select_codec(hdl);
-    if (A2D_NON_A2DP_MEDIA_CT == codectype) {
-        UINT8* ptr = bta_av_co_get_current_codecInfo();
-        if (ptr) {
-           //tA2D_APTX_CIE starts on 4th byte
-            codecInfo = (tA2D_APTX_CIE*) &ptr[BTA_AV_CFG_START_IDX];
-            APPL_TRACE_DEBUG("%s codecId = %d", __func__, codecInfo->codecId);
-            APPL_TRACE_DEBUG("%s vendorId = %x", __func__, codecInfo->vendorId);
-
-            if (codecInfo && codecInfo->vendorId == A2D_APTX_VENDOR_ID
-                    && codecInfo->codecId == A2D_APTX_CODEC_ID_BLUETOOTH)
-            {
-                btif_media_cb.offset = BTIF_MEDIA_AA_APTX_OFFSET;
-                tA2D_APTX_CIE aptx_config;
-                ALOGI("%s Selected Codec aptX", __func__);
-                aptx_config.vendorId = codecInfo->vendorId;
-                aptx_config.codecId = codecInfo->codecId;
-                bta_av_co_audio_get_codec_config((UINT8*)&aptx_config, &minmtu, A2D_NON_A2DP_MEDIA_CT);
-                msg.CodecType = A2D_NON_A2DP_MEDIA_CT;
-                msg.SamplingFreq = aptx_config.sampleRate;
-                msg.MtuSize = minmtu;
-                msg.ChannelMode = aptx_config.channelMode;
-                msg.BluetoothVendorID = aptx_config.vendorId;
-                msg.BluetoothCodecID = aptx_config.codecId;
-                btif_media_task_enc_init_req(&msg);
-                return;
-            }
-
-            if (codecInfo && codecInfo->vendorId == A2D_APTX_HD_VENDOR_ID
-                && codecInfo->codecId == A2D_APTX_HD_CODEC_ID_BLUETOOTH)
-            {
-                btif_media_cb.offset = BTIF_MEDIA_AA_APTX_HD_OFFSET;
-                tA2D_APTX_HD_CIE aptx_hd_config;
-                ALOGI("%s Selected Codec aptX HD", __func__);
-                aptx_hd_config.vendorId = codecInfo->vendorId;
-                aptx_hd_config.codecId = codecInfo->codecId;
-                bta_av_co_audio_get_codec_config((UINT8*)&aptx_hd_config, &minmtu, A2D_NON_A2DP_MEDIA_CT);
-                msg.CodecType = A2D_NON_A2DP_MEDIA_CT;
-                msg.SamplingFreq = aptx_hd_config.sampleRate;
-                msg.MtuSize = minmtu;
-                msg.ChannelMode = aptx_hd_config.channelMode;
-                msg.BluetoothVendorID = aptx_hd_config.vendorId;
-                msg.BluetoothCodecID = aptx_hd_config.codecId;
-                btif_media_task_enc_init_req(&msg);
-                return;
-            }
-        }
-    }/* if ( A2D_NON_A2DP_MEDIA_CT == codectype) */
-
-
-#if defined(AAC_ENCODER_INCLUDED) && (AAC_ENCODER_INCLUDED == TRUE)
-    if (BTIF_AV_CODEC_M24 == codectype) {
-        ALOGI("%s Selected Codec AAC", __func__);
-        bta_av_co_audio_get_codec_config ((UINT8*)&aac_config, &minmtu, BTIF_AV_CODEC_M24);
-        msg.ObjectType = aac_config.object_type;
-        msg.ChannelMode = (aac_config.channels == A2D_AAC_IE_CHANNELS_2) ? SBC_STEREO : SBC_MONO;
-        msg.SamplingFreq =  freq_block_tbl[aac_config.samp_freq >> 5];
-        msg.MtuSize = minmtu;
-        msg.CodecType = BTIF_AV_CODEC_M24;
-        msg.bit_rate = aac_config.bit_rate;
-        btif_media_task_enc_init_req(&msg);
-        return;
-    }
-#endif
-
-    ALOGI("%s Selected Codec SBC", __func__);
-
     /* Retrieve the current SBC configuration (default if currently not used) */
-    bta_av_co_audio_get_codec_config((UINT8*)&sbc_config, &minmtu, BTIF_AV_CODEC_SBC);
+    bta_av_co_audio_get_sbc_config(&sbc_config, &minmtu);
     msg.NumOfSubBands = (sbc_config.num_subbands == A2D_SBC_IE_SUBBAND_4) ? 4 : 8;
     msg.NumOfBlocks = codec_block_tbl[sbc_config.block_len >> 5];
     msg.AllocationMethod = (sbc_config.alloc_mthd == A2D_SBC_IE_ALLOC_MD_L) ? SBC_LOUDNESS : SBC_SNR;
     msg.ChannelMode = codec_mode_tbl[sbc_config.ch_mode >> 1];
     msg.SamplingFreq = freq_block_tbl[sbc_config.samp_freq >> 5];
     msg.MtuSize = minmtu;
-    msg.CodecType = BTIF_AV_CODEC_SBC;
 
     APPL_TRACE_EVENT("msg.ChannelMode %x", msg.ChannelMode);
 
@@ -1372,128 +783,64 @@ static void btif_a2dp_encoder_init(tBTA_AV_HNDL hdl)
 
 static void btif_a2dp_encoder_update(void)
 {
-    UINT16 minmtu = 0;
+    UINT16 minmtu;
     tA2D_SBC_CIE sbc_config;
-#if defined(AAC_ENCODER_INCLUDED) && (AAC_ENCODER_INCLUDED == TRUE)
-    tA2D_AAC_CIE aac_config;
-#endif
     tBTIF_MEDIA_UPDATE_AUDIO msg;
     UINT8 pref_min;
     UINT8 pref_max;
-    tA2D_APTX_CIE* codecInfo = 0;
 
     APPL_TRACE_DEBUG("btif_a2dp_encoder_update");
-    btif_media_cb.tx_enc_update_initiated = TRUE;
 
-    UINT8 codectype = 0;
-    codectype = bta_av_co_get_current_codec();
-    if (codectype == A2D_NON_A2DP_MEDIA_CT)
+    /* Retrieve the current SBC configuration (default if currently not used) */
+    bta_av_co_audio_get_sbc_config(&sbc_config, &minmtu);
+
+    APPL_TRACE_DEBUG("btif_a2dp_encoder_update: Common min_bitpool:%d(0x%x) max_bitpool:%d(0x%x)",
+            sbc_config.min_bitpool, sbc_config.min_bitpool,
+            sbc_config.max_bitpool, sbc_config.max_bitpool);
+
+    if (sbc_config.min_bitpool > sbc_config.max_bitpool)
     {
-        UINT8* ptr = bta_av_co_get_current_codecInfo();
-        if (ptr)
-        {
-            codecInfo = (tA2D_APTX_CIE*) &ptr[BTA_AV_CFG_START_IDX];
-            if (codecInfo && codecInfo->vendorId == A2D_APTX_VENDOR_ID && codecInfo->codecId == A2D_APTX_CODEC_ID_BLUETOOTH)
-            {
-                APPL_TRACE_DEBUG("%s aptX", __func__);
-                tA2D_APTX_CIE aptx_config;
-                aptx_config.vendorId = codecInfo->vendorId;
-                aptx_config.codecId = codecInfo->codecId;
-                bta_av_co_audio_get_codec_config((UINT8*)&aptx_config, &minmtu, A2D_NON_A2DP_MEDIA_CT );
-                msg.CodecType = A2D_NON_A2DP_MEDIA_CT;
-                msg.BluetoothVendorID = aptx_config.vendorId;
-                msg.BluetoothCodecID = aptx_config.codecId;
-            }
-
-            if (codecInfo && codecInfo->vendorId == A2D_APTX_HD_VENDOR_ID && codecInfo->codecId == A2D_APTX_HD_CODEC_ID_BLUETOOTH)
-            {
-                APPL_TRACE_DEBUG("%s aptX HD", __func__);
-                tA2D_APTX_HD_CIE aptx_hd_config;
-                aptx_hd_config.vendorId = codecInfo->vendorId;
-                aptx_hd_config.codecId = codecInfo->codecId;
-                bta_av_co_audio_get_codec_config((UINT8*)&aptx_hd_config, &minmtu, A2D_NON_A2DP_MEDIA_CT );
-                msg.CodecType = A2D_NON_A2DP_MEDIA_CT;
-                msg.BluetoothVendorID = aptx_hd_config.vendorId;
-                msg.BluetoothCodecID = aptx_hd_config.codecId;
-            }
-        } /* if (ptr) */
+        APPL_TRACE_ERROR("btif_a2dp_encoder_update: ERROR btif_a2dp_encoder_update min_bitpool > max_bitpool");
     }
-#if defined(AAC_ENCODER_INCLUDED) && (AAC_ENCODER_INCLUDED == TRUE)
-    else if (codectype == BTIF_AV_CODEC_M24) {
-        bta_av_co_audio_get_aac_config(&aac_config, &minmtu);
 
-        APPL_TRACE_DEBUG("btif_a2dp_encoder_update: AAC object_type :%d channels :%d",
-                aac_config.object_type, aac_config.channels);
-        msg.CodecType = BTIF_AV_CODEC_M24;
+    /* check if remote sink has a preferred bitpool range */
+    if (bta_av_co_get_remote_bitpool_pref(&pref_min, &pref_max) == TRUE)
+    {
+        /* adjust our preferred bitpool with the remote preference if within
+           our capable range */
+
+        if (pref_min < sbc_config.min_bitpool)
+            pref_min = sbc_config.min_bitpool;
+
+        if (pref_max > sbc_config.max_bitpool)
+            pref_max = sbc_config.max_bitpool;
+
+        msg.MinBitPool = pref_min;
+        msg.MaxBitPool = pref_max;
+
+        if ((pref_min != sbc_config.min_bitpool) || (pref_max != sbc_config.max_bitpool))
+        {
+            APPL_TRACE_EVENT("## adjusted our bitpool range to peer pref [%d:%d] ##",
+                pref_min, pref_max);
+        }
     }
-#endif
-    else {
-
-        /* Retrieve the current SBC configuration (default if currently not used) */
-        bta_av_co_audio_get_sbc_config(&sbc_config, &minmtu);
-
-        APPL_TRACE_DEBUG("btif_a2dp_encoder_update: Common min_bitpool:%d(0x%x) max_bitpool:%d(0x%x)",
-                sbc_config.min_bitpool, sbc_config.min_bitpool,
-                sbc_config.max_bitpool, sbc_config.max_bitpool);
-
-        if (sbc_config.min_bitpool > sbc_config.max_bitpool)
-        {
-            APPL_TRACE_ERROR("btif_a2dp_encoder_update: ERROR btif_a2dp_encoder_update min_bitpool > max_bitpool");
-        }
-
-        /* check if remote sink has a preferred bitpool range */
-        if (bta_av_co_get_remote_bitpool_pref(&pref_min, &pref_max) == TRUE)
-        {
-            /* adjust our preferred bitpool with the remote preference if within
-               our capable range */
-
-            if (pref_min < sbc_config.min_bitpool)
-                pref_min = sbc_config.min_bitpool;
-
-            if ((pref_max > sbc_config.max_bitpool) || (pref_max == 0))
-                pref_max = sbc_config.max_bitpool;
-
-            msg.MinBitPool = pref_min;
-            msg.MaxBitPool = pref_max;
-
-            if ((pref_min != sbc_config.min_bitpool) || (pref_max != sbc_config.max_bitpool))
-            {
-                APPL_TRACE_EVENT("## adjusted our bitpool range to peer pref [%d:%d] ##",
-                    pref_min, pref_max);
-            }
-        }
-        else
-        {
-            msg.MinBitPool = sbc_config.min_bitpool;
-            msg.MaxBitPool = sbc_config.max_bitpool;
-        }
-
-        msg.CodecType = BTIF_AV_CODEC_SBC;
-
-        if (bt_split_a2dp_enabled)
-        {
-            btif_media_cb.max_bitpool = msg.MaxBitPool;
-            btif_media_cb.min_bitpool = msg.MinBitPool;
-            APPL_TRACE_DEBUG("Updated min_bitpool: 0x%x max_bitpool: 0x%x",
-                btif_media_cb.min_bitpool, btif_media_cb.max_bitpool);
-        }
+    else
+    {
+        msg.MinBitPool = sbc_config.min_bitpool;
+        msg.MaxBitPool = sbc_config.max_bitpool;
     }
 
     msg.MinMtuSize = minmtu;
 
+#ifdef BTA_AV_SPLIT_A2DP_ENABLED
+        btif_media_cb.max_bitpool = msg.MaxBitPool;
+        btif_media_cb.min_bitpool = msg.MinBitPool;
+        APPL_TRACE_DEBUG("Updated min_bitpool: 0x%x max_bitpool: 0x%x",
+            btif_media_cb.min_bitpool, btif_media_cb.max_bitpool);
+#endif
+
     /* Update the media task to encode SBC properly */
     btif_media_task_enc_update_req(&msg);
-}
-
-bool btif_a2dp_is_media_task_stopped(void)
-{
-    if (media_task_running != MEDIA_TASK_STATE_OFF)
-    {
-        APPL_TRACE_ERROR("btif_a2dp_is_media_task_stopped: %d",
-                                            media_task_running);
-        return false;
-    }
-    return true;
 }
 
 bool btif_a2dp_start_media_task(void)
@@ -1511,7 +858,7 @@ bool btif_a2dp_start_media_task(void)
         goto error_exit;
 
     /* start a2dp media task */
-    worker_thread = thread_new_sized("media_worker", MAX_MEDIA_WORKQUEUE_SEM_COUNT);
+    worker_thread = thread_new("media_worker");
     if (worker_thread == NULL)
         goto error_exit;
 
@@ -1521,6 +868,9 @@ bool btif_a2dp_start_media_task(void)
         NULL);
 
     thread_post(worker_thread, btif_media_thread_init, NULL);
+
+    btif_media_cb.is_tx_timer = FALSE;
+
     APPL_TRACE_IMP("## A2DP MEDIA THREAD STARTED ##");
 
     return true;
@@ -1532,27 +882,12 @@ bool btif_a2dp_start_media_task(void)
 
 void btif_a2dp_stop_media_task(void)
 {
-    APPL_TRACE_DEBUG("## A2DP STOP MEDIA THREAD ##");
-    if (media_task_running != MEDIA_TASK_STATE_ON)
-    {
-        APPL_TRACE_ERROR("warning: media task cleanup state: %d",
-                                        media_task_running);
-        return;
-    }
-    /* make sure no channels are restarted while shutting down */
-    media_task_running = MEDIA_TASK_STATE_SHUTTING_DOWN;
-
-    // remove aptX thread
-    if (A2d_aptx_thread)
-    {
-        A2D_aptx_sched_stop();
-        thread_free(A2d_aptx_thread);
-        A2d_aptx_thread = NULL;
-    }
+    APPL_TRACE_IMP("## A2DP STOP MEDIA THREAD ##");
 
     // Stop timer
     alarm_free(btif_media_cb.media_alarm);
     btif_media_cb.media_alarm = NULL;
+    btif_media_cb.is_tx_timer = FALSE;
 
     // Exit thread
     fixed_queue_free(btif_media_cmd_msg_queue, NULL);
@@ -1561,7 +896,6 @@ void btif_a2dp_stop_media_task(void)
 
     worker_thread = NULL;
     btif_media_cmd_msg_queue = NULL;
-    APPL_TRACE_DEBUG("## A2DP MEDIA THREAD STOPPED ##");
 }
 
 /*****************************************************************************
@@ -1576,10 +910,7 @@ void btif_a2dp_stop_media_task(void)
 
 void btif_a2dp_on_init(void)
 {
-#ifdef USE_AUDIO_TRACK
-    btif_media_cb.rx_audio_focus_state = BTIF_MEDIA_FOCUS_NOT_GRANTED;
-    btif_media_cb.audio_track = NULL;
-#endif
+    //tput_mon(1, 0, 1);
 }
 
 
@@ -1587,43 +918,38 @@ void btif_a2dp_on_init(void)
 **
 ** Function        btif_a2dp_setup_codec
 **
-** Description
+** Description     does codec setup
 **
-** Returns
+** Returns        tBTIF_STATUS
 **
 *******************************************************************************/
 
-tBTIF_STATUS btif_a2dp_setup_codec(tBTA_AV_HNDL hdl)
+tBTIF_STATUS btif_a2dp_setup_codec(void)
 {
     tBTIF_AV_MEDIA_FEEDINGS media_feeding;
     tBTIF_STATUS status;
 
     APPL_TRACE_EVENT("## A2DP SETUP CODEC ##");
 
-    mutex_global_lock();
+    GKI_disable();
 
-
-#ifdef BTA_AV_SPLIT_A2DP_DEF_FREQ_48KHZ
-    /* for now hardcode 48 khz 16 bit stereo PCM format */
+#if defined(SAMPLE_RATE_48K) || defined (BTA_AV_SPLIT_A2DP_DEF_FREQ_48KHZ)
+    /* for now hardcode 44/48 khz 16 bit stereo */
     media_feeding.cfg.pcm.sampling_freq = 48000;
 #else
-    /* for now hardcode 44.1 khz 32 bit stereo PCM format */
-    media_feeding.cfg.pcm.sampling_freq = BTIF_A2DP_SRC_SAMPLING_RATE;
+    /* for now hardcode 44.1 khz 16 bit stereo PCM format */
+    media_feeding.cfg.pcm.sampling_freq = 44100;
 #endif
-    media_feeding.cfg.pcm.bit_per_sample = BTIF_A2DP_SRC_BIT_DEPTH;
-    media_feeding.cfg.pcm.num_channel = BTIF_A2DP_SRC_NUM_CHANNELS;
+    media_feeding.cfg.pcm.bit_per_sample = 16;
+    media_feeding.cfg.pcm.num_channel = 2;
     media_feeding.format = BTIF_AV_CODEC_PCM;
-
-    /* 32 bits for AUDIO_FORMAT_PCM_8_24_BIT, all codecs affected. */
-    APPL_TRACE_EVENT("%s bit_per_sample %d", __func__, media_feeding.cfg.pcm.bit_per_sample);
-    APPL_TRACE_EVENT("%s sampling_freq %d", __func__, media_feeding.cfg.pcm.sampling_freq);
 
     if (bta_av_co_audio_set_codec(&media_feeding, &status))
     {
         tBTIF_MEDIA_INIT_AUDIO_FEEDING mfeed;
 
         /* Init the encoding task */
-        btif_a2dp_encoder_init(hdl);
+        btif_a2dp_encoder_init();
 
         /* Build the media task configuration */
         mfeed.feeding = media_feeding;
@@ -1635,29 +961,8 @@ tBTIF_STATUS btif_a2dp_setup_codec(tBTA_AV_HNDL hdl)
     {
         status = BTIF_ERROR_SRV_AV_FEEDING_NOT_SUPPORTED;
     }
-
-    mutex_global_unlock();
-        return status;
-}
-
-
-/*****************************************************************************
-**
-** Function        btif_a2dp_update_codec
-**
-** Description
-**
-** Returns
-**
-*******************************************************************************/
-
-void btif_a2dp_update_codec(void)
-{
-    APPL_TRACE_DEBUG("## A2DP UPDATE CODEC ##");
-    mutex_global_lock();
-    btif_media_task_start_aa_req();
-    btif_a2dp_encoder_update();
-    mutex_global_unlock();
+    GKI_enable();
+    return status;
 }
 
 
@@ -1673,14 +978,15 @@ void btif_a2dp_update_codec(void)
 
 void btif_a2dp_on_idle(void)
 {
-    APPL_TRACE_IMP("## ON A2DP IDLE ## peer_sep = %d", btif_media_cb.peer_sep);
+    APPL_TRACE_IMP("## ON A2DP IDLE ##");
     if (btif_media_cb.peer_sep == AVDT_TSEP_SNK)
     {
         /* Make sure media task is stopped */
         btif_media_task_stop_aa_req();
     }
-    if (bt_split_a2dp_enabled)
-        btif_media_send_reset_vendor_state();
+#ifdef BTA_AV_SPLIT_A2DP_ENABLED
+    btif_media_send_reset_vendor_state();
+#endif
 
     bta_av_co_init();
 #if (BTA_AV_SINK_INCLUDED == TRUE)
@@ -1690,6 +996,9 @@ void btif_a2dp_on_idle(void)
         btif_media_task_aa_rx_flush_req();
         btif_media_task_aa_handle_stop_decoding();
         btif_media_task_clear_track();
+#ifdef USE_AUDIO_TRACK
+        btif_media_cb.rx_audio_focus_state = BTIF_MEDIA_FOCUS_IDLE;
+#endif
         APPL_TRACE_DEBUG("Stopped BT track");
     }
 #endif
@@ -1709,9 +1018,10 @@ void btif_a2dp_on_open(void)
 {
     APPL_TRACE_IMP("## ON A2DP OPEN ##");
 
+#ifndef BTA_AV_SPLIT_A2DP_ENABLED
     /* always use callback to notify socket events */
-    if (!bt_split_a2dp_enabled)
-        UIPC_Open(UIPC_CH_ID_AV_AUDIO, btif_a2dp_data_cb);
+    UIPC_Open(UIPC_CH_ID_AV_AUDIO, btif_a2dp_data_cb);
+#endif
 }
 
 /*******************************************************************************
@@ -1725,12 +1035,17 @@ void btif_a2dp_on_open(void)
  *******************************************************************************/
 BOOLEAN btif_media_task_clear_track(void)
 {
-    BT_HDR *p_buf = (BT_HDR *)osi_malloc(sizeof(BT_HDR));
+    BT_HDR *p_buf;
+
+    if (NULL == (p_buf = GKI_getbuf(sizeof(BT_HDR))))
+    {
+        return FALSE;
+    }
 
     p_buf->event = BTIF_MEDIA_AUDIO_SINK_CLEAR_TRACK;
+
     if (btif_media_cmd_msg_queue != NULL)
         fixed_queue_enqueue(btif_media_cmd_msg_queue, p_buf);
-
     return TRUE;
 }
 
@@ -1746,16 +1061,21 @@ BOOLEAN btif_media_task_clear_track(void)
 
 void btif_reset_decoder(UINT8 *p_av)
 {
-    tBTIF_MEDIA_SINK_CFG_UPDATE *p_buf =
-        osi_malloc(sizeof(tBTIF_MEDIA_SINK_CFG_UPDATE));
-
     APPL_TRACE_EVENT("btif_reset_decoder");
     APPL_TRACE_DEBUG("btif_reset_decoder p_codec_info[%x:%x:%x:%x:%x:%x]",
             p_av[1], p_av[2], p_av[3],
             p_av[4], p_av[5], p_av[6]);
 
+    tBTIF_MEDIA_SINK_CFG_UPDATE *p_buf;
+    if (NULL == (p_buf = GKI_getbuf(sizeof(tBTIF_MEDIA_SINK_CFG_UPDATE))))
+    {
+        APPL_TRACE_EVENT("btif_reset_decoder No Buffer ");
+        return;
+    }
+
     memcpy(p_buf->codec_info,p_av, AVDT_CODEC_SIZE);
     p_buf->hdr.event = BTIF_MEDIA_AUDIO_SINK_CFG_UPDATE;
+
     if (btif_media_cmd_msg_queue != NULL)
         fixed_queue_enqueue(btif_media_cmd_msg_queue, p_buf);
 }
@@ -1770,7 +1090,7 @@ void btif_reset_decoder(UINT8 *p_av)
 **
 *******************************************************************************/
 
-BOOLEAN btif_a2dp_on_started(tBTA_AV_START *p_av, BOOLEAN pending_start, tBTA_AV_HNDL hdl)
+BOOLEAN btif_a2dp_on_started(tBTA_AV_START *p_av, BOOLEAN pending_start)
 {
     BOOLEAN ack = FALSE;
 
@@ -1778,19 +1098,15 @@ BOOLEAN btif_a2dp_on_started(tBTA_AV_START *p_av, BOOLEAN pending_start, tBTA_AV
 
     if (p_av == NULL)
     {
-        if (bt_split_a2dp_enabled)
+#ifdef BTA_AV_SPLIT_A2DP_ENABLED
+        if (btif_media_cb.peer_sep == AVDT_TSEP_SNK)
         {
-            APPL_TRACE_EVENT("## ON A2DP STARTED  split a2dp enabled##");
-            if (btif_media_cb.peer_sep == AVDT_TSEP_SNK)
-            {
-                btif_media_on_start_vendor_command();
-            }
+            btif_media_on_start_vendor_command();
         }
-        else
-        {
-            /* ack back a local start request */
-            a2dp_cmd_acknowledge(A2DP_CTRL_ACK_SUCCESS);
-        }
+#else
+        /* ack back a local start request */
+        a2dp_cmd_acknowledge(A2DP_CTRL_ACK_SUCCESS);
+#endif
         return TRUE;
     }
 
@@ -1801,15 +1117,14 @@ BOOLEAN btif_a2dp_on_started(tBTA_AV_START *p_av, BOOLEAN pending_start, tBTA_AV
             if (p_av->initiator)
             {
                 if (pending_start) {
-                    if (bt_split_a2dp_enabled)
+#ifdef BTA_AV_SPLIT_A2DP_ENABLED
+                    if (btif_media_cb.peer_sep == AVDT_TSEP_SNK)
                     {
-                        if (btif_media_cb.peer_sep == AVDT_TSEP_SNK)
-                        {
-                            btif_media_on_start_vendor_command();
-                        }
+                        btif_media_on_start_vendor_command();
                     }
-                    else
-                        a2dp_cmd_acknowledge(A2DP_CTRL_ACK_SUCCESS);
+#else
+                    a2dp_cmd_acknowledge(A2DP_CTRL_ACK_SUCCESS);
+#endif
                     ack = TRUE;
                 }
             }
@@ -1817,16 +1132,15 @@ BOOLEAN btif_a2dp_on_started(tBTA_AV_START *p_av, BOOLEAN pending_start, tBTA_AV
             {
                 /* we were remotely started,  make sure codec
                    is setup before datapath is started */
-                if (bt_split_a2dp_enabled)
+#ifdef BTA_AV_SPLIT_A2DP_ENABLED
+                if (btif_media_cb.peer_sep == AVDT_TSEP_SNK)
                 {
-                    if (btif_media_cb.peer_sep == AVDT_TSEP_SNK)
-                    {
-                        APPL_TRACE_IMP("Initiate VSC exchange on remote start");
-                        btif_media_on_start_vendor_command();
-                    }
+                    APPL_TRACE_IMP("start VS command exchange on remote start");
+                    btif_media_on_start_vendor_command();
                 }
-                else
-                    btif_a2dp_setup_codec(hdl);
+#else
+                btif_a2dp_setup_codec();
+#endif
             }
 
             /* media task is autostarted upon a2dp audiopath connection */
@@ -1834,8 +1148,6 @@ BOOLEAN btif_a2dp_on_started(tBTA_AV_START *p_av, BOOLEAN pending_start, tBTA_AV
     }
     else if (pending_start)
     {
-        APPL_TRACE_WARNING("%s: A2DP start request failed: status = %d",
-                         __func__, p_av->status);
         a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
         ack = TRUE;
     }
@@ -1890,11 +1202,8 @@ void btif_a2dp_on_stopped(tBTA_AV_SUSPEND *p_av)
         {
             APPL_TRACE_EVENT("AV STOP FAILED (%d)", p_av->status);
 
-            if (p_av->initiator) {
-                APPL_TRACE_WARNING("%s: A2DP stop request failed: status = %d",
-                                   __func__, p_av->status);
+            if (p_av->initiator)
                 a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
-            }
             return;
         }
     }
@@ -1903,8 +1212,9 @@ void btif_a2dp_on_stopped(tBTA_AV_SUSPEND *p_av)
     btif_media_cb.tx_flush = 1;
 
     /* request to stop media task  */
-    if (!bt_split_a2dp_enabled)
-        btif_media_task_aa_tx_flush_req();
+#ifndef BTA_AV_SPLIT_A2DP_ENABLED
+    btif_media_task_aa_tx_flush_req();
+#endif
     btif_media_task_stop_aa_req();
 
     /* once stream is fully stopped we will ack back */
@@ -1938,11 +1248,8 @@ void btif_a2dp_on_suspended(tBTA_AV_SUSPEND *p_av)
     /* check for status failures */
     if (p_av->status != BTA_AV_SUCCESS)
     {
-        if (p_av->initiator == TRUE) {
-            APPL_TRACE_WARNING("%s: A2DP suspend request failed: status = %d",
-                               __func__, p_av->status);
+        if (p_av->initiator == TRUE)
             a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
-        }
     }
 
     /* once stream is fully stopped we will ack back */
@@ -1952,38 +1259,6 @@ void btif_a2dp_on_suspended(tBTA_AV_SUSPEND *p_av)
 
     /* stop timer tick */
     btif_media_task_stop_aa_req();
-}
-
-
-/*****************************************************************************
-**
-** Function        btif_a2dp_on_offload_started
-**
-** Description
-**
-** Returns
-**
-*******************************************************************************/
-void btif_a2dp_on_offload_started(tBTA_AV_STATUS status)
-{
-    tA2DP_CTRL_ACK ack;
-    APPL_TRACE_EVENT("%s status %d", __func__, status);
-
-    switch (status) {
-        case BTA_AV_SUCCESS:
-            ack = A2DP_CTRL_ACK_SUCCESS;
-            break;
-
-        case BTA_AV_FAIL_RESOURCES:
-            APPL_TRACE_ERROR("%s FAILED UNSUPPORTED", __func__);
-            ack = A2DP_CTRL_ACK_UNSUPPORTED;
-            break;
-        default:
-            APPL_TRACE_ERROR("%s FAILED: status = %d", __func__, status);
-            ack = A2DP_CTRL_ACK_FAILURE;
-            break;
-    }
-    a2dp_cmd_acknowledge(ack);
 }
 
 /* when true media task discards any rx frames */
@@ -1999,53 +1274,60 @@ void btif_a2dp_set_tx_flush(BOOLEAN enable)
     APPL_TRACE_EVENT("## DROP TX %d ##", enable);
     btif_media_cb.tx_flush = enable;
 }
-
 #ifdef USE_AUDIO_TRACK
 void btif_a2dp_set_audio_focus_state(btif_media_audio_focus_state state)
 {
-    tBTIF_MEDIA_SINK_FOCUS_UPDATE *p_buf =
-        osi_malloc(sizeof(tBTIF_MEDIA_SINK_FOCUS_UPDATE));
-
-    APPL_TRACE_EVENT("%s", __func__);
+    APPL_TRACE_EVENT("btif_a2dp_set_audio_focus_state");
+    tBTIF_MEDIA_SINK_FOCUS_UPDATE *p_buf;
+    if (NULL == (p_buf = GKI_getbuf(sizeof(tBTIF_MEDIA_SINK_FOCUS_UPDATE))))
+    {
+        APPL_TRACE_EVENT("btif_a2dp_set_audio_focus_state No Buffer ");
+        return;
+    }
 
     p_buf->focus_state = state;
     p_buf->hdr.event = BTIF_MEDIA_AUDIO_SINK_SET_FOCUS_STATE;
     if (btif_media_cmd_msg_queue != NULL)
         fixed_queue_enqueue(btif_media_cmd_msg_queue, p_buf);
 }
-
-void btif_a2dp_set_audio_track_gain(float gain)
-{
-    APPL_TRACE_DEBUG("%s set gain to %f", __func__, gain);
-    BtifAvrcpSetAudioTrackGain(btif_media_cb.audio_track, gain);
-}
 #endif
-
 #if (BTA_AV_SINK_INCLUDED == TRUE)
 static void btif_media_task_avk_handle_timer(UNUSED_ATTR void *context)
 {
+    UINT8 count;
     tBT_SBC_HDR *p_msg;
     int num_sbc_frames;
     int num_frames_to_process;
 
-    if (fixed_queue_is_empty(btif_media_cb.RxSbcQ))
+    count = btif_media_cb.RxSbcQ._count;
+    if (0 == count)
     {
         APPL_TRACE_DEBUG("  QUE  EMPTY ");
     }
     else
     {
 #ifdef USE_AUDIO_TRACK
-        /* Don't Do anything in case of Not granted */
-        if (btif_media_cb.rx_audio_focus_state == BTIF_MEDIA_FOCUS_NOT_GRANTED)
+        switch(btif_media_cb.rx_audio_focus_state)
         {
-            APPL_TRACE_DEBUG("%s skipping frames since focus is not present.", __func__);
-            return;
+            /* Don't Do anything in case of Idle, Requested */
+            case BTIF_MEIDA_FOCUS_REQUESTED:
+            case BTIF_MEDIA_FOCUS_IDLE:
+                return;
+            break;
+            /* In case of Ready, request for focus and wait to move in granted */
+            case BTIF_MEIDA_FOCUS_READY:
+                btif_queue_focus_rquest();
+                btif_media_cb.rx_audio_focus_state = BTIF_MEIDA_FOCUS_REQUESTED;
+                return;
+            break;
+            /* play only in this case */
+            case BTIF_MEIDA_FOCUS_GRANTED:
+            break;
         }
-        /* play only in BTIF_MEDIA_FOCUS_GRANTED case */
 #endif
         if (btif_media_cb.rx_flush == TRUE)
         {
-            btif_media_flush_q(btif_media_cb.RxSbcQ);
+            btif_media_flush_q(&(btif_media_cb.RxSbcQ));
             return;
         }
 
@@ -2054,14 +1336,13 @@ static void btif_media_task_avk_handle_timer(UNUSED_ATTR void *context)
 
         do
         {
-            p_msg = (tBT_SBC_HDR *)fixed_queue_try_peek_first(btif_media_cb.RxSbcQ);
+            p_msg = (tBT_SBC_HDR *)GKI_getfirst(&(btif_media_cb.RxSbcQ));
             if (p_msg == NULL)
                 return;
             num_sbc_frames  = p_msg->num_frames_to_be_processed; /* num of frames in Que Packets */
             APPL_TRACE_DEBUG(" Frames left in topmost packet %d", num_sbc_frames);
             APPL_TRACE_DEBUG(" Remaining frames to process in tick %d", num_frames_to_process);
-            APPL_TRACE_DEBUG(" Num of Packets in Que %d",
-                             fixed_queue_length(btif_media_cb.RxSbcQ));
+            APPL_TRACE_DEBUG(" Num of Packets in Que %d", btif_media_cb.RxSbcQ._count);
 
             if ( num_sbc_frames > num_frames_to_process) /*  Que Packet has more frames*/
             {
@@ -2074,16 +1355,16 @@ static void btif_media_task_avk_handle_timer(UNUSED_ATTR void *context)
             else                                        /*  Que packet has less frames */
             {
                 btif_media_task_handle_inc_media(p_msg);
-                p_msg = (tBT_SBC_HDR *)fixed_queue_try_dequeue(btif_media_cb.RxSbcQ);
+                p_msg = (tBT_SBC_HDR *)GKI_dequeue(&(btif_media_cb.RxSbcQ));
                 if( p_msg == NULL )
                 {
                      APPL_TRACE_ERROR("Insufficient data in que ");
                      break;
                 }
                 num_frames_to_process = num_frames_to_process - p_msg->num_frames_to_be_processed;
-                osi_free(p_msg);
+                GKI_freebuf(p_msg);
             }
-        } while(num_frames_to_process > 0);
+        }while(num_frames_to_process > 0);
 
         APPL_TRACE_DEBUG(" Process Frames - ");
     }
@@ -2094,16 +1375,12 @@ static void btif_media_task_avk_handle_timer(UNUSED_ATTR void *context) {}
 
 static void btif_media_task_aa_handle_timer(UNUSED_ATTR void *context)
 {
-    uint64_t timestamp_us = time_now_us();
-    log_tstamps_us("media task tx timer", timestamp_us);
+    log_tstamps_us("media task tx timer");
 
 #if (BTA_AV_INCLUDED == TRUE)
-    if (alarm_is_scheduled(btif_media_cb.media_alarm))
+    if(btif_media_cb.is_tx_timer == TRUE)
     {
-        btif_media_send_aa_frame(timestamp_us);
-        update_scheduling_stats(&btif_media_cb.stats.tx_queue_enqueue_stats,
-                                timestamp_us,
-                                BTIF_SINK_MEDIA_TIME_TICK_MS * 1000);
+        btif_media_send_aa_frame();
     }
     else
     {
@@ -2116,53 +1393,37 @@ static void btif_media_task_aa_handle_timer(UNUSED_ATTR void *context)
 static void btif_media_task_aa_handle_uipc_rx_rdy(void)
 {
     /* process all the UIPC data */
-    btif_media_aa_prep_2_send(0xFF, time_now_us());
+    btif_media_aa_prep_2_send(0xFF);
 
     /* send it */
-    LOG_VERBOSE(LOG_TAG, "%s calls bta_av_ci_src_data_ready", __func__);
+    LOG_VERBOSE("btif_media_task_aa_handle_uipc_rx_rdy calls bta_av_ci_src_data_ready");
     bta_av_ci_src_data_ready(BTA_AV_CHNL_AUDIO);
 }
 #endif
 
 static void btif_media_thread_init(UNUSED_ATTR void *context) {
-  // Check to make sure the platform has 8 bits/byte since
-  // we're using that in frame size calculations now.
-  assert(CHAR_BIT == 8);
-
   APPL_TRACE_IMP(" btif_media_thread_init");
   memset(&btif_media_cb, 0, sizeof(btif_media_cb));
-
   UIPC_Init(NULL);
 
 #if (BTA_AV_INCLUDED == TRUE)
-  btif_media_cb.TxAaQ = fixed_queue_new(SIZE_MAX);
-  btif_media_cb.RxSbcQ = fixed_queue_new(SIZE_MAX);
   UIPC_Open(UIPC_CH_ID_AV_CTRL , btif_a2dp_ctrl_cb);
 #endif
 
   raise_priority_a2dp(TASK_HIGH_MEDIA);
   media_task_running = MEDIA_TASK_STATE_ON;
-  metrics_log_bluetooth_session_start(CONNECTION_TECHNOLOGY_TYPE_BREDR, 0);
-  APPL_TRACE_DEBUG(" btif_media_thread_init complete");
 }
 
 static void btif_media_thread_cleanup(UNUSED_ATTR void *context) {
   APPL_TRACE_IMP(" btif_media_thread_cleanup");
+  /* make sure no channels are restarted while shutting down */
+  media_task_running = MEDIA_TASK_STATE_SHUTTING_DOWN;
 
   /* this calls blocks until uipc is fully closed */
   UIPC_Close(UIPC_CH_ID_ALL);
 
-#if (BTA_AV_INCLUDED == TRUE)
-  fixed_queue_free(btif_media_cb.TxAaQ, NULL);
-  btif_media_cb.TxAaQ = NULL;
-  fixed_queue_free(btif_media_cb.RxSbcQ, NULL);
-  btif_media_cb.RxSbcQ = NULL;
-#endif
-
   /* Clear media task flag */
   media_task_running = MEDIA_TASK_STATE_OFF;
-  metrics_log_bluetooth_session_end(DISCONNECT_REASON_UNKNOWN, 0);
-  APPL_TRACE_DEBUG(" btif_media_thread_cleanup complete");
 }
 
 /*******************************************************************************
@@ -2176,7 +1437,11 @@ static void btif_media_thread_cleanup(UNUSED_ATTR void *context) {
  *******************************************************************************/
 BOOLEAN btif_media_task_send_cmd_evt(UINT16 Evt)
 {
-    BT_HDR *p_buf = (BT_HDR *)osi_malloc(sizeof(BT_HDR));
+    BT_HDR *p_buf;
+    if (NULL == (p_buf = GKI_getbuf(sizeof(BT_HDR))))
+    {
+        return FALSE;
+    }
 
     p_buf->event = Evt;
 
@@ -2194,11 +1459,11 @@ BOOLEAN btif_media_task_send_cmd_evt(UINT16 Evt)
  ** Returns          void
  **
  *******************************************************************************/
-static void btif_media_flush_q(fixed_queue_t *p_q)
+static void btif_media_flush_q(BUFFER_Q *p_q)
 {
-    while (! fixed_queue_is_empty(p_q))
+    while (!GKI_queue_is_empty(p_q))
     {
-        osi_free(fixed_queue_try_dequeue(p_q));
+        GKI_freebuf(GKI_dequeue(p_q));
     }
 }
 
@@ -2258,87 +1523,31 @@ static void btif_media_thread_handle_cmd(fixed_queue_t *queue, UNUSED_ATTR void 
         btif_media_cb.tx_started = FALSE;
         btif_media_cb.tx_stop_initiated = FALSE;
         btif_media_cb.vs_configs_exchanged = FALSE;
-        btif_media_cb.tx_start_initiated = FALSE;
-        btif_media_cb.tx_enc_update_initiated = FALSE;
         break;
     case BTIF_MEDIA_START_VS_CMD:
-        if (!btif_media_cb.tx_started
-             && (!btif_media_cb.tx_start_initiated || btif_media_cb.tx_enc_update_initiated))
-        {
-            btif_a2dp_encoder_update();
-            btif_media_start_vendor_command();
-        }
-        else
-            APPL_TRACE_IMP("ignore VS start request");
+        btif_a2dp_encoder_update();
+        btif_media_start_vendor_command();
         break;
     case BTIF_MEDIA_STOP_VS_CMD:
-        if (btif_media_cb.tx_started && !btif_media_cb.tx_stop_initiated)
-            btif_media_send_vendor_stop();
-        else if((btif_media_cb.tx_start_initiated || btif_media_cb.tx_enc_update_initiated)
-                && !btif_media_cb.tx_started)
-        {
-            APPL_TRACE_IMP("Suspend Req when VSC exchange in progress,reset VSC");
-            btif_media_send_reset_vendor_state();
-        }
-        else
-            APPL_TRACE_IMP("ignore VS stop request");
+        btif_media_send_vendor_stop();
         break;
     case BTIF_MEDIA_VS_A2DP_START_SUCCESS:
-        btif_media_cb.tx_start_initiated = FALSE;
         btif_media_cb.tx_started = TRUE;
         a2dp_cmd_acknowledge(A2DP_CTRL_ACK_SUCCESS);
-        break;
-    case BTIF_MEDIA_VS_A2DP_START_FAILURE:
-        btif_media_cb.tx_start_initiated = FALSE;
-        a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
-        disconnect_a2dp_on_vendor_start_failure();
         break;
     case BTIF_MEDIA_VS_A2DP_STOP_SUCCESS:
         btif_media_cb.tx_started = FALSE;
         btif_media_cb.tx_stop_initiated = FALSE;
-        /*Reset vendor state after stop success
-          to handle stream started for touch tone
-          to connect to second other device
-        */
-        btif_media_send_reset_vendor_state();
-        if (btif_media_cb.a2dp_cmd_pending == A2DP_CTRL_CMD_SUSPEND ||
-            btif_media_cb.a2dp_cmd_pending == A2DP_CTRL_CMD_STOP)
-        {
-            a2dp_cmd_acknowledge(A2DP_CTRL_ACK_SUCCESS);
-        }
-        else
-        {
-            APPL_TRACE_ERROR("wrong cmd pending");
-            a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
-        }
+        a2dp_cmd_acknowledge(A2DP_CTRL_ACK_SUCCESS);
         break;
     case BTIF_MEDIA_VS_A2DP_STOP_FAILURE:
         btif_media_cb.tx_stop_initiated = FALSE;
         a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
         break;
     case BTIF_MEDIA_VS_A2DP_MEDIA_CHNL_CFG_SUCCESS:
-        //btif_media_send_vendor_pref_bit_rate();
-#if (BTA_AV_CO_CP_SCMS_T == TRUE)
-        btif_media_send_vendor_scmst_hdr();
-#else
-        if (!btif_media_cb.vs_configs_exchanged &&
-              btif_media_cb.tx_start_initiated)
-            btif_media_cb.vs_configs_exchanged = TRUE;
-        else
-        {
-            APPL_TRACE_ERROR("Dont send start,stream suspended")
-            break;
-        }
-        btif_media_send_vendor_start();
-#endif
+        btif_media_send_vendor_pref_bit_rate();
         break;
     case BTIF_MEDIA_VS_A2DP_WRITE_SBC_CFG_SUCCESS:
-        btif_media_send_vendor_media_chn_cfg();
-        break;
-    case BTIF_MEDIA_VS_A2DP_SELECTED_CODEC_SUCCESS:
-        btif_media_send_vendor_transport_cfg();
-        break;
-    case BTIF_MEDIA_VS_A2DP_TRANSPORT_CFG_SUCCESS:
         btif_media_send_vendor_media_chn_cfg();
         break;
     case BTIF_MEDIA_VS_A2DP_PREF_BIT_RATE_SUCCESS:
@@ -2352,14 +1561,8 @@ static void btif_media_thread_handle_cmd(fixed_queue_t *queue, UNUSED_ATTR void 
         break;
 #if (BTA_AV_CO_CP_SCMS_T == TRUE)
     case BTIF_MEDIA_VS_A2DP_SET_SCMST_HDR_SUCCESS:
-        if (!btif_media_cb.vs_configs_exchanged &&
-              btif_media_cb.tx_start_initiated)
+        if (!btif_media_cb.vs_configs_exchanged)
             btif_media_cb.vs_configs_exchanged = TRUE;
-        else
-        {
-            APPL_TRACE_ERROR("Dont send start,stream suspended")
-            break;
-        }
         btif_media_send_vendor_start();
         break;
 #endif
@@ -2368,7 +1571,7 @@ static void btif_media_thread_handle_cmd(fixed_queue_t *queue, UNUSED_ATTR void 
     default:
         APPL_TRACE_ERROR("ERROR in %s unknown event %d", __func__, p_msg->event);
     }
-    osi_free(p_msg);
+    GKI_freebuf(p_msg);
     APPL_TRACE_IMP("%s: %s DONE", __func__, dump_media_event(p_msg->event));
 }
 
@@ -2393,6 +1596,9 @@ static void btif_media_task_handle_inc_media(tBT_SBC_HDR*p_msg)
     UINT32 sbc_frame_len = p_msg->len - 1;
     availPcmBytes = sizeof(pcmData);
 
+#ifdef USE_AUDIO_TRACK
+    int retwriteAudioTrack = 0;
+#endif
     if ((btif_media_cb.peer_sep == AVDT_TSEP_SNK) || (btif_media_cb.rx_flush))
     {
         APPL_TRACE_DEBUG(" State Changed happened in this tick ");
@@ -2402,12 +1608,11 @@ static void btif_media_task_handle_inc_media(tBT_SBC_HDR*p_msg)
     // ignore data if no one is listening
     if (!btif_media_cb.data_channel_open)
     {
-        APPL_TRACE_ERROR("%s Channel not open, returning", __func__);
+        APPL_TRACE_ERROR(" btif_media_task_handle_inc_media Channel not open, returning");
         return;
     }
 #endif
-    APPL_TRACE_DEBUG("%s Number of sbc frames %d, frame_len %d",
-                     __func__, num_sbc_frames, sbc_frame_len);
+    APPL_TRACE_DEBUG("Number of sbc frames %d, frame_len %d", num_sbc_frames, sbc_frame_len);
 
     for(count = 0; count < num_sbc_frames && sbc_frame_len != 0; count ++)
     {
@@ -2427,11 +1632,11 @@ static void btif_media_task_handle_inc_media(tBT_SBC_HDR*p_msg)
     }
 
 #ifdef USE_AUDIO_TRACK
-    BtifAvrcpAudioTrackWriteData(
-        btif_media_cb.audio_track, (void*)pcmData, (sizeof(pcmData) - availPcmBytes));
+    retwriteAudioTrack = btWriteData((void*)pcmData, (sizeof(pcmData) - availPcmBytes));
 #else
     UIPC_Send(UIPC_CH_ID_AV_AUDIO, 0, (UINT8 *)pcmData, (sizeof(pcmData) - availPcmBytes));
 #endif
+    APPL_TRACE_LATENCY_AUDIO("Written to audio, seq number %d", p_msg->layer_specific);
 }
 #endif
 
@@ -2447,7 +1652,11 @@ static void btif_media_task_handle_inc_media(tBT_SBC_HDR*p_msg)
  *******************************************************************************/
 BOOLEAN btif_media_task_enc_init_req(tBTIF_MEDIA_INIT_AUDIO *p_msg)
 {
-    tBTIF_MEDIA_INIT_AUDIO *p_buf = osi_malloc(sizeof(tBTIF_MEDIA_INIT_AUDIO));
+    tBTIF_MEDIA_INIT_AUDIO *p_buf;
+    if (NULL == (p_buf = GKI_getbuf(sizeof(tBTIF_MEDIA_INIT_AUDIO))))
+    {
+        return FALSE;
+    }
 
     memcpy(p_buf, p_msg, sizeof(tBTIF_MEDIA_INIT_AUDIO));
     p_buf->hdr.event = BTIF_MEDIA_SBC_ENC_INIT;
@@ -2468,8 +1677,11 @@ BOOLEAN btif_media_task_enc_init_req(tBTIF_MEDIA_INIT_AUDIO *p_msg)
  *******************************************************************************/
 BOOLEAN btif_media_task_enc_update_req(tBTIF_MEDIA_UPDATE_AUDIO *p_msg)
 {
-    tBTIF_MEDIA_UPDATE_AUDIO *p_buf =
-        osi_malloc(sizeof(tBTIF_MEDIA_UPDATE_AUDIO));
+    tBTIF_MEDIA_UPDATE_AUDIO *p_buf;
+    if (NULL == (p_buf = GKI_getbuf(sizeof(tBTIF_MEDIA_UPDATE_AUDIO))))
+    {
+        return FALSE;
+    }
 
     memcpy(p_buf, p_msg, sizeof(tBTIF_MEDIA_UPDATE_AUDIO));
     p_buf->hdr.event = BTIF_MEDIA_SBC_ENC_UPDATE;
@@ -2490,8 +1702,11 @@ BOOLEAN btif_media_task_enc_update_req(tBTIF_MEDIA_UPDATE_AUDIO *p_msg)
  *******************************************************************************/
 BOOLEAN btif_media_task_audio_feeding_init_req(tBTIF_MEDIA_INIT_AUDIO_FEEDING *p_msg)
 {
-    tBTIF_MEDIA_INIT_AUDIO_FEEDING *p_buf =
-        osi_malloc(sizeof(tBTIF_MEDIA_INIT_AUDIO_FEEDING));
+    tBTIF_MEDIA_INIT_AUDIO_FEEDING *p_buf;
+    if (NULL == (p_buf = GKI_getbuf(sizeof(tBTIF_MEDIA_INIT_AUDIO_FEEDING))))
+    {
+        return FALSE;
+    }
 
     memcpy(p_buf, p_msg, sizeof(tBTIF_MEDIA_INIT_AUDIO_FEEDING));
     p_buf->hdr.event = BTIF_MEDIA_AUDIO_FEEDING_INIT;
@@ -2512,21 +1727,17 @@ BOOLEAN btif_media_task_audio_feeding_init_req(tBTIF_MEDIA_INIT_AUDIO_FEEDING *p
  *******************************************************************************/
 BOOLEAN btif_media_task_start_aa_req(void)
 {
-    BT_HDR *p_buf = (BT_HDR *)osi_malloc(sizeof(BT_HDR));
+    BT_HDR *p_buf;
+    if (NULL == (p_buf = GKI_getbuf(sizeof(BT_HDR))))
+    {
+        APPL_TRACE_EVENT("GKI failed");
+        return FALSE;
+    }
 
     p_buf->event = BTIF_MEDIA_START_AA_TX;
 
     if (btif_media_cmd_msg_queue != NULL)
         fixed_queue_enqueue(btif_media_cmd_msg_queue, p_buf);
-
-    memset(&btif_media_cb.stats, 0, sizeof(btif_media_stats_t));
-    // Assign session_start_us to 1 when time_now_us() is 0 to indicate
-    // btif_media_task_start_aa_req() has been called
-    btif_media_cb.stats.session_start_us = time_now_us();
-    if (btif_media_cb.stats.session_start_us == 0) {
-        btif_media_cb.stats.session_start_us = 1;
-    }
-    btif_media_cb.stats.session_end_us = 0;
     return TRUE;
 }
 
@@ -2541,7 +1752,11 @@ BOOLEAN btif_media_task_start_aa_req(void)
  *******************************************************************************/
 BOOLEAN btif_media_task_stop_aa_req(void)
 {
-    BT_HDR *p_buf = (BT_HDR *)osi_malloc(sizeof(BT_HDR));
+    BT_HDR *p_buf;
+    if (NULL == (p_buf = GKI_getbuf(sizeof(BT_HDR))))
+    {
+        return FALSE;
+    }
 
     p_buf->event = BTIF_MEDIA_STOP_AA_TX;
 
@@ -2555,14 +1770,8 @@ BOOLEAN btif_media_task_stop_aa_req(void)
      * the "cleanup() -> btif_a2dp_stop_media_task()" processing during
      * the shutdown of the Bluetooth stack.
      */
-    if (btif_media_cmd_msg_queue != NULL) {
+    if (btif_media_cmd_msg_queue != NULL)
         fixed_queue_enqueue(btif_media_cmd_msg_queue, p_buf);
-    }
-
-    btif_media_cb.stats.session_end_us = time_now_us();
-    btif_update_a2dp_metrics();
-    btif_a2dp_source_accumulate_stats(&btif_media_cb.stats,
-        &btif_media_cb.accumulated_stats);
 
     return TRUE;
 }
@@ -2577,10 +1786,16 @@ BOOLEAN btif_media_task_stop_aa_req(void)
  *******************************************************************************/
 BOOLEAN btif_media_task_aa_rx_flush_req(void)
 {
-    if (fixed_queue_is_empty(btif_media_cb.RxSbcQ)) /*  Que is already empty */
+    BT_HDR *p_buf;
+
+    if (GKI_queue_is_empty(&(btif_media_cb.RxSbcQ))== TRUE) /*  Que is already empty */
         return TRUE;
 
-    BT_HDR *p_buf = (BT_HDR *)osi_malloc(sizeof(BT_HDR));
+    if (NULL == (p_buf = GKI_getbuf(sizeof(BT_HDR))))
+    {
+        return FALSE;
+    }
+
     p_buf->event = BTIF_MEDIA_FLUSH_AA_RX;
 
     if (btif_media_cmd_msg_queue != NULL)
@@ -2599,7 +1814,10 @@ BOOLEAN btif_media_task_aa_rx_flush_req(void)
  *******************************************************************************/
 BOOLEAN btif_media_task_aa_tx_flush_req(void)
 {
-    BT_HDR *p_buf = (BT_HDR *)osi_malloc(sizeof(BT_HDR));
+    BT_HDR *p_buf = GKI_getbuf(sizeof(BT_HDR));
+
+    if (p_buf == NULL)
+        return FALSE;
 
     p_buf->event = BTIF_MEDIA_FLUSH_AA_TX;
 
@@ -2632,7 +1850,7 @@ static void btif_media_task_aa_rx_flush(void)
     /* Flush all enqueued GKI SBC  buffers (encoded) */
     APPL_TRACE_DEBUG("btif_media_task_aa_rx_flush");
 
-    btif_media_flush_q(btif_media_cb.RxSbcQ);
+    btif_media_flush_q(&(btif_media_cb.RxSbcQ));
 }
 
 
@@ -2655,10 +1873,7 @@ static void btif_media_task_aa_tx_flush(BT_HDR *p_msg)
     btif_media_cb.media_feeding_state.pcm.counter = 0;
     btif_media_cb.media_feeding_state.pcm.aa_feed_residue = 0;
 
-    btif_media_cb.stats.tx_queue_total_flushed_messages +=
-        fixed_queue_length(btif_media_cb.TxAaQ);
-    btif_media_cb.stats.tx_queue_last_flushed_us = time_now_us();
-    btif_media_flush_q(btif_media_cb.TxAaQ);
+    btif_media_flush_q(&(btif_media_cb.TxAaQ));
 
     UIPC_Ioctl(UIPC_CH_ID_AV_AUDIO, UIPC_REQ_RX_FLUSH, NULL);
 }
@@ -2680,44 +1895,6 @@ static void btif_media_task_enc_init(BT_HDR *p_msg)
 
     btif_media_cb.timestamp = 0;
 
-    if (pInitAudio->CodecType == A2D_NON_A2DP_MEDIA_CT)
-    {
-        APPL_TRACE_EVENT("%s BluetoothVendorID %x, BluetoothCodecID %d", __func__,
-                     pInitAudio->BluetoothVendorID, pInitAudio->BluetoothCodecID);
-        if ((pInitAudio->BluetoothVendorID == A2D_APTX_VENDOR_ID)
-                && (pInitAudio->BluetoothCodecID == A2D_APTX_CODEC_ID_BLUETOOTH)) {
-            btif_media_cb.aptxEncoderParams.s16SamplingFreq= pInitAudio->SamplingFreq;
-            btif_media_cb.aptxEncoderParams.s16ChannelMode = pInitAudio->ChannelMode;
-            btif_media_cb.aptxEncoderParams.u16PacketLength = 4;    // 32-bit word encoded by aptX encoder
-            btif_media_cb.TxTranscoding = BTIF_MEDIA_TRSCD_PCM_2_APTX;
-            btif_media_cb.TxAaMtuSize = ((BTIF_MEDIA_AA_BUF_SIZE - BTIF_MEDIA_AA_APTX_OFFSET-sizeof(BT_HDR))
-                                             < pInitAudio->MtuSize) ? (BTIF_MEDIA_AA_BUF_SIZE - BTIF_MEDIA_AA_APTX_OFFSET
-                                                                       - sizeof(BT_HDR)) : pInitAudio->MtuSize;
-            return;
-        } else if ((pInitAudio->BluetoothVendorID == A2D_APTX_HD_VENDOR_ID)
-                && (pInitAudio->BluetoothCodecID == A2D_APTX_HD_CODEC_ID_BLUETOOTH)) {
-            btif_media_cb.aptxhdEncoderParams.s16SamplingFreq= pInitAudio->SamplingFreq;
-            btif_media_cb.aptxhdEncoderParams.s16ChannelMode = pInitAudio->ChannelMode;
-            btif_media_cb.aptxhdEncoderParams.u16PacketLength = 6;    // 48-bit word encoded by aptX encoder
-            btif_media_cb.TxTranscoding = BTIF_MEDIA_TRSCD_PCM_2_APTX_HD;
-            btif_media_cb.TxAaMtuSize = ((BTIF_MEDIA_AA_BUF_SIZE - BTIF_MEDIA_AA_APTX_HD_OFFSET-sizeof(BT_HDR))
-                                             < pInitAudio->MtuSize) ? (BTIF_MEDIA_AA_BUF_SIZE - BTIF_MEDIA_AA_APTX_HD_OFFSET
-                                                                       - sizeof(BT_HDR)) : pInitAudio->MtuSize;
-            return;
-        } else {
-            /* do nothing, fall through to SBC */
-        }
-    }
-#if defined(AAC_ENCODER_INCLUDED) && (AAC_ENCODER_INCLUDED == TRUE)
-    else if (pInitAudio->CodecType == BTIF_AV_CODEC_M24) {
-        /*AAC is supported only in split mode, so only update the
-          required MTU size for AAC to send down to FW via VSC*/
-        btif_media_cb.TxAaMtuSize =  ((BTIF_MEDIA_AA_BUF_SIZE-BTIF_MEDIA_AA_AAC_OFFSET-sizeof(BT_HDR))
-            < pInitAudio->MtuSize) ? (BTIF_MEDIA_AA_BUF_SIZE - BTIF_MEDIA_AA_AAC_OFFSET
-            - sizeof(BT_HDR)) : pInitAudio->MtuSize;
-        return;
-    }
-#endif
     /* SBC encoder config (enforced even if not used) */
     btif_media_cb.encoder.s16ChannelMode = pInitAudio->ChannelMode;
     btif_media_cb.encoder.s16NumOfSubBands = pInitAudio->NumOfSubBands;
@@ -2741,15 +1918,12 @@ static void btif_media_task_enc_init(BT_HDR *p_msg)
             btif_media_cb.encoder.s16AllocationMethod, btif_media_cb.encoder.u16BitRate,
             btif_media_cb.encoder.s16SamplingFreq);
 
-    if (!bt_split_a2dp_enabled)
-    {
-        /* Reset entirely the SBC encoder */
-        SBC_Encoder_Init(&(btif_media_cb.encoder));
-
-        btif_media_cb.tx_sbc_frames = calculate_max_frames_per_packet();
-
-        APPL_TRACE_DEBUG("btif_media_task_enc_init bit pool %d", btif_media_cb.encoder.s16BitPool);
-    }
+#ifndef BTA_AV_SPLIT_A2DP_ENABLED
+    /* Reset entirely the SBC encoder */
+    SBC_Encoder_Init(&(btif_media_cb.encoder));
+#endif
+    btif_media_cb.TxNumSBCFrames = check_for_max_number_of_frames_per_packet();
+    APPL_TRACE_DEBUG("btif_media_task_enc_init bit pool %d", btif_media_cb.encoder.s16BitPool);
 }
 
 /*******************************************************************************
@@ -2772,71 +1946,31 @@ static void btif_media_task_enc_update(BT_HDR *p_msg)
     SINT16 s16FrameLen;
     UINT8 protect = 0;
 
-    APPL_TRACE_DEBUG("%s : minmtu %d, maxbp %d minbp %d", __func__,
-                     pUpdateAudio->MinMtuSize, pUpdateAudio->MaxBitPool,
-                     pUpdateAudio->MinBitPool);
+    APPL_TRACE_DEBUG("btif_media_task_enc_update : minmtu %d, maxbp %d minbp %d",
+            pUpdateAudio->MinMtuSize, pUpdateAudio->MaxBitPool, pUpdateAudio->MinBitPool);
 
+    if (!pstrEncParams->s16NumOfSubBands)
+    {
+        APPL_TRACE_ERROR("Error: SubBands are set to 0, resetting to Max");
+        pstrEncParams->s16NumOfSubBands = SBC_MAX_NUM_OF_SUBBANDS;
+    }
+    if (!pstrEncParams->s16NumOfBlocks)
+    {
+        APPL_TRACE_ERROR("Error: Blocks are set to 0, resetting to Max");
+        pstrEncParams->s16NumOfBlocks = SBC_MAX_NUM_OF_BLOCKS;
+    }
+    if (!pstrEncParams->s16NumOfChannels)
+    {
+        APPL_TRACE_ERROR("Error: Channels are set to 0, resetting to Max");
+        pstrEncParams->s16NumOfChannels = SBC_MAX_NUM_OF_CHANNELS;
+    }
     /* Only update the bitrate and MTU size while timer is running to make sure it has been initialized */
-    if (pUpdateAudio->CodecType == A2D_NON_A2DP_MEDIA_CT)
+    //if (btif_media_cb.is_tx_timer)
     {
-        APPL_TRACE_EVENT("%s BluetoothVendorID %x, BluetoothCodecID %d", __func__,
-                     pUpdateAudio->BluetoothVendorID, pUpdateAudio->BluetoothCodecID);
-
-        if ((pUpdateAudio->BluetoothVendorID == A2D_APTX_VENDOR_ID)
-           && (pUpdateAudio->BluetoothCodecID == A2D_APTX_CODEC_ID_BLUETOOTH)) {
-            APPL_TRACE_DEBUG("%s aptX ", __func__);
-            btif_media_cb.TxAaMtuSize = ((BTIF_MEDIA_AA_BUF_SIZE - BTIF_MEDIA_AA_APTX_OFFSET - sizeof(BT_HDR)) < pUpdateAudio->MinMtuSize) ?
-                                                  (BTIF_MEDIA_AA_BUF_SIZE - BTIF_MEDIA_AA_APTX_OFFSET - sizeof(BT_HDR)) : pUpdateAudio->MinMtuSize;
-            APPL_TRACE_DEBUG("%s : aptX btif_media_cb.TxAaMtuSize %d", __func__, btif_media_cb.TxAaMtuSize);
-            return;
-        } else if ((pUpdateAudio->BluetoothVendorID == A2D_APTX_HD_VENDOR_ID)
-            && (pUpdateAudio->BluetoothCodecID == A2D_APTX_HD_CODEC_ID_BLUETOOTH)) {
-            APPL_TRACE_DEBUG("%s aptX HD", __func__);
-            btif_media_cb.TxAaMtuSize = ((BTIF_MEDIA_AA_BUF_SIZE - BTIF_MEDIA_AA_APTX_HD_OFFSET - sizeof(BT_HDR)) < pUpdateAudio->MinMtuSize) ?
-                                                  (BTIF_MEDIA_AA_BUF_SIZE - BTIF_MEDIA_AA_APTX_HD_OFFSET - sizeof(BT_HDR)) : pUpdateAudio->MinMtuSize;
-            return;
-        } else {
-            /* do nothing, fall through to SBC */
-        }
-    }
-#if defined(AAC_ENCODER_INCLUDED) && (AAC_ENCODER_INCLUDED == TRUE)
-    else if (pUpdateAudio->CodecType == BTIF_AV_CODEC_M24) {
-       APPL_TRACE_EVENT("%s AAC" , __func__);
-       btif_media_cb.TxAaMtuSize = ((BTIF_MEDIA_AA_BUF_SIZE -
-                                      BTIF_MEDIA_AA_AAC_OFFSET - sizeof(BT_HDR))
-                < pUpdateAudio->MinMtuSize) ? (BTIF_MEDIA_AA_BUF_SIZE - BTIF_MEDIA_AA_AAC_OFFSET
-                - sizeof(BT_HDR)) : pUpdateAudio->MinMtuSize;
-       return;
-    }
-#endif
-    else
-    {
-        if (!pstrEncParams->s16NumOfSubBands)
-        {
-            APPL_TRACE_WARNING("%s SubBands are set to 0, resetting to max (%d)",
-              __func__, SBC_MAX_NUM_OF_SUBBANDS);
-            pstrEncParams->s16NumOfSubBands = SBC_MAX_NUM_OF_SUBBANDS;
-        }
-
-        if (!pstrEncParams->s16NumOfBlocks)
-        {
-            APPL_TRACE_WARNING("%s Blocks are set to 0, resetting to max (%d)",
-              __func__, SBC_MAX_NUM_OF_BLOCKS);
-            pstrEncParams->s16NumOfBlocks = SBC_MAX_NUM_OF_BLOCKS;
-        }
-
-        if (!pstrEncParams->s16NumOfChannels)
-        {
-            APPL_TRACE_WARNING("%s Channels are set to 0, resetting to max (%d)",
-              __func__, SBC_MAX_NUM_OF_CHANNELS);
-            pstrEncParams->s16NumOfChannels = SBC_MAX_NUM_OF_CHANNELS;
-        }
-
         btif_media_cb.TxAaMtuSize = ((BTIF_MEDIA_AA_BUF_SIZE -
                                       BTIF_MEDIA_AA_SBC_OFFSET - sizeof(BT_HDR))
                 < pUpdateAudio->MinMtuSize) ? (BTIF_MEDIA_AA_BUF_SIZE - BTIF_MEDIA_AA_SBC_OFFSET
                 - sizeof(BT_HDR)) : pUpdateAudio->MinMtuSize;
-
         /* Set the initial target bit rate */
         pstrEncParams->u16BitRate = btif_media_task_get_sbc_rate();
 
@@ -2849,75 +1983,81 @@ static void btif_media_task_enc_update(BT_HDR *p_msg)
         else
             s16SamplingFreq = 48000;
 
-        do {
-            if (pstrEncParams->s16NumOfBlocks == 0 ||
-                pstrEncParams->s16NumOfSubBands == 0 ||
-                pstrEncParams->s16NumOfChannels == 0) {
-                APPL_TRACE_ERROR("%s - Avoiding division by zero...", __func__);
-                APPL_TRACE_ERROR("%s - block=%d, subBands=%d, channels=%d",
-                                 __func__,
-                                 pstrEncParams->s16NumOfBlocks,
-                                 pstrEncParams->s16NumOfSubBands,
-                                 pstrEncParams->s16NumOfChannels);
+        do
+        {
+            if (pstrEncParams->s16NumOfBlocks == 0 || pstrEncParams->s16NumOfSubBands == 0
+                || pstrEncParams->s16NumOfChannels == 0)
+            {
+                APPL_TRACE_ERROR("btif_media_task_enc_update() - Avoiding division by zero...");
+                APPL_TRACE_ERROR("btif_media_task_enc_update() - block=%d, subBands=%d, channels=%d",
+                    pstrEncParams->s16NumOfBlocks, pstrEncParams->s16NumOfSubBands,
+                    pstrEncParams->s16NumOfChannels);
                 break;
             }
 
             if ((pstrEncParams->s16ChannelMode == SBC_JOINT_STEREO) ||
-                (pstrEncParams->s16ChannelMode == SBC_STEREO)) {
-                s16BitPool = (SINT16)((pstrEncParams->u16BitRate *
-                        pstrEncParams->s16NumOfSubBands * 1000 / s16SamplingFreq)
-                        - ((32 + (4 * pstrEncParams->s16NumOfSubBands *
-                        pstrEncParams->s16NumOfChannels)
-                        + ((pstrEncParams->s16ChannelMode - 2) *
-                        pstrEncParams->s16NumOfSubBands))
-                        / pstrEncParams->s16NumOfBlocks));
+                (pstrEncParams->s16ChannelMode == SBC_STEREO) )
+            {
+                s16BitPool = (SINT16)( (pstrEncParams->u16BitRate *
+                    pstrEncParams->s16NumOfSubBands * 1000 / s16SamplingFreq)
+                    -( (32 + (4 * pstrEncParams->s16NumOfSubBands *
+                    pstrEncParams->s16NumOfChannels)
+                    + ( (pstrEncParams->s16ChannelMode - 2) *
+                    pstrEncParams->s16NumOfSubBands )   )
+                    / pstrEncParams->s16NumOfBlocks) );
 
-                s16FrameLen = 4 + (4*pstrEncParams->s16NumOfSubBands *
-                        pstrEncParams->s16NumOfChannels) / 8
-                        + (((pstrEncParams->s16ChannelMode - 2) *
-                        pstrEncParams->s16NumOfSubBands)
-                        + (pstrEncParams->s16NumOfBlocks * s16BitPool)) / 8;
+                s16FrameLen = 4 + (4*pstrEncParams->s16NumOfSubBands*
+                    pstrEncParams->s16NumOfChannels)/8
+                    + ( ((pstrEncParams->s16ChannelMode - 2) *
+                    pstrEncParams->s16NumOfSubBands)
+                    + (pstrEncParams->s16NumOfBlocks * s16BitPool) ) / 8;
 
                 s16BitRate = (8 * s16FrameLen * s16SamplingFreq)
-                        / (pstrEncParams->s16NumOfSubBands *
-                        pstrEncParams->s16NumOfBlocks * 1000);
+                    / (pstrEncParams->s16NumOfSubBands *
+                    pstrEncParams->s16NumOfBlocks * 1000);
 
                 if (s16BitRate > pstrEncParams->u16BitRate)
                     s16BitPool--;
 
-                if (pstrEncParams->s16NumOfSubBands == 8)
+                if(pstrEncParams->s16NumOfSubBands == 8)
                     s16BitPool = (s16BitPool > 255) ? 255 : s16BitPool;
                 else
                     s16BitPool = (s16BitPool > 128) ? 128 : s16BitPool;
-            } else {
-                s16BitPool = (SINT16)(((pstrEncParams->s16NumOfSubBands *
-                        pstrEncParams->u16BitRate * 1000)
-                        / (s16SamplingFreq * pstrEncParams->s16NumOfChannels))
-                        - (((32 / pstrEncParams->s16NumOfChannels) +
-                        (4 * pstrEncParams->s16NumOfSubBands))
-                        / pstrEncParams->s16NumOfBlocks));
+            }
+            else
+            {
+                s16BitPool = (SINT16)( ((pstrEncParams->s16NumOfSubBands *
+                    pstrEncParams->u16BitRate * 1000)
+                    / (s16SamplingFreq * pstrEncParams->s16NumOfChannels))
+                    -( ( (32 / pstrEncParams->s16NumOfChannels) +
+                    (4 * pstrEncParams->s16NumOfSubBands) )
+                    /   pstrEncParams->s16NumOfBlocks ) );
 
-                pstrEncParams->s16BitPool =
-                    (s16BitPool > (16 * pstrEncParams->s16NumOfSubBands)) ?
-                            (16 * pstrEncParams->s16NumOfSubBands) : s16BitPool;
+                pstrEncParams->s16BitPool = (s16BitPool >
+                    (16 * pstrEncParams->s16NumOfSubBands))
+                    ? (16*pstrEncParams->s16NumOfSubBands) : s16BitPool;
             }
 
             if (s16BitPool < 0)
+            {
                 s16BitPool = 0;
+            }
 
-            APPL_TRACE_EVENT("%s bitpool candidate : %d (%d kbps)", __func__,
-                             s16BitPool, pstrEncParams->u16BitRate);
+            APPL_TRACE_EVENT("bitpool candidate : %d (%d kbps)",
+                         s16BitPool, pstrEncParams->u16BitRate);
 
-            if (s16BitPool > pUpdateAudio->MaxBitPool) {
-                APPL_TRACE_DEBUG("%s computed bitpool too large (%d)", __func__,
-                                 s16BitPool);
+            if (s16BitPool > pUpdateAudio->MaxBitPool)
+            {
+                APPL_TRACE_DEBUG("btif_media_task_enc_update computed bitpool too large (%d)",
+                                    s16BitPool);
                 /* Decrease bitrate */
                 btif_media_cb.encoder.u16BitRate -= BTIF_MEDIA_BITRATE_STEP;
                 /* Record that we have decreased the bitrate */
                 protect |= 1;
-            } else if (s16BitPool < pUpdateAudio->MinBitPool) {
-                APPL_TRACE_WARNING("%s computed bitpool too small (%d)", __func__,
-                                   s16BitPool);
+            }
+            else if (s16BitPool < pUpdateAudio->MinBitPool)
+            {
+                APPL_TRACE_WARNING("btif_media_task_enc_update computed bitpool too small (%d)", s16BitPool);
 
                 /* Increase bitrate */
                 UINT16 previous_u16BitRate = btif_media_cb.encoder.u16BitRate;
@@ -2927,12 +2067,15 @@ static void btif_media_task_enc_update(BT_HDR *p_msg)
                 /* Check over-flow */
                 if (btif_media_cb.encoder.u16BitRate < previous_u16BitRate)
                     protect |= 3;
-            } else {
+            }
+            else
+            {
                 break;
             }
             /* In case we have already increased and decreased the bitrate, just stop */
-            if (protect == 3) {
-                APPL_TRACE_ERROR("%s could not find bitpool in range", __func__);
+            if (protect == 3)
+            {
+                APPL_TRACE_ERROR("btif_media_task_enc_update could not find bitpool in range");
                 break;
             }
         } while (1);
@@ -2940,16 +2083,14 @@ static void btif_media_task_enc_update(BT_HDR *p_msg)
         /* Finally update the bitpool in the encoder structure */
         pstrEncParams->s16BitPool = s16BitPool;
 
-        APPL_TRACE_DEBUG("%s final bit rate %d, final bit pool %d", __func__,
-                         btif_media_cb.encoder.u16BitRate,
-                         btif_media_cb.encoder.s16BitPool);
+        APPL_TRACE_DEBUG("btif_media_task_enc_update final bit rate %d, final bit pool %d",
+                btif_media_cb.encoder.u16BitRate, btif_media_cb.encoder.s16BitPool);
 
-        if (!bt_split_a2dp_enabled)
-        {
-            /* make sure we reinitialize encoder with new settings */
-            SBC_Encoder_Init(&(btif_media_cb.encoder));
-        }
-        btif_media_cb.tx_sbc_frames = calculate_max_frames_per_packet();
+#ifndef BTA_AV_SPLIT_A2DP_ENABLED
+        /* make sure we reinitialize encoder with new settings */
+        SBC_Encoder_Init(&(btif_media_cb.encoder));
+#endif
+        btif_media_cb.TxNumSBCFrames = check_for_max_number_of_frames_per_packet();
     }
 }
 
@@ -3023,8 +2164,9 @@ static void btif_media_task_pcm2sbc_init(tBTIF_MEDIA_INIT_AUDIO_FEEDING * p_feed
                 btif_media_cb.encoder.s16NumOfSubBands, btif_media_cb.encoder.s16NumOfBlocks,
                 btif_media_cb.encoder.s16AllocationMethod, btif_media_cb.encoder.u16BitRate,
                 btif_media_cb.encoder.s16SamplingFreq);
-        if (!bt_split_a2dp_enabled)
-            SBC_Encoder_Init(&(btif_media_cb.encoder));
+#ifndef BTA_AV_SPLIT_A2DP_ENABLED
+        SBC_Encoder_Init(&(btif_media_cb.encoder));
+#endif
     }
     else
     {
@@ -3032,152 +2174,6 @@ static void btif_media_task_pcm2sbc_init(tBTIF_MEDIA_INIT_AUDIO_FEEDING * p_feed
     }
 }
 
-/*******************************************************************************
- **
- ** Function         btif_media_task_pcm2aptx_hd_init
- **
- ** Description      Init encoding task for PCM to aptX according to feeding
- **
- ** Returns          void
- **
- *******************************************************************************/
-static void btif_media_task_pcm2aptx_hd_init(tBTIF_MEDIA_INIT_AUDIO_FEEDING * p_feeding)
-{
-    BOOLEAN reconfig_needed = FALSE;
-
-    APPL_TRACE_DEBUG("%s aptX HD", __func__);
-    APPL_TRACE_DEBUG("%s PCM feeding:", __func__);
-    APPL_TRACE_DEBUG("%s sampling_freq:%d", __func__, p_feeding->feeding.cfg.pcm.sampling_freq);
-    APPL_TRACE_DEBUG("%s num_channel:%d", __func__, p_feeding->feeding.cfg.pcm.num_channel);
-    APPL_TRACE_DEBUG("%s bit_per_sample:%d", __func__, p_feeding->feeding.cfg.pcm.bit_per_sample);
-
-    /* Check the PCM feeding sampling_freq */
-    switch (p_feeding->feeding.cfg.pcm.sampling_freq)
-    {
-        case  8000:
-        case 12000:
-        case 16000:
-        case 24000:
-        case 32000:
-        case 48000:
-            /* For these sampling_freq the AV connection must be 48000 */
-            if (btif_media_cb.aptxhdEncoderParams.s16SamplingFreq != A2D_APTX_HD_SAMPLERATE_48000)
-            {
-                /* Reconfiguration needed at 48000 */
-                APPL_TRACE_DEBUG("%s Reconfiguration needed at 48000", __func__);
-                btif_media_cb.aptxhdEncoderParams.s16SamplingFreq = A2D_APTX_HD_SAMPLERATE_48000;
-                reconfig_needed = TRUE;
-            }
-            break;
-
-        case 11025:
-        case 22050:
-        case 44100:
-            /* For these sampling_freq the AV connection must be 44100 */
-            if (btif_media_cb.aptxhdEncoderParams.s16SamplingFreq != A2D_APTX_HD_SAMPLERATE_44100)
-            {
-                /* Reconfiguration needed at 44100 */
-                APPL_TRACE_DEBUG("%s Reconfiguration needed at 44100", __func__);
-                btif_media_cb.aptxhdEncoderParams.s16SamplingFreq = A2D_APTX_HD_SAMPLERATE_44100;
-                reconfig_needed = TRUE;
-            }
-            break;
-        default:
-            APPL_TRACE_DEBUG("%s Feeding PCM sampling_freq unsupported", __func__);
-            break;
-    }
-
-    /* Some AV Headsets do not support Mono => always ask for Stereo */
-    if (btif_media_cb.aptxhdEncoderParams.s16ChannelMode ==  A2D_APTX_HD_CHANNELS_MONO)
-    {
-        APPL_TRACE_DEBUG("%s Reconfiguration needed in Stereo", __func__);
-        btif_media_cb.aptxhdEncoderParams.s16ChannelMode = A2D_APTX_HD_CHANNELS_STEREO;
-        reconfig_needed = TRUE;
-    }
-
-    if (reconfig_needed != FALSE)
-    {
-        APPL_TRACE_DEBUG("%s calls APTX_HD_Encoder_Init", __func__);
-        APPL_TRACE_DEBUG("%s mtu %d", __func__, btif_media_cb.TxAaMtuSize);
-        APPL_TRACE_DEBUG("%s ch mode %d, Smp freq %d", __func__,
-                          btif_media_cb.aptxhdEncoderParams.s16ChannelMode, btif_media_cb.aptxhdEncoderParams.s16SamplingFreq);
-    } else {
-        APPL_TRACE_DEBUG("%s No aptX HD reconfig needed", __func__);
-    }
-}
-
-/*******************************************************************************
- **
- ** Function         btif_media_task_pcm2aptx_init
- **
- ** Description      Init encoding task for PCM to aptX according to feeding
- **
- ** Returns          void
- **
- *******************************************************************************/
-static void btif_media_task_pcm2aptx_init(tBTIF_MEDIA_INIT_AUDIO_FEEDING * p_feeding)
-{
-    BOOLEAN reconfig_needed = FALSE;
-
-    APPL_TRACE_DEBUG("%s PCM feeding:", __func__);
-    APPL_TRACE_DEBUG("%s sampling_freq:%d", __func__, p_feeding->feeding.cfg.pcm.sampling_freq);
-    APPL_TRACE_DEBUG("%s num_channel:%d", __func__, p_feeding->feeding.cfg.pcm.num_channel);
-    APPL_TRACE_DEBUG("%s bit_per_sample:%d", __func__, p_feeding->feeding.cfg.pcm.bit_per_sample);
-
-    /* Check the PCM feeding sampling_freq */
-    switch (p_feeding->feeding.cfg.pcm.sampling_freq)
-    {
-        case  8000:
-        case 12000:
-        case 16000:
-        case 24000:
-        case 32000:
-        case 48000:
-            /* For these sampling_freq the AV connection must be 48000 */
-            if (btif_media_cb.aptxEncoderParams.s16SamplingFreq != A2D_APTX_SAMPLERATE_48000)
-            {
-                /* Reconfiguration needed at 48000 */
-                APPL_TRACE_DEBUG("%s Reconfiguration needed at 48000", __func__);
-                btif_media_cb.aptxEncoderParams.s16SamplingFreq = A2D_APTX_SAMPLERATE_48000;
-                reconfig_needed = TRUE;
-            }
-            break;
-
-        case 11025:
-        case 22050:
-        case 44100:
-            /* For these sampling_freq the AV connection must be 44100 */
-            if (btif_media_cb.aptxEncoderParams.s16SamplingFreq != A2D_APTX_SAMPLERATE_44100)
-            {
-                /* Reconfiguration needed at 44100 */
-                APPL_TRACE_DEBUG("%s Reconfiguration needed at 44100", __func__);
-                btif_media_cb.aptxEncoderParams.s16SamplingFreq = A2D_APTX_SAMPLERATE_44100;
-                reconfig_needed = TRUE;
-            }
-            break;
-        default:
-            APPL_TRACE_DEBUG("%s Feeding PCM sampling_freq unsupported", __func__);
-            break;
-        }
-
-    /* Some AV Headsets do not support Mono => always ask for Stereo */
-    if (btif_media_cb.aptxEncoderParams.s16ChannelMode ==  A2D_APTX_CHANNELS_MONO)
-    {
-        APPL_TRACE_DEBUG("%s Reconfiguration needed in Stereo", __func__);
-        btif_media_cb.aptxEncoderParams.s16ChannelMode = A2D_APTX_CHANNELS_STEREO;
-        reconfig_needed = TRUE;
-    }
-
-    if (reconfig_needed != FALSE)
-    {
-        APPL_TRACE_DEBUG("%s calls APTX_Encoder_Init", __func__);
-        APPL_TRACE_DEBUG("%s mtu %d", __func__, btif_media_cb.TxAaMtuSize);
-        APPL_TRACE_DEBUG("%s ch mode %d, Smp freq %d", __func__,
-                          btif_media_cb.aptxEncoderParams.s16ChannelMode, btif_media_cb.aptxEncoderParams.s16SamplingFreq);
-    } else {
-        APPL_TRACE_DEBUG("%s no aptX reconfig needed", __func__);
-  }
-}
 
 /*******************************************************************************
  **
@@ -3191,7 +2187,7 @@ static void btif_media_task_pcm2aptx_init(tBTIF_MEDIA_INIT_AUDIO_FEEDING * p_fee
 static void btif_media_task_audio_feeding_init(BT_HDR *p_msg)
 {
     tBTIF_MEDIA_INIT_AUDIO_FEEDING *p_feeding = (tBTIF_MEDIA_INIT_AUDIO_FEEDING *) p_msg;
-    tA2D_APTX_CIE* codecInfo = 0;
+
     APPL_TRACE_DEBUG("btif_media_task_audio_feeding_init format:%d", p_feeding->feeding.format);
 
     /* Save Media Feeding information */
@@ -3202,40 +2198,10 @@ static void btif_media_task_audio_feeding_init(BT_HDR *p_msg)
     switch (p_feeding->feeding.format)
     {
         case BTIF_AV_CODEC_PCM:
-        {
-            UINT8 codectype;
-            codectype = bta_av_co_get_current_codec();
-
-            if (A2D_NON_A2DP_MEDIA_CT == codectype) {
-                UINT8* ptr = bta_av_co_get_current_codecInfo();
-                if (ptr) {
-                    // tA2D_APTX_CIE starts on 4th byte
-                    codecInfo = (tA2D_APTX_CIE*) &ptr[BTA_AV_CFG_START_IDX];
-                    if (codecInfo) {
-                        APPL_TRACE_DEBUG("%s codecId = %d ", __func__, codecInfo->codecId);
-                        APPL_TRACE_DEBUG("%s vendorId = %x ", __func__, codecInfo->vendorId);
-                    }
-
-                    if (codecInfo && codecInfo->vendorId == A2D_APTX_VENDOR_ID && codecInfo->codecId == A2D_APTX_CODEC_ID_BLUETOOTH) {
-                        APPL_TRACE_DEBUG("%s aptX", __func__);
-                        btif_media_cb.TxTranscoding = BTIF_MEDIA_TRSCD_PCM_2_APTX;
-                        btif_media_task_pcm2aptx_init(p_feeding);
-                        break;
-                    } else if (codecInfo && codecInfo->vendorId == A2D_APTX_HD_VENDOR_ID && codecInfo->codecId == A2D_APTX_HD_CODEC_ID_BLUETOOTH) {
-                        APPL_TRACE_DEBUG("%s aptX HD", __func__);
-                        btif_media_cb.TxTranscoding = BTIF_MEDIA_TRSCD_PCM_2_APTX_HD;
-                        btif_media_task_pcm2aptx_hd_init(p_feeding);
-                        break;
-                    } else {
-                        /* do nothing, fall through to SBC */
-                    }
-                }
-            }
-
             btif_media_cb.TxTranscoding = BTIF_MEDIA_TRSCD_PCM_2_SBC;
             btif_media_task_pcm2sbc_init(p_feeding);
             break;
-        }
+
         default :
             APPL_TRACE_ERROR("unknown feeding format %d", p_feeding->feeding.format);
             break;
@@ -3275,22 +2241,21 @@ int btif_a2dp_get_track_channel_count(UINT8 channeltype) {
     }
     return count;
 }
-
 #ifdef USE_AUDIO_TRACK
-int a2dp_get_track_channel_type(UINT8 channeltype) {
-    int count = 1;
-    switch (channeltype) {
-        case A2D_SBC_IE_CH_MD_MONO:
-            count = 1;
-            break;
-        case A2D_SBC_IE_CH_MD_DUAL:
-        case A2D_SBC_IE_CH_MD_STEREO:
-        case A2D_SBC_IE_CH_MD_JOINT:
-            count = 3;
-            break;
+    int a2dp_get_track_channel_type(UINT8 channeltype) {
+        int count = 1;
+        switch (channeltype) {
+            case A2D_SBC_IE_CH_MD_MONO:
+                count = 1;
+                break;
+            case A2D_SBC_IE_CH_MD_DUAL:
+            case A2D_SBC_IE_CH_MD_STEREO:
+            case A2D_SBC_IE_CH_MD_JOINT:
+                count = 3;
+                break;
+        }
+        return count;
     }
-    return count;
-}
 #endif
 
 void btif_a2dp_set_peer_sep(UINT8 sep) {
@@ -3298,15 +2263,15 @@ void btif_a2dp_set_peer_sep(UINT8 sep) {
 }
 
 static void btif_decode_alarm_cb(UNUSED_ATTR void *context) {
-  if(worker_thread != NULL)
-      thread_post(worker_thread, btif_media_task_avk_handle_timer, NULL);
+    if(worker_thread != NULL)
+        thread_post(worker_thread, btif_media_task_avk_handle_timer, NULL);
 }
 
 static void btif_media_task_aa_handle_stop_decoding(void) {
   alarm_free(btif_media_cb.decode_alarm);
   btif_media_cb.decode_alarm = NULL;
 #ifdef USE_AUDIO_TRACK
-  BtifAvrcpAudioTrackPause(btif_media_cb.audio_track);
+  btPauseTrack();
 #endif
 }
 
@@ -3314,16 +2279,15 @@ static void btif_media_task_aa_handle_start_decoding(void) {
   if (btif_media_cb.decode_alarm)
     return;
 #ifdef USE_AUDIO_TRACK
-  BtifAvrcpAudioTrackStart(btif_media_cb.audio_track);
+  btStartTrack();
 #endif
-  btif_media_cb.decode_alarm = alarm_new_periodic("btif.media_decode");
+  btif_media_cb.decode_alarm = alarm_new();
   if (!btif_media_cb.decode_alarm) {
-    LOG_ERROR(LOG_TAG, "%s unable to allocate decode alarm.", __func__);
+    LOG_ERROR("%s unable to allocate decode alarm.", __func__);
     return;
   }
 
-  alarm_set(btif_media_cb.decode_alarm, BTIF_SINK_MEDIA_TIME_TICK_MS,
-            btif_decode_alarm_cb, NULL);
+  alarm_set_periodic(btif_media_cb.decode_alarm, BTIF_SINK_MEDIA_TIME_TICK, btif_decode_alarm_cb, NULL);
 }
 
 #if (BTA_AV_SINK_INCLUDED == TRUE)
@@ -3332,9 +2296,8 @@ static void btif_media_task_aa_handle_clear_track (void)
 {
     APPL_TRACE_DEBUG("btif_media_task_aa_handle_clear_track");
 #ifdef USE_AUDIO_TRACK
-    BtifAvrcpAudioTrackStop(btif_media_cb.audio_track);
-    BtifAvrcpAudioTrackDelete(btif_media_cb.audio_track);
-    btif_media_cb.audio_track = NULL;
+    btStopTrack();
+    btDeleteTrack();
 #endif
 }
 
@@ -3379,19 +2342,16 @@ static void btif_media_task_aa_handle_decoder_reset(BT_HDR *p_msg)
     }
 
 #ifdef USE_AUDIO_TRACK
-    APPL_TRACE_DEBUG("%s A2dpSink: sbc Create Track", __func__);
-    btif_media_cb.audio_track =
-        BtifAvrcpAudioTrackCreate(btif_a2dp_get_track_frequency(sbc_cie.samp_freq),
-                                  a2dp_get_track_channel_type(sbc_cie.ch_mode));
-    if (btif_media_cb.audio_track == NULL) {
-        APPL_TRACE_ERROR("%s A2dpSink: Track creation fails!!!", __func__);
+    APPL_TRACE_DEBUG("A2dpSink: sbc Create Track");
+    if (btCreateTrack(btif_a2dp_get_track_frequency(sbc_cie.samp_freq), a2dp_get_track_channel_type(sbc_cie.ch_mode)) == -1) {
+        APPL_TRACE_ERROR("A2dpSink: Track creation fails!!!");
         return;
     }
 #else
     UIPC_Open(UIPC_CH_ID_AV_AUDIO, btif_a2dp_data_cb);
 #endif
 
-    switch (sbc_cie.samp_freq)
+    switch(sbc_cie.samp_freq)
     {
         case A2D_SBC_IE_SAMP_FREQ_16:
             APPL_TRACE_DEBUG("\tsamp_freq:%d (16000)", sbc_cie.samp_freq);
@@ -3414,7 +2374,7 @@ static void btif_media_task_aa_handle_decoder_reset(BT_HDR *p_msg)
             break;
     }
 
-    switch (sbc_cie.ch_mode)
+    switch(sbc_cie.ch_mode)
     {
         case A2D_SBC_IE_CH_MD_MONO:
             APPL_TRACE_DEBUG("\tch_mode:%d (Mono)", sbc_cie.ch_mode);
@@ -3433,7 +2393,7 @@ static void btif_media_task_aa_handle_decoder_reset(BT_HDR *p_msg)
             break;
     }
 
-    switch (sbc_cie.block_len)
+    switch(sbc_cie.block_len)
     {
         case A2D_SBC_IE_BLOCKS_4:
             APPL_TRACE_DEBUG("\tblock_len:%d (4)", sbc_cie.block_len);
@@ -3456,7 +2416,7 @@ static void btif_media_task_aa_handle_decoder_reset(BT_HDR *p_msg)
             break;
     }
 
-    switch (sbc_cie.num_subbands)
+    switch(sbc_cie.num_subbands)
     {
         case A2D_SBC_IE_SUBBAND_4:
             APPL_TRACE_DEBUG("\tnum_subbands:%d (4)", sbc_cie.num_subbands);
@@ -3471,7 +2431,7 @@ static void btif_media_task_aa_handle_decoder_reset(BT_HDR *p_msg)
             break;
     }
 
-    switch (sbc_cie.alloc_mthd)
+    switch(sbc_cie.alloc_mthd)
     {
         case A2D_SBC_IE_ALLOC_MD_S:
             APPL_TRACE_DEBUG("\talloc_mthd:%d (SNR)", sbc_cie.alloc_mthd);
@@ -3522,78 +2482,6 @@ static void btif_media_task_alarm_cb(UNUSED_ATTR void *context) {
   thread_post(worker_thread, btif_media_task_aa_handle_timer, NULL);
 }
 
-int btif_media_task_cb_packet_send(uint8_t* packet, int length, int pcm_bytes_encoded)
-{
-    int bytes_per_frame = 2;
-    uint64_t timestamp_us = 0;
-    UINT8 codectype;
-    codectype = bta_av_co_get_current_codec();
-
-    if (btif_media_task_get_aptX_codec_type() == APTX_HD_CODEC) {
-        bytes_per_frame = 3;
-    }
-
-    if (length > 0 ) {
-
-        if (fixed_queue_length(btif_media_cb.TxAaQ) >= (MAX_OUTPUT_A2DP_FRAME_QUEUE_SZ))
-        {
-            APPL_TRACE_WARNING("%s() - TX queue buffer count %d/%d", __func__,
-                               fixed_queue_length(btif_media_cb.TxAaQ),
-                               MAX_OUTPUT_A2DP_FRAME_QUEUE_SZ);
-            btif_media_cb.stats.tx_queue_dropouts++;
-            timestamp_us = time_now_us();
-            btif_media_cb.stats.tx_queue_last_dropouts_us = timestamp_us;
-        }
-
-        while (fixed_queue_length(btif_media_cb.TxAaQ) >= MAX_OUTPUT_A2DP_FRAME_QUEUE_SZ) {
-            btif_media_cb.stats.tx_queue_total_dropped_messages++;
-            osi_free(fixed_queue_try_dequeue(btif_media_cb.TxAaQ));
-        }
-
-        BT_HDR *p_buf = (BT_HDR *)osi_malloc(BTIF_MEDIA_AA_BUF_SIZE);
-
-        int rtpTimestamp = (pcm_bytes_encoded / btif_media_cb.media_feeding.cfg.pcm.num_channel / bytes_per_frame);
-
-        *((UINT32 *) (p_buf + 1)) = btif_media_cb.timestamp;
-        btif_media_cb.timestamp += rtpTimestamp;
-
-        p_buf->offset = btif_media_cb.offset;
-        p_buf->layer_specific = 0;
-
-        UINT8* ptr = (UINT8*)(p_buf + 1);
-        ptr += p_buf->offset;
-
-        memcpy(ptr, packet, length);
-        p_buf->len = length;
-
-        if (btif_media_cb.tx_flush)
-        {
-            APPL_TRACE_DEBUG("### tx suspended, discarded frame ###");
-
-            btif_media_cb.stats.tx_queue_total_flushed_messages +=
-                fixed_queue_length(btif_media_cb.TxAaQ);
-            btif_media_cb.stats.tx_queue_last_flushed_us =
-                timestamp_us;
-            btif_media_flush_q(btif_media_cb.TxAaQ);
-
-            osi_free(p_buf);
-        } else {
-            update_scheduling_stats(&btif_media_cb.stats.tx_queue_enqueue_stats,
-                                    timestamp_us,
-                                    BTIF_SINK_MEDIA_TIME_TICK_MS * 1000);
-
-            const int BYTES_PER_FRAME = 4;
-            UINT32 frames = pcm_bytes_encoded / BYTES_PER_FRAME;
-            btif_media_cb.stats.tx_queue_total_frames += frames;
-            if (frames > btif_media_cb.stats.tx_queue_max_frames_per_packet)
-                btif_media_cb.stats.tx_queue_max_frames_per_packet = frames;
-            fixed_queue_enqueue(btif_media_cb.TxAaQ, p_buf);
-        }
-
-        bta_av_ci_src_data_ready(BTA_AV_CHNL_AUDIO);
-  }
-  return length;
-}
 /*******************************************************************************
  **
  ** Function         btif_media_task_aa_start_tx
@@ -3605,61 +2493,38 @@ int btif_media_task_cb_packet_send(uint8_t* packet, int length, int pcm_bytes_en
  *******************************************************************************/
 static void btif_media_task_aa_start_tx(void)
 {
-    APPL_TRACE_IMP("%s media_alarm %srunning, feeding mode %d", __func__,
-    alarm_is_scheduled(btif_media_cb.media_alarm)? "" : "not ",
-    btif_media_cb.feeding_mode);
+    APPL_TRACE_IMP("btif_media_task_aa_start_tx is timer %d, feeding mode %d",
+             btif_media_cb.is_tx_timer, btif_media_cb.feeding_mode);
 
+    if (btif_media_cb.is_tx_timer) {
+      LOG_WARN(LOG_TAG, "%s media alarm already running", __func__);
+      return;
+    }
+
+    /* Use a timer to poll the UIPC, get rid of the UIPC call back */
+    // UIPC_Ioctl(UIPC_CH_ID_AV_AUDIO, UIPC_REG_CBACK, NULL);
+
+    btif_media_cb.is_tx_timer = TRUE;
     last_frame_us = 0;
 
     /* Reset the media feeding state */
     btif_media_task_feeding_state_reset();
 
-    if (!bt_split_a2dp_enabled)
-    {
-        if (isA2dAptXEnabled && btif_media_task_is_aptx_configured()) {
-#if (BTA_AV_CO_CP_SCMS_T == TRUE)
-          BOOLEAN use_SCMS_T = true;
-#else
-          BOOLEAN use_SCMS_T = false;
-#endif
-          A2D_AptXCodecType aptX_codec_type = btif_media_task_get_aptX_codec_type();
-          BOOLEAN is_24bit_audio = true;
+#ifndef BTA_AV_SPLIT_A2DP_ENABLED
 
-          BOOLEAN test = false;
-          BOOLEAN trace = false;
+    APPL_TRACE_EVENT("starting timer %dms", BTIF_MEDIA_TIME_TICK);
 
-          A2d_aptx_thread_fn = A2D_aptx_sched_start(btif_media_cb.aptxEncoderParams.encoder,
-                   aptX_codec_type,
-                   use_SCMS_T,
-                   is_24bit_audio,
-                   btif_media_cb.media_feeding.cfg.pcm.sampling_freq,
-                   btif_media_cb.media_feeding.cfg.pcm.bit_per_sample,
-                   UIPC_CH_ID_AV_AUDIO,
-                   btif_media_cb.TxAaMtuSize,
-                   UIPC_Read,
-                   btif_media_task_cb_packet_send,
-                   raise_priority_a2dp,
-                   test,
-                   trace);
+    assert(btif_media_cb.media_alarm == NULL);
 
-          A2d_aptx_thread = thread_new("aptx_media_worker");
-          if (A2d_aptx_thread ) {
-             thread_post(A2d_aptx_thread, A2d_aptx_thread_fn, NULL);
-          }
-        } else {
-            APPL_TRACE_EVENT("starting timer %dms", BTIF_MEDIA_TIME_TICK);
-
-            alarm_free(btif_media_cb.media_alarm);
-            btif_media_cb.media_alarm = alarm_new_periodic("btif.media_task");
-            if (!btif_media_cb.media_alarm) {
-              LOG_ERROR(LOG_TAG, "%s unable to allocate media alarm.", __func__);
-              return;
-            }
-
-            alarm_set(btif_media_cb.media_alarm, BTIF_MEDIA_TIME_TICK,
-                      btif_media_task_alarm_cb, NULL);
-        }
+    btif_media_cb.media_alarm = alarm_new();
+    if (!btif_media_cb.media_alarm) {
+      LOG_ERROR("%s unable to allocate media alarm.", __func__);
+      return;
     }
+
+    alarm_set_periodic(btif_media_cb.media_alarm, BTIF_MEDIA_TIME_TICK,
+                       btif_media_task_alarm_cb, NULL);
+#endif
 }
 
 /*******************************************************************************
@@ -3673,25 +2538,18 @@ static void btif_media_task_aa_start_tx(void)
  *******************************************************************************/
 static void btif_media_task_aa_stop_tx(void)
 {
-    if (!bt_split_a2dp_enabled)
-    {
-        APPL_TRACE_IMP("%s media_alarm is %srunning", __func__,
-                         alarm_is_scheduled(btif_media_cb.media_alarm)? "" : "not ");
-        const bool send_ack = alarm_is_scheduled(btif_media_cb.media_alarm);
+#ifndef BTA_AV_SPLIT_A2DP_ENABLED
 
-        if (isA2dAptXEnabled && A2D_aptx_sched_stop())
-        {
-            thread_free(A2d_aptx_thread);
-            A2d_aptx_thread = NULL;
-        }
-        else
-        {
-           /* Stop the timer first */
-           alarm_free(btif_media_cb.media_alarm);
-           btif_media_cb.media_alarm = NULL;
-        }
+    APPL_TRACE_IMP("%s is_tx_timer: %d", __func__, btif_media_cb.is_tx_timer);
 
-        UIPC_Close(UIPC_CH_ID_AV_AUDIO);
+    const bool send_ack = (btif_media_cb.is_tx_timer != FALSE);
+
+    /* Stop the timer first */
+    alarm_free(btif_media_cb.media_alarm);
+    btif_media_cb.media_alarm = NULL;
+    btif_media_cb.is_tx_timer = FALSE;
+
+    UIPC_Close(UIPC_CH_ID_AV_AUDIO);
 
     /* Try to send acknowldegment once the media stream is
        stopped. This will make sure that the A2DP HAL layer is
@@ -3704,42 +2562,30 @@ static void btif_media_task_aa_stop_tx(void)
        a block/wait. Due to this acknowledgement, the A2DP HAL is guranteed
        to get the ACK for any pending command in such cases. */
 
-        if (send_ack)
-            a2dp_cmd_acknowledge(A2DP_CTRL_ACK_SUCCESS);
+    if (send_ack)
+        a2dp_cmd_acknowledge(A2DP_CTRL_ACK_SUCCESS);
 
-        /* audio engine stopped, reset tx suspended flag */
-        btif_media_cb.tx_flush = 0;
-        last_frame_us = 0;
+    /* audio engine stopped, reset tx suspended flag */
+    btif_media_cb.tx_flush = 0;
+    last_frame_us = 0;
 
-       /* Reset the media feeding state. */
-        btif_media_task_feeding_state_reset();
-    }
+    /* Reset the media feeding state */
+    btif_media_task_feeding_state_reset();
+#else
+    APPL_TRACE_IMP("%s tx_started: %d, tx_stop_initiated: %d",
+        __func__, btif_media_cb.tx_started, btif_media_cb.tx_stop_initiated);
+    if (btif_media_cb.tx_started && !btif_media_cb.tx_stop_initiated)
+        btif_media_send_vendor_stop();
     else
-    {
-        APPL_TRACE_IMP("%s tx_started: %d, tx_stop_initiated: %d",
-            __func__, btif_media_cb.tx_started, btif_media_cb.tx_stop_initiated);
-        if (btif_media_cb.tx_started && !btif_media_cb.tx_stop_initiated)
-            btif_media_send_vendor_stop();
-        else
-        {
-            if (btif_media_cb.a2dp_cmd_pending == A2DP_CTRL_CMD_STOP ||
-                btif_media_cb.a2dp_cmd_pending == A2DP_CTRL_CMD_SUSPEND)
-                a2dp_cmd_acknowledge(A2DP_CTRL_ACK_SUCCESS);
-            else
-            {
-                BTIF_TRACE_ERROR("Invalid cmd pending for ack");
-                a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
-            }
-        }
-    }
+        a2dp_cmd_acknowledge(A2DP_CTRL_ACK_SUCCESS);
+#endif
 }
 
 static UINT32 get_frame_length()
 {
     UINT32 frame_len = 0;
-    APPL_TRACE_DEBUG("%s channel mode: %d, sub-band: %d, number of block: %d, \
+    APPL_TRACE_DEBUG("channel mode: %d, sub-band: %d, number of block: %d, \
             bitpool: %d, sampling frequency: %d, num channels: %d",
-            __func__,
             btif_media_cb.encoder.s16ChannelMode,
             btif_media_cb.encoder.s16NumOfSubBands,
             btif_media_cb.encoder.s16NumOfBlocks,
@@ -3747,107 +2593,100 @@ static UINT32 get_frame_length()
             btif_media_cb.encoder.s16SamplingFreq,
             btif_media_cb.encoder.s16NumOfChannels);
 
-    switch (btif_media_cb.encoder.s16ChannelMode) {
+    switch(btif_media_cb.encoder.s16ChannelMode)
+    {
         case SBC_MONO:
-            /* FALLTHROUGH */
         case SBC_DUAL:
-            frame_len = SBC_FRAME_HEADER_SIZE_BYTES +
-                ((UINT32)(SBC_SCALE_FACTOR_BITS * btif_media_cb.encoder.s16NumOfSubBands *
-                btif_media_cb.encoder.s16NumOfChannels) / CHAR_BIT) +
+            frame_len = 4 + ((UINT32)(4 * btif_media_cb.encoder.s16NumOfSubBands *
+                btif_media_cb.encoder.s16NumOfChannels) / 8) +
                 ((UINT32)(btif_media_cb.encoder.s16NumOfBlocks *
                 btif_media_cb.encoder.s16NumOfChannels *
-                btif_media_cb.encoder.s16BitPool) / CHAR_BIT);
+                btif_media_cb.encoder.s16BitPool) / 8);
             break;
         case SBC_STEREO:
-            frame_len = SBC_FRAME_HEADER_SIZE_BYTES +
-                ((UINT32)(SBC_SCALE_FACTOR_BITS * btif_media_cb.encoder.s16NumOfSubBands *
-                btif_media_cb.encoder.s16NumOfChannels) / CHAR_BIT) +
+            frame_len = 4 + ((UINT32)(4 * btif_media_cb.encoder.s16NumOfSubBands *
+                btif_media_cb.encoder.s16NumOfChannels) / 8) +
                 ((UINT32)(btif_media_cb.encoder.s16NumOfBlocks *
-                btif_media_cb.encoder.s16BitPool) / CHAR_BIT);
+                btif_media_cb.encoder.s16BitPool) / 8);
             break;
         case SBC_JOINT_STEREO:
-            frame_len = SBC_FRAME_HEADER_SIZE_BYTES +
-                ((UINT32)(SBC_SCALE_FACTOR_BITS * btif_media_cb.encoder.s16NumOfSubBands *
-                btif_media_cb.encoder.s16NumOfChannels) / CHAR_BIT) +
+            frame_len = 4 + ((UINT32)(4 * btif_media_cb.encoder.s16NumOfSubBands *
+                btif_media_cb.encoder.s16NumOfChannels) / 8) +
                 ((UINT32)(btif_media_cb.encoder.s16NumOfSubBands +
                 (btif_media_cb.encoder.s16NumOfBlocks *
-                btif_media_cb.encoder.s16BitPool)) / CHAR_BIT);
+                btif_media_cb.encoder.s16BitPool)) / 8);
             break;
         default:
-            APPL_TRACE_DEBUG("%s Invalid channel number: %d",
-                __func__, btif_media_cb.encoder.s16ChannelMode);
-            break;
+            APPL_TRACE_DEBUG("Invalid channel number");
     }
-    APPL_TRACE_DEBUG("%s calculated frame length: %d", __func__, frame_len);
+    APPL_TRACE_DEBUG("calculated frame length: %d", frame_len);
     return frame_len;
 }
 
-static UINT8 calculate_max_frames_per_packet()
+static UINT8 check_for_max_number_of_frames_per_packet()
 {
     UINT16 result = 0;
     UINT16 effective_mtu_size = btif_media_cb.TxAaMtuSize;
     UINT32 frame_len;
 
-    APPL_TRACE_DEBUG("%s original AVDTP MTU size: %d", __func__, btif_media_cb.TxAaMtuSize);
+    APPL_TRACE_DEBUG("original AVDTP MTU size: %d", btif_media_cb.TxAaMtuSize);
     if (btif_av_is_peer_edr() && (btif_av_peer_supports_3mbps() == FALSE)) {
-        // This condition would be satisfied only if the remote device is
-        // EDR and supports only 2 Mbps, but the effective AVDTP MTU size
-        // exceeds the 2DH5 packet size.
-        APPL_TRACE_DEBUG("%s The remote devce is EDR but does not support 3 Mbps", __func__);
-
-        if (effective_mtu_size > MAX_2MBPS_AVDTP_MTU) {
-            APPL_TRACE_WARNING("%s Restricting AVDTP MTU size to %d",
-                __func__, MAX_2MBPS_AVDTP_MTU);
+        // This condition would be satisfied only if remote is EDR and supports only 2mbps
+        // but effective AVDTP MTU size exceeds 2dh5 packet size
+        APPL_TRACE_DEBUG("Headset is edr but does not support 3mbps");
+        if (effective_mtu_size > MAX_2MBPS_AVDTP_MTU)
+        {
+            APPL_TRACE_DEBUG("restricting AVDTP MTU size to 675");
             effective_mtu_size = MAX_2MBPS_AVDTP_MTU;
             btif_media_cb.TxAaMtuSize = effective_mtu_size;
         }
     }
 
-    if (!btif_media_cb.encoder.s16NumOfSubBands) {
-        APPL_TRACE_ERROR("%s SubBands are set to 0, resetting to %d",
-            __func__, SBC_MAX_NUM_OF_SUBBANDS);
+    if (!btif_media_cb.encoder.s16NumOfSubBands)
+    {
+        APPL_TRACE_ERROR("Error: SubBands are set to 0, resetting to Max");
         btif_media_cb.encoder.s16NumOfSubBands = SBC_MAX_NUM_OF_SUBBANDS;
     }
-    if (!btif_media_cb.encoder.s16NumOfBlocks) {
-        APPL_TRACE_ERROR("%s Blocks are set to 0, resetting to %d",
-            __func__, SBC_MAX_NUM_OF_BLOCKS);
+    if (!btif_media_cb.encoder.s16NumOfBlocks)
+    {
+        APPL_TRACE_ERROR("Error: Blocks are set to 0, resetting to Max");
         btif_media_cb.encoder.s16NumOfBlocks = SBC_MAX_NUM_OF_BLOCKS;
     }
-    if (!btif_media_cb.encoder.s16NumOfChannels) {
-        APPL_TRACE_ERROR("%s Channels are set to 0, resetting to %d",
-            __func__, SBC_MAX_NUM_OF_CHANNELS);
+    if (!btif_media_cb.encoder.s16NumOfChannels)
+    {
+        APPL_TRACE_ERROR("Error: Channels are set to 0, resetting to Max");
         btif_media_cb.encoder.s16NumOfChannels = SBC_MAX_NUM_OF_CHANNELS;
     }
-
     frame_len = get_frame_length();
 
-    APPL_TRACE_DEBUG("%s Effective Tx MTU to be considered: %d",
-        __func__, effective_mtu_size);
-
-    switch (btif_media_cb.encoder.s16SamplingFreq) {
+    APPL_TRACE_DEBUG("effective Tx MTU to be considered: %d",
+                                            effective_mtu_size);
+    switch(btif_media_cb.encoder.s16SamplingFreq)
+    {
         case SBC_sf44100:
-            if (frame_len == 0) {
-                APPL_TRACE_ERROR("%s Calculating frame length, \
-                                        resetting it to default 119", __func__);
+            if(!frame_len)
+            {
+                APPL_TRACE_ERROR("Error: Calculating frame length, \
+                                            resetting it to default");
                 frame_len = MAX_SBC_HQ_FRAME_SIZE_44_1;
             }
             result = (effective_mtu_size - A2DP_HDR_SIZE) / frame_len;
-            APPL_TRACE_DEBUG("%s Max number of SBC frames: %d", __func__, result);
+            APPL_TRACE_DEBUG("max number of sbc frames: %d", result);
             break;
 
         case SBC_sf48000:
-            if (frame_len == 0) {
-                APPL_TRACE_ERROR("%s Calculating frame length, \
-                                        resetting it to default 115", __func__);
+            if(!frame_len)
+            {
+                APPL_TRACE_ERROR("Error: Calculating frame length, \
+                                            resetting it to default");
                 frame_len = MAX_SBC_HQ_FRAME_SIZE_48;
             }
             result = (effective_mtu_size - A2DP_HDR_SIZE) / frame_len;
-            APPL_TRACE_DEBUG("%s Max number of SBC frames: %d", __func__, result);
+            APPL_TRACE_DEBUG("max number of sbc frames: %d", result);
             break;
 
         default:
-            APPL_TRACE_ERROR("%s Max number of SBC frames: %d", __func__, result);
-            break;
+            APPL_TRACE_ERROR("Error: max number of sbc frames: %d", result);
 
     }
     return result;
@@ -3855,7 +2694,7 @@ static UINT8 calculate_max_frames_per_packet()
 
 /*******************************************************************************
  **
- ** Function         btif_get_num_aa_frame_iteration
+ ** Function         btif_get_num_aa_frame
  **
  ** Description      returns number of frames to send and number of iterations
  **                  to be used. num_of_ietrations and num_of_frames parameters
@@ -3864,8 +2703,9 @@ static UINT8 calculate_max_frames_per_packet()
  ** Returns          void
  **
  *******************************************************************************/
-static void btif_get_num_aa_frame_iteration(UINT8 *num_of_iterations, UINT8 *num_of_frames)
+static void btif_get_num_aa_frame(UINT8 *num_of_iterations, UINT8 *num_of_frames)
 {
+    UINT32 result=0;
     UINT8 nof = 0;
     UINT8 noi = 1;
 
@@ -3873,12 +2713,11 @@ static void btif_get_num_aa_frame_iteration(UINT8 *num_of_iterations, UINT8 *num
     {
         case BTIF_MEDIA_TRSCD_PCM_2_SBC:
         {
-            UINT32 projected_nof = 0;
             UINT32 pcm_bytes_per_frame = btif_media_cb.encoder.s16NumOfSubBands *
                              btif_media_cb.encoder.s16NumOfBlocks *
                              btif_media_cb.media_feeding.cfg.pcm.num_channel *
                              btif_media_cb.media_feeding.cfg.pcm.bit_per_sample / 8;
-            APPL_TRACE_DEBUG("%s pcm_bytes_per_frame %u", __func__, pcm_bytes_per_frame);
+            APPL_TRACE_DEBUG("pcm_bytes_per_frame %u", pcm_bytes_per_frame);
 
             UINT32 us_this_tick = BTIF_MEDIA_TIME_TICK * 1000;
             UINT64 now_us = time_now_us();
@@ -3891,80 +2730,69 @@ static void btif_get_num_aa_frame_iteration(UINT8 *num_of_iterations, UINT8 *num
                                 us_this_tick / (BTIF_MEDIA_TIME_TICK * 1000);
 
             /* calculate nbr of frames pending for this media tick */
-            projected_nof = btif_media_cb.media_feeding_state.pcm.counter / pcm_bytes_per_frame;
-            if (projected_nof > btif_media_cb.stats.media_read_max_expected_frames)
-                btif_media_cb.stats.media_read_max_expected_frames = projected_nof;
-            btif_media_cb.stats.media_read_total_expected_frames += projected_nof;
-            btif_media_cb.stats.media_read_expected_count++;
-            if (projected_nof > MAX_PCM_FRAME_NUM_PER_TICK)
+            result = btif_media_cb.media_feeding_state.pcm.counter/pcm_bytes_per_frame;
+            APPL_TRACE_DEBUG("num of frames calculated as per available pcm data:  %u", result);
+            if(btif_av_is_peer_edr())
             {
-                APPL_TRACE_WARNING("%s() - Limiting frames to be sent from %d to %d"
-                    , __FUNCTION__, projected_nof, MAX_PCM_FRAME_NUM_PER_TICK);
-                size_t delta = projected_nof - MAX_PCM_FRAME_NUM_PER_TICK;
-                btif_media_cb.stats.media_read_limited_count++;
-                btif_media_cb.stats.media_read_total_limited_frames += delta;
-                if (delta > btif_media_cb.stats.media_read_max_limited_frames)
-                    btif_media_cb.stats.media_read_max_limited_frames = delta;
-                projected_nof = MAX_PCM_FRAME_NUM_PER_TICK;
-            }
-
-            APPL_TRACE_DEBUG("%s frames for available PCM data %u", __func__, projected_nof);
-
-            if (btif_av_is_peer_edr())
-            {
-                if (!btif_media_cb.tx_sbc_frames)
+                if (!btif_media_cb.TxNumSBCFrames)
                 {
-                    APPL_TRACE_ERROR("%s tx_sbc_frames not updated, update from here", __func__);
-                    btif_media_cb.tx_sbc_frames = calculate_max_frames_per_packet();
+                    APPL_TRACE_ERROR("Error: TxNumSBCFrames not updated, update from here");
+                    btif_media_cb.TxNumSBCFrames = check_for_max_number_of_frames_per_packet();
                 }
-
-                nof = btif_media_cb.tx_sbc_frames;
-                if (!nof) {
-                    APPL_TRACE_ERROR("%s Number of frames not updated, set calculated values",
-                                                        __func__);
-                    nof = projected_nof;
+                nof = btif_media_cb.TxNumSBCFrames;
+                if(!nof) {
+                    APPL_TRACE_ERROR("Error: Num frames not updated, set calculated values");
+                    nof = result;
                     noi = 1;
-                } else {
-                    if (nof < projected_nof)
+                }
+                else
+                {
+                    if (nof < result)
                     {
-                        noi = projected_nof / nof; // number of iterations would vary
+                        noi = result / nof; // number of iterations would vary
                         if (noi > MAX_PCM_ITER_NUM_PER_TICK)
                         {
-                            APPL_TRACE_ERROR("%s ## Audio Congestion (iterations:%d > max (%d))",
-                                 __func__, noi, MAX_PCM_ITER_NUM_PER_TICK);
+                            APPL_TRACE_ERROR("## Audio Congestion (iterations:%d > max (%d))",
+                                 noi, MAX_PCM_ITER_NUM_PER_TICK);
                             noi = MAX_PCM_ITER_NUM_PER_TICK;
                             btif_media_cb.media_feeding_state.pcm.counter
                                 = noi * nof * pcm_bytes_per_frame;
                         }
-                        projected_nof = nof;
-                    } else {
+                        result = nof;
+                    }
+                    else
+                    {
                         noi = 1; // number of iterations is 1
-                        APPL_TRACE_DEBUG("%s reducing frames for available PCM data", __func__);
-                        nof = projected_nof;
+                        APPL_TRACE_DEBUG("reducing number of frames as per available pcm data");
+                        nof = result;
                     }
                 }
-            } else {
-                // For BR cases nof will be same as the value retrieved at projected_nof
-                APPL_TRACE_DEBUG("%s headset BR, number of frames %u", __func__, nof);
-                if (projected_nof > MAX_PCM_FRAME_NUM_PER_TICK)
+            }
+            else
+            {
+                // For BR cases nof will be same as the value retrieved at result
+                APPL_TRACE_DEBUG("headset is of type BR %u", nof);
+                if (result > MAX_PCM_FRAME_NUM_PER_TICK)
                 {
-                    APPL_TRACE_ERROR("%s ## Audio Congestion (frames: %d > max (%d))",
-                        __func__, projected_nof, MAX_PCM_FRAME_NUM_PER_TICK);
-                    projected_nof = MAX_PCM_FRAME_NUM_PER_TICK;
-                    btif_media_cb.media_feeding_state.pcm.counter =
-                        noi * projected_nof * pcm_bytes_per_frame;
+                    APPL_TRACE_ERROR("## Audio Congestion (frames: %d > max (%d))"
+                        ,result, MAX_PCM_FRAME_NUM_PER_TICK);
+                    result = MAX_PCM_FRAME_NUM_PER_TICK;
+                    btif_media_cb.media_feeding_state.pcm.counter
+                         = noi * result * pcm_bytes_per_frame;
                 }
-                nof = projected_nof;
+                nof = result;
             }
             btif_media_cb.media_feeding_state.pcm.counter -= noi * nof * pcm_bytes_per_frame;
-            APPL_TRACE_DEBUG("%s effective num of frames %u, iterations %u", __func__, nof, noi);
+            APPL_TRACE_DEBUG("effective num of frames %u", nof);
+            APPL_TRACE_DEBUG("num of iterations %u", noi);
+            LOG_VERBOSE("WRITE %d FRAMES", result);
         }
         break;
 
         default:
-            APPL_TRACE_ERROR("%s Unsupported transcoding format 0x%x",
-                    __func__, btif_media_cb.TxTranscoding);
-            nof = 0;
+            APPL_TRACE_ERROR("ERROR btif_get_num_aa_frame Unsupported transcoding format 0x%x",
+                    btif_media_cb.TxTranscoding);
+            result = nof = 0;
             noi = 0;
             break;
     }
@@ -3983,35 +2811,43 @@ static void btif_get_num_aa_frame_iteration(UINT8 *num_of_iterations, UINT8 *num
  *******************************************************************************/
 UINT8 btif_media_sink_enque_buf(BT_HDR *p_pkt)
 {
-    if (btif_media_cb.rx_flush == TRUE) /* Flush enabled, do not enque */
-        return fixed_queue_length(btif_media_cb.RxSbcQ);
-    if (fixed_queue_length(btif_media_cb.RxSbcQ) == MAX_OUTPUT_A2DP_FRAME_QUEUE_SZ)
+    tBT_SBC_HDR *p_msg;
+
+    if(btif_media_cb.rx_flush == TRUE) /* Flush enabled, do not enque*/
+        return GKI_queue_length(&btif_media_cb.RxSbcQ);
+    if(GKI_queue_length(&btif_media_cb.RxSbcQ) >= MAX_OUTPUT_A2DP_FRAME_QUEUE_SZ)
     {
-        UINT8 ret = fixed_queue_length(btif_media_cb.RxSbcQ);
-        osi_free(fixed_queue_try_dequeue(btif_media_cb.RxSbcQ));
-        return ret;
+         return GKI_queue_length(&btif_media_cb.RxSbcQ);
     }
 
-    BTIF_TRACE_VERBOSE("%s +", __func__);
+    BTIF_TRACE_VERBOSE("btif_media_sink_enque_buf + ");
     /* allocate and Queue this buffer */
-    tBT_SBC_HDR *p_msg =
-        (tBT_SBC_HDR *)osi_malloc(sizeof(tBT_SBC_HDR) + p_pkt->offset +
-                                  p_pkt->len);
-    memcpy((UINT8 *)(p_msg + 1), (UINT8 *)(p_pkt + 1) + p_pkt->offset,
-           p_pkt->len);
-    p_msg->num_frames_to_be_processed = (*((UINT8 *)(p_pkt + 1) + p_pkt->offset))& 0x0f;
-    p_msg->len = p_pkt->len;
-    p_msg->offset = 0;
-    p_msg->layer_specific = p_pkt->layer_specific;
-    BTIF_TRACE_VERBOSE("%s frames to process %d, len %d  ",
-                       __func__, p_msg->num_frames_to_be_processed,p_msg->len);
-    fixed_queue_enqueue(btif_media_cb.RxSbcQ, p_msg);
-    if (fixed_queue_length(btif_media_cb.RxSbcQ) == MAX_A2DP_DELAYED_START_FRAME_COUNT) {
-        BTIF_TRACE_DEBUG(" Initiate Decoding ");
-        btif_media_task_aa_handle_start_decoding();
-    }
+    if ((p_msg = (tBT_SBC_HDR *)GKI_getbuf(sizeof(tBT_SBC_HDR) + p_pkt->len)) != NULL)
+    {
+        UINT8 *p_dest;
 
-    return fixed_queue_length(btif_media_cb.RxSbcQ);
+        p_dest = (UINT8*)(p_msg + 1);
+        memcpy(p_dest, (UINT8*)(p_pkt + 1) + p_pkt->offset, p_pkt->len);
+
+        p_msg->num_frames_to_be_processed = p_dest[0] & 0x0f;
+        p_msg->len = p_pkt->len;
+        p_msg->offset = 0;
+        p_msg->layer_specific = p_pkt->layer_specific;
+
+        BTIF_TRACE_VERBOSE("btif_media_sink_enque_buf + ", p_msg->num_frames_to_be_processed);
+        GKI_enqueue(&(btif_media_cb.RxSbcQ), p_msg);
+        if(GKI_queue_length(&btif_media_cb.RxSbcQ) == MAX_A2DP_DELAYED_START_FRAME_COUNT)
+        {
+            BTIF_TRACE_DEBUG(" Initiate Decoding ");
+            btif_media_task_aa_handle_start_decoding();
+        }
+    }
+    else
+    {
+        /* let caller deal with a failed allocation */
+        BTIF_TRACE_VERBOSE("btif_media_sink_enque_buf No Buffer left - ");
+    }
+    return GKI_queue_length(&btif_media_cb.RxSbcQ);
 }
 
 /*******************************************************************************
@@ -4025,18 +2861,7 @@ UINT8 btif_media_sink_enque_buf(BT_HDR *p_pkt)
  *******************************************************************************/
 BT_HDR *btif_media_aa_readbuf(void)
 {
-    uint64_t now_us = time_now_us();
-    BT_HDR *p_buf = (BT_HDR *)fixed_queue_try_dequeue(btif_media_cb.TxAaQ);
-
-    btif_media_cb.stats.tx_queue_total_readbuf_calls++;
-    btif_media_cb.stats.tx_queue_last_readbuf_us = now_us;
-    if (p_buf != NULL) {
-        // Update the statistics
-        update_scheduling_stats(&btif_media_cb.stats.tx_queue_dequeue_stats,
-                                now_us, BTIF_SINK_MEDIA_TIME_TICK_MS * 1000);
-    }
-
-    return p_buf;
+    return GKI_dequeue(&(btif_media_cb.TxAaQ));
 }
 
 /*******************************************************************************
@@ -4060,9 +2885,9 @@ BOOLEAN btif_media_aa_read_feeding(tUIPC_CH_ID channel_id)
     UINT16 bytes_needed = blocm_x_subband * btif_media_cb.encoder.s16NumOfChannels * \
                           btif_media_cb.media_feeding.cfg.pcm.bit_per_sample / 8;
     static UINT16 up_sampled_buffer[SBC_MAX_NUM_FRAME * SBC_MAX_NUM_OF_BLOCKS
-            * SBC_MAX_NUM_OF_CHANNELS * SBC_MAX_NUM_OF_SUBBANDS * 4];
-    static UINT16 read_buffer[SBC_MAX_NUM_FRAME * SBC_MAX_NUM_OF_BLOCKS
             * SBC_MAX_NUM_OF_CHANNELS * SBC_MAX_NUM_OF_SUBBANDS * 2];
+    static UINT16 read_buffer[SBC_MAX_NUM_FRAME * SBC_MAX_NUM_OF_BLOCKS
+            * SBC_MAX_NUM_OF_CHANNELS * SBC_MAX_NUM_OF_SUBBANDS];
     UINT32 src_size_used;
     UINT32 dst_size_used;
     BOOLEAN fract_needed;
@@ -4093,7 +2918,7 @@ BOOLEAN btif_media_aa_read_feeding(tUIPC_CH_ID channel_id)
     if (sbc_sampling == btif_media_cb.media_feeding.cfg.pcm.sampling_freq) {
         read_size = bytes_needed - btif_media_cb.media_feeding_state.pcm.aa_feed_residue;
         nb_byte_read = UIPC_Read(channel_id, &event,
-                  ((UINT8 *)btif_media_cb.encoder.as32PcmBuffer) +
+                  ((UINT8 *)btif_media_cb.encoder.as16PcmBuffer) +
                   btif_media_cb.media_feeding_state.pcm.aa_feed_residue,
                   read_size);
         if (nb_byte_read == read_size) {
@@ -4103,9 +2928,6 @@ BOOLEAN btif_media_aa_read_feeding(tUIPC_CH_ID channel_id)
             APPL_TRACE_WARNING("### UNDERFLOW :: ONLY READ %d BYTES OUT OF %d ###",
                 nb_byte_read, read_size);
             btif_media_cb.media_feeding_state.pcm.aa_feed_residue += nb_byte_read;
-            btif_media_cb.stats.media_read_total_underflow_bytes += (read_size - nb_byte_read);
-            btif_media_cb.stats.media_read_total_underflow_count++;
-            btif_media_cb.stats.media_read_last_underflow_us = time_now_us();
             return FALSE;
         }
     }
@@ -4164,9 +2986,6 @@ BOOLEAN btif_media_aa_read_feeding(tUIPC_CH_ID channel_id)
     {
         APPL_TRACE_WARNING("### UNDERRUN :: ONLY READ %d BYTES OUT OF %d ###",
                 nb_byte_read, read_size);
-        btif_media_cb.stats.media_read_total_underrun_bytes += (read_size - nb_byte_read);
-        btif_media_cb.stats.media_read_total_underrun_count++;
-        btif_media_cb.stats.media_read_last_underrun_us = time_now_us();
         #ifdef BT_AUDIO_SYSTRACE_LOG
         snprintf(trace_buf, 32, "A2DP UNDERRUN read %ld ", nb_byte_read);
 
@@ -4205,6 +3024,11 @@ BOOLEAN btif_media_aa_read_feeding(tUIPC_CH_ID channel_id)
             sizeof(up_sampled_buffer) - btif_media_cb.media_feeding_state.pcm.aa_feed_residue,
             &src_size_used);
 
+#if (defined(DEBUG_MEDIA_AV_FLOW) && (DEBUG_MEDIA_AV_FLOW == TRUE))
+    APPL_TRACE_DEBUG("btif_media_aa_read_feeding readsz:%d src_size_used:%d dst_size_used:%d",
+            read_size, src_size_used, dst_size_used);
+#endif
+
     /* update the residue */
     btif_media_cb.media_feeding_state.pcm.aa_feed_residue += dst_size_used;
 
@@ -4212,7 +3036,7 @@ BOOLEAN btif_media_aa_read_feeding(tUIPC_CH_ID channel_id)
     if(btif_media_cb.media_feeding_state.pcm.aa_feed_residue >= bytes_needed)
     {
         /* Copy the output pcm samples in SBC encoding buffer */
-        memcpy((UINT8 *)btif_media_cb.encoder.as32PcmBuffer,
+        memcpy((UINT8 *)btif_media_cb.encoder.as16PcmBuffer,
                 (UINT8 *)up_sampled_buffer,
                 bytes_needed);
         /* update the residue */
@@ -4227,6 +3051,11 @@ BOOLEAN btif_media_aa_read_feeding(tUIPC_CH_ID channel_id)
         return TRUE;
     }
 
+#if (defined(DEBUG_MEDIA_AV_FLOW) && (DEBUG_MEDIA_AV_FLOW == TRUE))
+    APPL_TRACE_DEBUG("btif_media_aa_read_feeding residue:%d, dst_size_used %d, bytes_needed %d",
+            btif_media_cb.media_feeding_state.pcm.aa_feed_residue, dst_size_used, bytes_needed);
+#endif
+
     return FALSE;
 }
 
@@ -4239,15 +3068,24 @@ BOOLEAN btif_media_aa_read_feeding(tUIPC_CH_ID channel_id)
  ** Returns          void
  **
  *******************************************************************************/
-static void btif_media_aa_prep_sbc_2_send(UINT8 nb_frame,
-                                          uint64_t timestamp_us)
+static void btif_media_aa_prep_sbc_2_send(UINT8 nb_frame)
 {
-    uint8_t remain_nb_frame = nb_frame;
+    BT_HDR * p_buf;
     UINT16 blocm_x_subband = btif_media_cb.encoder.s16NumOfSubBands *
                              btif_media_cb.encoder.s16NumOfBlocks;
 
-    while (nb_frame) {
-        BT_HDR *p_buf = (BT_HDR *)osi_malloc(BTIF_MEDIA_AA_BUF_SIZE);
+#if (defined(DEBUG_MEDIA_AV_FLOW) && (DEBUG_MEDIA_AV_FLOW == TRUE))
+    APPL_TRACE_DEBUG("btif_media_aa_prep_sbc_2_send nb_frame %d, TxAaQ %d",
+                       nb_frame, btif_media_cb.TxAaQ.count);
+#endif
+    while (nb_frame)
+    {
+        if (NULL == (p_buf = GKI_getpoolbuf(BTIF_MEDIA_AA_POOL_ID)))
+        {
+            APPL_TRACE_ERROR ("ERROR btif_media_aa_prep_sbc_2_send no buffer TxCnt %d ",
+                                GKI_queue_length(&btif_media_cb.TxAaQ));
+            return;
+        }
 
         /* Init buffer */
         p_buf->offset = BTIF_MEDIA_AA_SBC_OFFSET;
@@ -4259,16 +3097,16 @@ static void btif_media_aa_prep_sbc_2_send(UINT8 nb_frame,
             /* Write @ of allocated buffer in encoder.pu8Packet */
             btif_media_cb.encoder.pu8Packet = (UINT8 *) (p_buf + 1) + p_buf->offset + p_buf->len;
             /* Fill allocated buffer with 0 */
-            memset(btif_media_cb.encoder.as32PcmBuffer, 0, blocm_x_subband
-                               * btif_media_cb.encoder.s16NumOfChannels * 2);
+            memset(btif_media_cb.encoder.as16PcmBuffer, 0, blocm_x_subband
+                    * btif_media_cb.encoder.s16NumOfChannels);
 
             /* Read PCM data and upsample them if needed */
             if (btif_media_aa_read_feeding(UIPC_CH_ID_AV_AUDIO))
             {
-                size_t frames  = blocm_x_subband * btif_media_cb.encoder.s16NumOfChannels;
-                memcpy_by_audio_format(btif_media_cb.encoder.as16PcmBuffer, AUDIO_FORMAT_PCM_16_BIT, btif_media_cb.encoder.as32PcmBuffer, AUDIO_FORMAT_PCM_8_24_BIT, frames);
+                /* SBC encode and descramble frame */
                 SBC_Encoder(&(btif_media_cb.encoder));
-
+                A2D_SbcChkFrInit(btif_media_cb.encoder.pu8Packet);
+                A2D_SbcDescramble(btif_media_cb.encoder.pu8Packet, btif_media_cb.encoder.u16PacketLength);
                 /* Update SBC frame length */
                 p_buf->len += btif_media_cb.encoder.u16PacketLength;
                 nb_frame--;
@@ -4287,9 +3125,9 @@ static void btif_media_aa_prep_sbc_2_send(UINT8 nb_frame,
                 nb_frame = 0;
 
                 /* break read loop if timer was stopped (media task stopped) */
-                if (! alarm_is_scheduled(btif_media_cb.media_alarm))
+                if ( btif_media_cb.is_tx_timer == FALSE )
                 {
-                    osi_free(p_buf);
+                    GKI_freebuf(p_buf);
                     return;
                 }
             }
@@ -4309,27 +3147,19 @@ static void btif_media_aa_prep_sbc_2_send(UINT8 nb_frame,
             {
                 APPL_TRACE_DEBUG("### tx suspended, discarded frame ###");
 
-                btif_media_cb.stats.tx_queue_total_flushed_messages +=
-                    fixed_queue_length(btif_media_cb.TxAaQ);
-                btif_media_cb.stats.tx_queue_last_flushed_us =
-                    timestamp_us;
-                btif_media_flush_q(btif_media_cb.TxAaQ);
+                if (GKI_queue_length(&btif_media_cb.TxAaQ) > 0)
+                    btif_media_flush_q(&(btif_media_cb.TxAaQ));
 
-                osi_free(p_buf);
+                GKI_freebuf(p_buf);
                 return;
             }
 
             /* Enqueue the encoded SBC frame in AA Tx Queue */
-            uint8_t done_nb_frame = remain_nb_frame - nb_frame;
-            remain_nb_frame = nb_frame;
-            btif_media_cb.stats.tx_queue_total_frames += done_nb_frame;
-            if (done_nb_frame > btif_media_cb.stats.tx_queue_max_frames_per_packet)
-                btif_media_cb.stats.tx_queue_max_frames_per_packet = done_nb_frame;
-            fixed_queue_enqueue(btif_media_cb.TxAaQ, p_buf);
+            GKI_enqueue(&(btif_media_cb.TxAaQ), p_buf);
         }
         else
         {
-            osi_free(p_buf);
+            GKI_freebuf(p_buf);
         }
     }
 }
@@ -4345,43 +3175,41 @@ static void btif_media_aa_prep_sbc_2_send(UINT8 nb_frame,
  **
  *******************************************************************************/
 
-static void btif_media_aa_prep_2_send(UINT8 nb_frame, uint64_t timestamp_us)
+static void btif_media_aa_prep_2_send(UINT8 nb_frame)
 {
+    UINT8* p_buf;
+
     // Check for TX queue overflow
-    BD_ADDR peer_bda;
+
     if (nb_frame > MAX_OUTPUT_A2DP_FRAME_QUEUE_SZ)
         nb_frame = MAX_OUTPUT_A2DP_FRAME_QUEUE_SZ;
 
-    if (fixed_queue_length(btif_media_cb.TxAaQ) > (MAX_OUTPUT_A2DP_FRAME_QUEUE_SZ - nb_frame))
+    if (GKI_queue_length(&btif_media_cb.TxAaQ) > (MAX_OUTPUT_A2DP_FRAME_QUEUE_SZ - nb_frame))
     {
         APPL_TRACE_WARNING("%s() - TX queue buffer count %d/%d", __func__,
-                           fixed_queue_length(btif_media_cb.TxAaQ),
-                           MAX_OUTPUT_A2DP_FRAME_QUEUE_SZ - nb_frame);
-        // Keep track of drop-outs
-        btif_media_cb.stats.tx_queue_dropouts++;
-        btif_media_cb.stats.tx_queue_last_dropouts_us = timestamp_us;
-
-        // Flush all queued buffers...
-        size_t drop_n = fixed_queue_length(btif_media_cb.TxAaQ);
-        if (drop_n > btif_media_cb.stats.tx_queue_max_dropped_messages) {
-            btif_media_cb.stats.tx_queue_max_dropped_messages = drop_n;
-        }
-        while (fixed_queue_length(btif_media_cb.TxAaQ)) {
-            btif_media_cb.stats.tx_queue_total_dropped_messages++;
-            osi_free(fixed_queue_try_dequeue(btif_media_cb.TxAaQ));
-        }
-
-        // Request RSSI for log purposes if we had to flush buffers
-        btif_av_get_addr(peer_bda);
-        BTM_ReadRSSI(peer_bda, btm_read_rssi_cb);
+            GKI_queue_length(&btif_media_cb.TxAaQ), MAX_OUTPUT_A2DP_FRAME_QUEUE_SZ - nb_frame);
     }
+
+    while (GKI_queue_length(&btif_media_cb.TxAaQ) > (MAX_OUTPUT_A2DP_FRAME_QUEUE_SZ - nb_frame))
+    {
+        p_buf = GKI_dequeue(&(btif_media_cb.TxAaQ));
+        if (p_buf)
+        {
+            GKI_freebuf(p_buf);
+        }
+        else {
+            APPL_TRACE_DEBUG("%s btif_media_cb.TxAaQ become empty", __func__);
+            break;
+        }
+    }
+
 
     // Transcode frame
 
     switch (btif_media_cb.TxTranscoding)
     {
     case BTIF_MEDIA_TRSCD_PCM_2_SBC:
-        btif_media_aa_prep_sbc_2_send(nb_frame, timestamp_us);
+        btif_media_aa_prep_sbc_2_send(nb_frame);
         break;
 
     default:
@@ -4399,28 +3227,27 @@ static void btif_media_aa_prep_2_send(UINT8 nb_frame, uint64_t timestamp_us)
  ** Returns          void
  **
  *******************************************************************************/
-static void btif_media_send_aa_frame(uint64_t timestamp_us)
+static void btif_media_send_aa_frame(void)
 {
-    UINT8 nb_frame_2_send = 0;
-    UINT8 nb_iterations = 0;
+    UINT8 nb_frame_2_send;
+    UINT8 nb_iterations;
+    UINT8 counter;
 
-    btif_get_num_aa_frame_iteration(&nb_iterations, &nb_frame_2_send);
-
-    /* get the number of frame to send */
     #ifdef BT_AUDIO_SYSTRACE_LOG
     char trace_buf[1024];
     #endif
+    /* get the number of frame to send */
+    btif_get_num_aa_frame(&nb_iterations, &nb_frame_2_send);
 
-    if (nb_frame_2_send != 0) {
-        for (UINT8 counter = 0; counter < nb_iterations; counter++)
-        {
-            /* format and queue buffer to send */
-            btif_media_aa_prep_2_send(nb_frame_2_send, timestamp_us);
+    for (counter = 0; counter < nb_iterations; counter++)
+    {
+        /* format and Q buffer to send */
+        if (nb_frame_2_send != 0) {
+            btif_media_aa_prep_2_send(nb_frame_2_send);
         }
     }
-
-    LOG_VERBOSE(LOG_TAG, "%s Sent %d frames per iteration, %d iterations",
-                        __func__, nb_frame_2_send, nb_iterations);
+    /* send it */
+    LOG_VERBOSE("btif_media_send_aa_frame : send %d frames", nb_frame_2_send);
     #ifdef BT_AUDIO_SYSTRACE_LOG
     snprintf(trace_buf, 32, "btif_media_send_aa_frame:");
     if (PERF_SYSTRACE)
@@ -4461,86 +3288,58 @@ static void btif_media_send_aa_frame(uint64_t timestamp_us)
 #define VS_QHCI_A2DP_WRITE_SUGGESTED_BITRATE  0x06
 #define VS_QHCI_A2DP_TRANSPORT_CONFIGURATION  0x07
 #define VS_QHCI_A2DP_WRITE_SCMS_T_CP          0x08
-#define VS_QHCI_A2DP_SELECTED_CODEC           0x09
-
-#define A2DP_CODEC_SBC      0
-#define A2DP_CODEC_AAC      2
-/* Below type is not defined in spec, it is for our convenience */
-#define A2DP_CODEC_APTX     8
-
-#define A2DP_CODEC_APTX_HD  9
-/* Need to check if we need a different type for APTX low latency
- * or just we can handle with reducing the MTU updated in media
- * channel configuration.
- */
-
-#define A2DP_TRANSPORT_TYPE_SLIMBUS     0
-
-/* Better to match the codec type, for PCM we can use undefined number */
-#define A2DP_TRANSPORT_STREAM_TYPE_PCM      10
-#define A2DP_TRANSPORT_STREAM_TYPE_SBC      0
-#define A2DP_TRANSPORT_STREAM_TYPE_AAC      2
-#define A2DP_TRANSPORT_STREAM_TYPE_APTX     8
-#define A2DP_TRANSPORT_STREAM_TYPE_APTX_HD  9
-
-void disconnect_a2dp_on_vendor_start_failure()
-{
-    bt_bdaddr_t bd_addr;
-    APPL_TRACE_IMP("disconnect_a2dp_on_vendor_start_failure");
-    btif_av_get_peer_addr(&bd_addr);
-    btif_dispatch_sm_event(BTIF_AV_DISCONNECT_REQ_EVT,(char*)&bd_addr,
-            sizeof(bt_bdaddr_t));
-}
 
 void btif_media_send_reset_vendor_state()
 {
-    BT_HDR *p_buf = (BT_HDR *)osi_malloc(sizeof(BT_HDR));
-
+    BT_HDR *p_buf;
+    if (NULL == (p_buf = GKI_getbuf(sizeof(BT_HDR))))
+    {
+        APPL_TRACE_EVENT("GKI alloc failed");
+        return;
+    }
     p_buf->event = BTIF_MEDIA_RESET_VS_STATE;
-    if (btif_media_cmd_msg_queue != NULL)
-        fixed_queue_enqueue(btif_media_cmd_msg_queue, p_buf);
+    fixed_queue_enqueue(btif_media_cmd_msg_queue, p_buf);
 }
 
 void btif_media_start_vendor_command()
 {
     APPL_TRACE_IMP("btif_media_start_vendor_command_exchange:\
         vs_configs_exchanged:%u", btif_media_cb.vs_configs_exchanged);
-    btif_media_cb.tx_start_initiated = TRUE;
-    btif_media_cb.tx_enc_update_initiated = FALSE;
     if(btif_media_cb.vs_configs_exchanged)
     {
         btif_media_send_vendor_start();
     }
     else
     {
-        if (get_soc_type() == BT_SOC_SMD)
-        {
-            btif_media_send_vendor_write_sbc_cfg();
-        }
-        else
-        {
-            btif_media_send_vendor_selected_codec();
-        }
+        btif_media_send_vendor_write_sbc_cfg();
     }
 }
 
 void btif_media_on_start_vendor_command()
 {
-    BT_HDR *p_buf = (BT_HDR *)osi_malloc(sizeof(BT_HDR));
-
+    BT_HDR *p_buf;
+    if (NULL == (p_buf = GKI_getbuf(sizeof(BT_HDR))))
+    {
+        APPL_TRACE_EVENT("GKI alloc failed: ACK failure");
+        a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
+        return;
+    }
     p_buf->event = BTIF_MEDIA_START_VS_CMD;
-    if (btif_media_cmd_msg_queue != NULL)
-        fixed_queue_enqueue(btif_media_cmd_msg_queue, p_buf);
+    fixed_queue_enqueue(btif_media_cmd_msg_queue, p_buf);
 }
 
 void btif_media_on_stop_vendor_command()
 {
-    BT_HDR *p_buf = (BT_HDR *)osi_malloc(sizeof(BT_HDR));
-
+    BT_HDR *p_buf;
+    if (NULL == (p_buf = GKI_getbuf(sizeof(BT_HDR))))
+    {
+        APPL_TRACE_EVENT("GKI alloc failed: ACK failure");
+        a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
+        return;
+    }
     APPL_TRACE_IMP("btif_media_on_stop_vendor_command");
     p_buf->event = BTIF_MEDIA_STOP_VS_CMD;
-    if (btif_media_cmd_msg_queue != NULL)
-        fixed_queue_enqueue(btif_media_cmd_msg_queue, p_buf);
+    fixed_queue_enqueue(btif_media_cmd_msg_queue, p_buf);
 }
 
 void btif_media_a2dp_start_cb(tBTM_VSC_CMPL *param)
@@ -4554,24 +3353,15 @@ void btif_media_a2dp_start_cb(tBTM_VSC_CMPL *param)
     }
     APPL_TRACE_IMP("VS_QHCI_START_A2DP_MEDIA sent with error code: %u", status);
 
-    p_buf = (BT_HDR *)osi_malloc(sizeof(BT_HDR));
-
-    if (!status)
-        p_buf->event = BTIF_MEDIA_VS_A2DP_START_SUCCESS;
-    else
-        p_buf->event = BTIF_MEDIA_VS_A2DP_START_FAILURE;
-
-    if (btif_media_cmd_msg_queue != NULL)
+    if ((!status) && (NULL != (p_buf = GKI_getbuf(sizeof(BT_HDR)))))
     {
+        p_buf->event = BTIF_MEDIA_VS_A2DP_START_SUCCESS;
         fixed_queue_enqueue(btif_media_cmd_msg_queue, p_buf);
     }
     else
     {
-        APPL_TRACE_ERROR("Message queue cleaned up");
-        if (!status)
-            a2dp_cmd_acknowledge(A2DP_CTRL_ACK_SUCCESS);
-        else
-            a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
+        APPL_TRACE_ERROR("Error in processing Vendor command response");
+        a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
     }
 }
 
@@ -4599,23 +3389,12 @@ void btif_media_a2dp_stop_cb(tBTM_VSC_CMPL *param)
     }
     APPL_TRACE_IMP("VS_QHCI_STOP_A2DP_MEDIA sent with error code: %u", status);
 
-    p_buf = (BT_HDR *)osi_malloc(sizeof(BT_HDR));
-
-    if (!status)
+    if ((!status) && (NULL != (p_buf = GKI_getbuf(sizeof(BT_HDR)))))
         p_buf->event = BTIF_MEDIA_VS_A2DP_STOP_SUCCESS;
     else
         p_buf->event = BTIF_MEDIA_VS_A2DP_STOP_FAILURE;
 
-    if (btif_media_cmd_msg_queue != NULL)
-        fixed_queue_enqueue(btif_media_cmd_msg_queue, p_buf);
-    else
-    {
-        APPL_TRACE_ERROR("Message queue cleaned up");
-        if (!status)
-            a2dp_cmd_acknowledge(A2DP_CTRL_ACK_SUCCESS);
-        else
-            a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
-    }
+    fixed_queue_enqueue(btif_media_cmd_msg_queue, p_buf);
 }
 
 BOOLEAN btif_media_send_vendor_stop()
@@ -4633,129 +3412,6 @@ BOOLEAN btif_media_send_vendor_stop()
                                             param, btif_media_a2dp_stop_cb);
 }
 
-void btif_media_selected_codec_cb(tBTM_VSC_CMPL *param)
-{
-    unsigned char status = 0;
-    BT_HDR *p_buf;
-
-    if (param->param_len)
-    {
-        status = param->p_param_buf[0];
-    }
-    APPL_TRACE_IMP("VS_QHCI_A2DP_SELECTED_CODEC sent with error code: %u",
-                                                                        status);
-
-    if (!status)
-    {
-        p_buf = (BT_HDR *)osi_malloc(sizeof(BT_HDR));
-        p_buf->event = BTIF_MEDIA_VS_A2DP_SELECTED_CODEC_SUCCESS;
-        if (btif_media_cmd_msg_queue != NULL)
-            fixed_queue_enqueue(btif_media_cmd_msg_queue, p_buf);
-        else
-            a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
-    }
-    else
-    {
-        APPL_TRACE_ERROR("Error in processing Vendor command response");
-        a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
-        disconnect_a2dp_on_vendor_start_failure();
-    }
-}
-
-BOOLEAN btif_media_send_vendor_selected_codec()
-{
-    UINT8 param[12], codec_type = A2DP_CODEC_SBC;
-    UINT16 index = 0;
-
-    codec_type = bta_av_co_get_current_codec();
-    if (codec_type == A2D_NON_A2DP_MEDIA_CT) {
-        UINT8* ptr = bta_av_co_get_current_codecInfo();
-        if (ptr) {
-            tA2D_APTX_CIE* codecInfo = (tA2D_APTX_CIE*) &ptr[BTA_AV_CFG_START_IDX];
-            if (codecInfo && codecInfo->vendorId == A2D_APTX_VENDOR_ID && codecInfo->codecId == A2D_APTX_CODEC_ID_BLUETOOTH)
-                   codec_type = A2DP_CODEC_APTX;
-            else if (codecInfo && codecInfo->vendorId == A2D_APTX_HD_VENDOR_ID && codecInfo->codecId == A2D_APTX_HD_CODEC_ID_BLUETOOTH)
-                   codec_type = A2DP_CODEC_APTX_HD;
-        }
-    }
-
-    APPL_TRACE_IMP("btif_media_send_selected_codec: codec: %d", codec_type);
-    param[index++] = VS_QHCI_A2DP_SELECTED_CODEC;
-    param[index++] = codec_type;
-    param[index++] = 0; //Max Latency
-    param[index++] = 0; //Delay report
-#if (BTA_AV_CO_CP_SCMS_T == TRUE)
-    param[index++] = bta_av_co_cp_is_active();
-#else
-    param[index++] = 0;
-#endif
-    param[index++] = bta_av_co_cp_get_flag();
-    param[index++] = (UINT8)(btif_media_cb.media_feeding.cfg.pcm.sampling_freq & 0xFF);
-    param[index++] = (UINT8)((btif_media_cb.media_feeding.cfg.pcm.sampling_freq >> 8)& 0xFF);
-    if (codec_type == A2DP_CODEC_SBC)
-    {
-        param[index++] = (UINT8)btif_media_cb.encoder.s16NumOfSubBands;
-        param[index++] = (UINT8)btif_media_cb.encoder.s16NumOfBlocks;
-    }
-    return BTA_DmVendorSpecificCommand(HCI_VSQC_CONTROLLER_A2DP_OPCODE, index,
-                                            param, btif_media_selected_codec_cb);
-}
-
-void btif_media_transport_cfg_cb(tBTM_VSC_CMPL *param)
-{
-    unsigned char status = 0;
-    BT_HDR *p_buf;
-
-    if (param->param_len)
-    {
-        status = param->p_param_buf[0];
-    }
-    APPL_TRACE_IMP("VS_QHCI_A2DP_TRANSPORT_CFG sent with error code: %u",
-                                                                        status);
-
-    if (!status)
-    {
-        p_buf = (BT_HDR *)osi_malloc(sizeof(BT_HDR));
-        p_buf->event = BTIF_MEDIA_VS_A2DP_TRANSPORT_CFG_SUCCESS;
-        if (btif_media_cmd_msg_queue != NULL)
-            fixed_queue_enqueue(btif_media_cmd_msg_queue, p_buf);
-        else
-            a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
-    }
-    else
-    {
-        APPL_TRACE_ERROR("Error in processing Vendor command response");
-        a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
-        disconnect_a2dp_on_vendor_start_failure();
-    }
-}
-BOOLEAN btif_media_send_vendor_transport_cfg()
-{
-    UINT8 param[3];
-    UINT8 codec_type = bta_av_co_get_current_codec();
-    UINT8 stream_type;
-    APPL_TRACE_IMP("btif_media_send_vendor_transport_cfg: codec: %d", codec_type);
-    stream_type = codec_type;
-
-    if (codec_type == A2D_NON_A2DP_MEDIA_CT) {
-        UINT8* ptr = bta_av_co_get_current_codecInfo();
-        if (ptr) {
-            tA2D_APTX_CIE* codecInfo = (tA2D_APTX_CIE*) &ptr[BTA_AV_CFG_START_IDX];
-            if (codecInfo && codecInfo->vendorId == A2D_APTX_VENDOR_ID && codecInfo->codecId == A2D_APTX_CODEC_ID_BLUETOOTH)
-                  stream_type = A2DP_TRANSPORT_STREAM_TYPE_APTX;
-            else if (codecInfo && codecInfo->vendorId == A2D_APTX_HD_VENDOR_ID && codecInfo->codecId == A2D_APTX_HD_CODEC_ID_BLUETOOTH)
-                  stream_type = A2DP_TRANSPORT_STREAM_TYPE_APTX_HD;
-        }
-    }
-
-    param[0] = VS_QHCI_A2DP_TRANSPORT_CONFIGURATION;
-    param[1] = A2DP_TRANSPORT_TYPE_SLIMBUS;
-    param[2] = stream_type;
-
-    return BTA_DmVendorSpecificCommand(HCI_VSQC_CONTROLLER_A2DP_OPCODE, 3,
-                                            param, btif_media_transport_cfg_cb);
-}
-
 void btif_media_a2dp_media_chn_cfg_cb(tBTM_VSC_CMPL *param)
 {
     unsigned char status = 0;
@@ -4768,20 +3424,15 @@ void btif_media_a2dp_media_chn_cfg_cb(tBTM_VSC_CMPL *param)
     APPL_TRACE_IMP("VS_QHCI_WRITE_A2DP_MEDIA_CHANNEL_CFG sent with error code: %u",
                                                                         status);
 
-    if (!status)
+    if ((!status) && (NULL != (p_buf = GKI_getbuf(sizeof(BT_HDR)))))
     {
-        p_buf = (BT_HDR *)osi_malloc(sizeof(BT_HDR));
         p_buf->event = BTIF_MEDIA_VS_A2DP_MEDIA_CHNL_CFG_SUCCESS;
-        if (btif_media_cmd_msg_queue != NULL)
-            fixed_queue_enqueue(btif_media_cmd_msg_queue, p_buf);
-        else
-            a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
+        fixed_queue_enqueue(btif_media_cmd_msg_queue, p_buf);
     }
     else
     {
         APPL_TRACE_ERROR("Error in processing Vendor command response");
         a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
-        disconnect_a2dp_on_vendor_start_failure();
     }
 }
 
@@ -4802,10 +3453,9 @@ BOOLEAN btif_media_send_vendor_media_chn_cfg()
     param[3] = (UINT8)(((acl_hdl & 0xff00) >> 8) & 0x00ff);
     param[4] = (UINT8)(btif_av_get_streaming_channel_id()& 0x00ff);
     param[5] = (UINT8)(((btif_av_get_streaming_channel_id() & 0xff00)
-                                                       >> 8) & 0x00ff);
+                                                        >> 8) & 0x00ff);
     param[6] = (UINT8)(btif_media_cb.TxAaMtuSize & 0x00ff);
     param[7] = (UINT8)(((btif_media_cb.TxAaMtuSize & 0xff00) >> 8) & 0x00ff);
-
     return BTA_DmVendorSpecificCommand(HCI_VSQC_CONTROLLER_A2DP_OPCODE, 8,
                                     param, btif_media_a2dp_media_chn_cfg_cb);
 }
@@ -4821,20 +3471,15 @@ void btif_media_a2dp_write_sbc_cfg_cb(tBTM_VSC_CMPL *param)
     }
     APPL_TRACE_IMP("VS_QHCI_WRITE_SBC_CFG sent with error code: %u", status);
 
-    if (!status)
+    if ((!status) && (NULL != (p_buf = GKI_getbuf(sizeof(BT_HDR)))))
     {
-        p_buf = (BT_HDR *)osi_malloc(sizeof(BT_HDR));
         p_buf->event = BTIF_MEDIA_VS_A2DP_WRITE_SBC_CFG_SUCCESS;
-        if (btif_media_cmd_msg_queue != NULL)
-            fixed_queue_enqueue(btif_media_cmd_msg_queue, p_buf);
-        else
-            a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
+        fixed_queue_enqueue(btif_media_cmd_msg_queue, p_buf);
     }
     else
     {
         APPL_TRACE_ERROR("Error in processing Vendor command response");
         a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
-        disconnect_a2dp_on_vendor_start_failure();
     }
 }
 
@@ -4891,20 +3536,15 @@ void btif_media_pref_bit_rate_cb(tBTM_VSC_CMPL *param)
     }
     APPL_TRACE_IMP("VS_QHCI_A2DP_WRITE_SUGGESTED_BITRATE sent with error code: %u", status);
 
-    if (!status)
+    if ((!status) && (NULL != (p_buf = GKI_getbuf(sizeof(BT_HDR)))))
     {
-        p_buf = (BT_HDR *)osi_malloc(sizeof(BT_HDR));
         p_buf->event = BTIF_MEDIA_VS_A2DP_PREF_BIT_RATE_SUCCESS;
-        if (btif_media_cmd_msg_queue != NULL)
-            fixed_queue_enqueue(btif_media_cmd_msg_queue, p_buf);
-        else
-            a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
+        fixed_queue_enqueue(btif_media_cmd_msg_queue, p_buf);
     }
     else
     {
         APPL_TRACE_ERROR("Error in processing Vendor command response");
         a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
-        disconnect_a2dp_on_vendor_start_failure();
     }
 }
 
@@ -4933,20 +3573,15 @@ void btif_media_scmst_cb(tBTM_VSC_CMPL *param)
     }
     APPL_TRACE_IMP("VS_QHCI_A2DP_WRITE_SCMS_T_CP sent with error code: %u", status);
 
-    if (!status)
+    if ((!status) && (NULL != (p_buf = GKI_getbuf(sizeof(BT_HDR)))))
     {
-        p_buf = (BT_HDR *)osi_malloc(sizeof(BT_HDR));
         p_buf->event = BTIF_MEDIA_VS_A2DP_SET_SCMST_HDR_SUCCESS;
-        if (btif_media_cmd_msg_queue != NULL)
-            fixed_queue_enqueue(btif_media_cmd_msg_queue, p_buf);
-        else
-            a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
+        fixed_queue_enqueue(btif_media_cmd_msg_queue, p_buf);
     }
     else
     {
         APPL_TRACE_ERROR("Error in processing Vendor command response");
         a2dp_cmd_acknowledge(A2DP_CTRL_ACK_FAILURE);
-        disconnect_a2dp_on_vendor_start_failure();
     }
 }
 
@@ -4954,13 +3589,13 @@ BOOLEAN btif_media_send_vendor_scmst_hdr()
 {
     UINT8 param[3];
 
-    APPL_TRACE_IMP("btif_media_send_vendor_scmst_hdr");
+    APPL_TRACE_IMP("btif_media_send_vendor_pref_bit_rate");
 
     param[0] = VS_QHCI_A2DP_WRITE_SCMS_T_CP;
     param[1] = bta_av_co_cp_get_flag();
 
     return BTA_DmVendorSpecificCommand(HCI_VSQC_CONTROLLER_A2DP_OPCODE, 2,
-                                            param, btif_media_scmst_cb);
+                                            param, btif_media_pref_bit_rate_cb);
 }
 
 #endif
@@ -5041,190 +3676,3 @@ void dump_codec_info(unsigned char *p_codec)
 
 }
 
-void btif_debug_a2dp_dump(int fd)
-{
-    btif_a2dp_source_accumulate_stats(&btif_media_cb.stats,
-                                    &btif_media_cb.accumulated_stats);
-    uint64_t now_us = time_now_us();
-    btif_media_stats_t *stats = &btif_media_cb.accumulated_stats;
-    scheduling_stats_t *enqueue_stats = &stats->tx_queue_enqueue_stats;
-    scheduling_stats_t *dequeue_stats = &stats->tx_queue_dequeue_stats;
-    size_t ave_size;
-    uint64_t ave_time_us;
-
-    dprintf(fd, "\nA2DP State:\n");
-    dprintf(fd, "  TxQueue:\n");
-
-    dprintf(fd, "  Counts (enqueue/dequeue/readbuf)                        : %zu / %zu / %zu\n",
-            enqueue_stats->total_updates,
-            dequeue_stats->total_updates,
-            stats->tx_queue_total_readbuf_calls);
-
-    dprintf(fd, "  Last update time ago in ms (enqueue/dequeue/readbuf)    : %llu / %llu / %llu\n",
-            (enqueue_stats->last_update_us > 0) ?
-                (unsigned long long)(now_us - enqueue_stats->last_update_us) / 1000 : 0,
-            (dequeue_stats->last_update_us > 0) ?
-                (unsigned long long)(now_us - dequeue_stats->last_update_us) / 1000 : 0,
-            (stats->tx_queue_last_readbuf_us > 0)?
-                (unsigned long long)(now_us - stats->tx_queue_last_readbuf_us) / 1000 : 0);
-
-    ave_size = 0;
-    if (stats->media_read_expected_count != 0)
-        ave_size = stats->media_read_total_expected_frames / stats->media_read_expected_count;
-    dprintf(fd, "  Frames expected (total/max/ave)                         : %zu / %zu / %zu\n",
-            stats->media_read_total_expected_frames,
-            stats->media_read_max_expected_frames,
-            ave_size);
-
-    ave_size = 0;
-    if (stats->media_read_limited_count != 0)
-        ave_size = stats->media_read_total_limited_frames / stats->media_read_limited_count;
-    dprintf(fd, "  Frames limited (total/max/ave)                          : %zu / %zu / %zu\n",
-            stats->media_read_total_limited_frames,
-            stats->media_read_max_limited_frames,
-            ave_size);
-
-    dprintf(fd, "  Counts (expected/limited)                               : %zu / %zu\n",
-            stats->media_read_expected_count,
-            stats->media_read_limited_count);
-
-    ave_size = 0;
-    if (enqueue_stats->total_updates != 0)
-        ave_size = stats->tx_queue_total_frames / enqueue_stats->total_updates;
-    dprintf(fd, "  Frames per packet (total/max/ave)                       : %zu / %zu / %zu\n",
-            stats->tx_queue_total_frames,
-            stats->tx_queue_max_frames_per_packet,
-            ave_size);
-
-    dprintf(fd, "  Counts (flushed/dropped/dropouts)                       : %zu / %zu / %zu\n",
-            stats->tx_queue_total_flushed_messages,
-            stats->tx_queue_total_dropped_messages,
-            stats->tx_queue_dropouts);
-
-    dprintf(fd, "  Last update time ago in ms (flushed/dropped)            : %llu / %llu\n",
-            (stats->tx_queue_last_flushed_us > 0) ?
-                (unsigned long long)(now_us - stats->tx_queue_last_flushed_us) / 1000 : 0,
-            (stats->tx_queue_last_dropouts_us > 0)?
-                (unsigned long long)(now_us - stats->tx_queue_last_dropouts_us)/ 1000 : 0);
-
-    dprintf(fd, "  Counts (underflow/underrun)                             : %zu / %zu\n",
-            stats->media_read_total_underflow_count,
-            stats->media_read_total_underrun_count);
-
-    dprintf(fd, "  Bytes (underflow/underrun)                              : %zu / %zu\n",
-            stats->media_read_total_underflow_bytes,
-            stats->media_read_total_underrun_bytes);
-
-    dprintf(fd, "  Last update time ago in ms (underflow/underrun)         : %llu / %llu\n",
-            (stats->media_read_last_underflow_us > 0) ?
-                (unsigned long long)(now_us - stats->media_read_last_underflow_us) / 1000 : 0,
-            (stats->media_read_last_underrun_us > 0)?
-                (unsigned long long)(now_us - stats->media_read_last_underrun_us) / 1000 : 0);
-
-    //
-    // TxQueue enqueue stats
-    //
-    dprintf(fd, "  Enqueue deviation counts (overdue/premature)            : %zu / %zu\n",
-            enqueue_stats->overdue_scheduling_count,
-            enqueue_stats->premature_scheduling_count);
-
-    ave_time_us = 0;
-    if (enqueue_stats->overdue_scheduling_count != 0) {
-        ave_time_us = enqueue_stats->total_overdue_scheduling_delta_us /
-            enqueue_stats->overdue_scheduling_count;
-    }
-    dprintf(fd, "  Enqueue overdue scheduling time in ms (total/max/ave)   : %llu / %llu / %llu\n",
-            (unsigned long long)enqueue_stats->total_overdue_scheduling_delta_us / 1000,
-            (unsigned long long)enqueue_stats->max_overdue_scheduling_delta_us / 1000,
-            (unsigned long long)ave_time_us / 1000);
-
-    ave_time_us = 0;
-    if (enqueue_stats->premature_scheduling_count != 0) {
-        ave_time_us = enqueue_stats->total_premature_scheduling_delta_us /
-            enqueue_stats->premature_scheduling_count;
-    }
-    dprintf(fd, "  Enqueue premature scheduling time in ms (total/max/ave) : %llu / %llu / %llu\n",
-            (unsigned long long)enqueue_stats->total_premature_scheduling_delta_us / 1000,
-            (unsigned long long)enqueue_stats->max_premature_scheduling_delta_us / 1000,
-            (unsigned long long)ave_time_us / 1000);
-
-
-    //
-    // TxQueue dequeue stats
-    //
-    dprintf(fd, "  Dequeue deviation counts (overdue/premature)            : %zu / %zu\n",
-            dequeue_stats->overdue_scheduling_count,
-            dequeue_stats->premature_scheduling_count);
-
-    ave_time_us = 0;
-    if (dequeue_stats->overdue_scheduling_count != 0) {
-        ave_time_us = dequeue_stats->total_overdue_scheduling_delta_us /
-            dequeue_stats->overdue_scheduling_count;
-    }
-    dprintf(fd, "  Dequeue overdue scheduling time in ms (total/max/ave)   : %llu / %llu / %llu\n",
-            (unsigned long long)dequeue_stats->total_overdue_scheduling_delta_us / 1000,
-            (unsigned long long)dequeue_stats->max_overdue_scheduling_delta_us / 1000,
-            (unsigned long long)ave_time_us / 1000);
-
-    ave_time_us = 0;
-    if (dequeue_stats->premature_scheduling_count != 0) {
-        ave_time_us = dequeue_stats->total_premature_scheduling_delta_us /
-            dequeue_stats->premature_scheduling_count;
-    }
-    dprintf(fd, "  Dequeue premature scheduling time in ms (total/max/ave) : %llu / %llu / %llu\n",
-            (unsigned long long)dequeue_stats->total_premature_scheduling_delta_us / 1000,
-            (unsigned long long)dequeue_stats->max_premature_scheduling_delta_us / 1000,
-            (unsigned long long)ave_time_us / 1000);
-
-}
-
-void btif_update_a2dp_metrics(void)
-{
-    btif_media_stats_t* stats = &btif_media_cb.stats;
-    scheduling_stats_t* enqueue_stats = &stats->tx_queue_enqueue_stats;
-    A2dpSessionMetrics_t metrics;
-    metrics.media_timer_min_ms = -1;
-    metrics.media_timer_max_ms = -1;
-    metrics.media_timer_avg_ms = -1;
-    metrics.total_scheduling_count = -1;
-    metrics.buffer_overruns_max_count = -1;
-    metrics.buffer_overruns_total = -1;
-    metrics.buffer_underruns_average = -1.0;
-    metrics.buffer_underruns_count = -1;
-    metrics.audio_duration_ms = -1;
-    // session_start_us is 0 when btif_media_task_start_aa_req() is not called
-    // mark the metric duration as invalid (-1) in this case
-    if (stats->session_start_us != 0) {
-        int64_t session_end_us = stats->session_end_us == 0
-                               ? time_now_us()
-                               : stats->session_end_us;
-        metrics.audio_duration_ms = (session_end_us - stats->session_start_us) / 1000;
-    }
-    if (enqueue_stats->total_updates > 1) {
-        metrics.media_timer_min_ms = BTIF_SINK_MEDIA_TIME_TICK_MS -
-            (enqueue_stats->max_premature_scheduling_delta_us / 1000);
-        metrics.media_timer_max_ms = BTIF_SINK_MEDIA_TIME_TICK_MS +
-            (enqueue_stats->max_overdue_scheduling_delta_us / 1000);
-        metrics.total_scheduling_count
-            = enqueue_stats->overdue_scheduling_count +
-                enqueue_stats->premature_scheduling_count +
-                    enqueue_stats->exact_scheduling_count;
-        if (metrics.total_scheduling_count > 0) {
-            metrics.media_timer_avg_ms = enqueue_stats->total_scheduling_time_us /
-                (1000 * metrics.total_scheduling_count);
-        }
-        metrics.buffer_overruns_max_count = stats->tx_queue_max_dropped_messages;
-        metrics.buffer_overruns_total = stats->tx_queue_total_dropped_messages;
-        metrics.buffer_underruns_count =
-            stats->media_read_total_underflow_count +
-                stats->media_read_total_underrun_count;
-        metrics.buffer_underruns_average = 0;
-        if (metrics.buffer_underruns_count > 0) {
-            metrics.buffer_underruns_average =
-                (stats->media_read_total_underflow_bytes +
-                    stats->media_read_total_underrun_bytes) /
-                        metrics.buffer_underruns_count;
-        }
-    }
-    metrics_log_a2dp_session(&metrics);
-}

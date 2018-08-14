@@ -42,8 +42,6 @@
 /* maximum length of data to read from RFCOMM */
 #define BTA_HF_CLIENT_RFC_READ_MAX     512
 
-BOOLEAN is_sniff_disabled = false;
-
 /*******************************************************************************
 **
 ** Function         bta_hf_client_register
@@ -109,9 +107,6 @@ void bta_hf_client_deregister(tBTA_HF_CLIENT_DATA *p_data)
 
     /* disable */
     bta_hf_client_scb_disable();
-
-    if (is_sniff_disabled == true)
-        is_sniff_disabled = false;
 }
 
 /*******************************************************************************
@@ -285,8 +280,11 @@ void bta_hf_client_rfc_acp_open(tBTA_HF_CLIENT_DATA *p_data)
     }
 
     /* Collision Handling */
-    if (alarm_is_scheduled(bta_hf_client_cb.scb.collision_timer)) {
-        alarm_cancel(bta_hf_client_cb.scb.collision_timer);
+    if (bta_hf_client_cb.scb.colli_tmr_on)
+    {
+        /* stop collision timer */
+        bta_hf_client_cb.scb.colli_tmr_on = FALSE;
+        bta_sys_stop_timer (&bta_hf_client_cb.scb.colli_timer);
 
         if (bdcmp (dev_addr, bta_hf_client_cb.scb.peer_addr) == 0)
         {
@@ -432,9 +430,6 @@ void bta_hf_client_rfc_close(tBTA_HF_CLIENT_DATA *p_data)
         bta_hf_client_close_server();
         bta_hf_client_scb_disable();
     }
-
-    if (is_sniff_disabled == true)
-        is_sniff_disabled = false;
 }
 
 /*******************************************************************************
@@ -808,17 +803,6 @@ void bta_hf_client_cgmm(char *str)
     memset(&evt, 0, sizeof(evt));
 
     strlcpy(evt.cgmm.model, str, BTA_HF_CLIENT_MANUFACTURER_MODEL + 1);
-
-    APPL_TRACE_DEBUG("%s: phone model is %s", __func__, evt.cgmm.model);
-
-#ifdef SNIFF_DISABLE
-   if (strncmp(evt.cgmm.model, "+CGMM: iPhone", 13) == 0)
-   {
-       APPL_TRACE_WARNING("%s: Changing policy to disable sniff", __func__);
-       bta_sys_clear_policy(BTA_ID_HS, HCI_ENABLE_SNIFF_MODE, bta_hf_client_cb.scb.peer_addr);
-       is_sniff_disabled = true;
-   }
-#endif
 
     (*bta_hf_client_cb.p_cback)(BTA_HF_CLIENT_CGMM_EVT, &evt);
 }

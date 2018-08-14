@@ -46,12 +46,8 @@ typedef enum {
     BTIF_AV_STOP_STREAM_REQ_EVT,
     BTIF_AV_SUSPEND_STREAM_REQ_EVT,
     BTIF_AV_SINK_CONFIG_REQ_EVT,
-    BTIF_AV_OFFLOAD_START_REQ_EVT,
-    BTIF_AV_SINK_FOCUS_REQ_EVT,
     BTIF_AV_CLEANUP_REQ_EVT,
-    BTIF_AV_UPDATE_ENCODER_REQ_EVT,
-    BTIF_AV_INIT_REQ_EVT,
-	
+    BTIF_AV_SINK_FOCUS_REQ_EVT,
 } btif_av_sm_event_t;
 
 
@@ -82,17 +78,6 @@ btif_sm_handle_t btif_av_get_sm_handle(void);
 *******************************************************************************/
 
 bt_bdaddr_t btif_av_get_addr(BD_ADDR address);
-
-/*******************************************************************************
-** Function         btif_av_is_sink_enabled
-**
-** Description      Checks if A2DP Sink is enabled or not
-**
-** Returns          TRUE if A2DP Sink is enabled, false otherwise
-**
-*******************************************************************************/
-
-BOOLEAN btif_av_is_sink_enabled(void);
 
 /*******************************************************************************
 **
@@ -174,18 +159,7 @@ BOOLEAN btif_av_is_peer_edr(void);
 #ifdef USE_AUDIO_TRACK
 /*******************************************************************************
 **
-** Function         audio_focus_status
-**
-** Description      Update Audio Focus State
-**
-** Returns          None
-**
-*******************************************************************************/
-void audio_focus_status(int state);
-
-/*******************************************************************************
-**
-** Function         btif_queue_focus_request
+** Function         btif_queue_focus_rquest
 **
 ** Description      This is used to move context to btif and
 **                  queue audio_focus_request
@@ -193,7 +167,7 @@ void audio_focus_status(int state);
 ** Returns          none
 **
 *******************************************************************************/
-void btif_queue_focus_request(void);
+void btif_queue_focus_rquest(void);
 #endif
 
 /******************************************************************************
@@ -204,6 +178,7 @@ void btif_queue_focus_request(void);
 **
 ** Returns          Void
 ********************************************************************************/
+
 void btif_av_clear_remote_suspend_flag(void);
 
 /*******************************************************************************
@@ -222,11 +197,12 @@ BOOLEAN btif_av_any_br_peer(void);
 **
 ** Function         btif_av_peer_supports_3mbps
 **
-** Description      Check if the connected A2DP device supports
-**                  3 Mbps EDR. This function will only work while connected.
-**                  If not connected it will always return false.
+** Description      Check if the connected a2dp device supports
+**                  3mbps edr. Only when connected this function
+**                  will accurately provide a true capability of
+**                  remote peer. If not connected it will always be false.
 **
-** Returns          TRUE if remote device is EDR and supports 3 Mbps
+** Returns          TRUE if remote device is EDR and supports 3mbps
 **
 *******************************************************************************/
 BOOLEAN btif_av_peer_supports_3mbps(void);
@@ -252,31 +228,6 @@ UINT16 btif_av_get_streaming_channel_id(void);
 ********************************************************************************/
 void btif_av_get_peer_addr(bt_bdaddr_t *peer_bda);
 
-#else
-#define btif_av_get_streaming_channel_id() (0)
-#define btif_av_get_peer_addr(peer_bda) (0)
 #endif
-
-/*******************************************************************************
-**
-** Function         btif_av_get_multicast_state
-**
-** Description      Check if A2DP multicast is enabled
-**
-** Returns          TRUE if a2dp multicast is enabled
-**
-*******************************************************************************/
-BOOLEAN btif_av_get_multicast_state();
-
-/*******************************************************************************
-**
-** Function         btif_av_is_multicast_supported
-**
-** Description      Check if A2DP multicast is supported
-**
-** Returns          TRUE if a2dp multicast is supported
-**
-*******************************************************************************/
-BOOLEAN btif_av_is_multicast_supported();
 
 #endif /* BTIF_AV_H */

@@ -32,9 +32,12 @@
 #include <string.h>
 #include "bta_dm_int.h"
 #include "l2c_api.h"
-#include <cutils/properties.h>
 #include <hardware/bluetooth.h>
+#include <cutils/properties.h>
+
+
 #include "device/include/interop.h"
+
 /*****************************************************************************
 **  Constants
 *****************************************************************************/
@@ -228,11 +231,13 @@ void bta_ag_start_open(tBTA_AG_SCB *p_scb, tBTA_AG_DATA *p_data)
                     p_scb->peer_addr[2], p_scb->peer_addr[3], p_scb->peer_addr[4],
                     p_scb->peer_addr[5]);
                 // send ourselves close event for clean up
-                p_buf = (tBTA_AG_RFC *) osi_malloc(sizeof(tBTA_AG_RFC));
-                p_buf->hdr.event = BTA_AG_RFC_CLOSE_EVT;
-                p_buf->hdr.layer_specific = bta_ag_scb_to_idx(p_scb);
-                bta_sys_sendmsg(p_buf);
-                return;
+                if ((p_buf = (tBTA_AG_RFC *) GKI_getbuf(sizeof(tBTA_AG_RFC))) != NULL)
+                {
+                     p_buf->hdr.event = BTA_AG_RFC_CLOSE_EVT;
+                     p_buf->hdr.layer_specific = bta_ag_scb_to_idx(p_scb);
+                     bta_sys_sendmsg(p_buf);
+                     return;
+                }
             }
         }
         /* Let the incoming connection goes through.                        */
@@ -457,9 +462,9 @@ void bta_ag_rfc_close(tBTA_AG_SCB *p_scb, tBTA_AG_DATA *p_data)
     bta_ag_at_reinit(&p_scb->at_cb);
 
     /* stop timers */
-    alarm_cancel(p_scb->ring_timer);
+    bta_sys_stop_timer(&p_scb->act_timer);
 #if (BTM_WBS_INCLUDED == TRUE)
-    alarm_cancel(p_scb->codec_negotiation_timer);
+    bta_sys_stop_timer(&p_scb->cn_timer);
 #endif
 
     close.hdr.handle = bta_ag_scb_to_idx(p_scb);
@@ -550,17 +555,20 @@ void bta_ag_rfc_open(tBTA_AG_SCB *p_scb, tBTA_AG_DATA *p_data)
 
     bta_ag_cback_open(p_scb, NULL, BTA_AG_SUCCESS);
 
-    if (interop_match_addr(INTEROP_INCREASE_AG_CONN_TIMEOUT,
+    if (interop_addr_match(INTEROP_INCREASE_AG_CONN_TIMEOUT,
                             (const bt_bdaddr_t*)p_scb->peer_addr)) {
-       /* use higher value for ag conn timeout */
-       ag_conn_timeout = 20000;
+        /* use higher value for ag conn timeout */
+        ag_conn_timeout = 20000;
     }
+
     APPL_TRACE_DEBUG ("bta_ag_rfc_open: ag_conn_timeout: %d", ag_conn_timeout);
-    if (p_scb->conn_service == BTA_AG_HFP) {
+    if (p_scb->conn_service == BTA_AG_HFP)
+    {
         /* if hfp start timer for service level conn */
-        bta_sys_start_timer(p_scb->ring_timer, ag_conn_timeout,
-                            BTA_AG_SVC_TIMEOUT_EVT, bta_ag_scb_to_idx(p_scb));
-    } else {
+        bta_sys_start_timer(&p_scb->act_timer, BTA_AG_SVC_TOUT_EVT, ag_conn_timeout);
+    }
+    else
+    {
         /* else service level conn is open */
         bta_ag_svc_conn_open(p_scb, p_data);
     }
@@ -600,9 +608,11 @@ void bta_ag_rfc_acp_open(tBTA_AG_SCB *p_scb, tBTA_AG_DATA *p_data)
     /* Collision Handling */
     for (i = 0, ag_scb = &bta_ag_cb.scb[0]; i < BTA_AG_NUM_SCB; i++, ag_scb++)
     {
-        if (ag_scb->in_use && alarm_is_scheduled(ag_scb->collision_timer))
+        if ((ag_scb->in_use) && (ag_scb->colli_tmr_on))
         {
-            alarm_cancel(ag_scb->collision_timer);
+            /* stop collision timer */
+            ag_scb->colli_tmr_on = FALSE;
+            bta_sys_stop_timer (&ag_scb->colli_timer);
 
             if (bdcmp (dev_addr, ag_scb->peer_addr) == 0)
             {
@@ -625,10 +635,12 @@ void bta_ag_rfc_acp_open(tBTA_AG_SCB *p_scb, tBTA_AG_DATA *p_data)
                     // send ourselves close event for clean up
                     // move back to OPENING state from INIT state so that clean up is done
                     ag_scb->state = 1;
-                    p_buf = (tBTA_AG_RFC *) osi_malloc(sizeof(tBTA_AG_RFC));
-                    p_buf->hdr.event = BTA_AG_RFC_CLOSE_EVT;
-                    p_buf->hdr.layer_specific = bta_ag_scb_to_idx(ag_scb);
-                    bta_sys_sendmsg(p_buf);
+                    if ((p_buf = (tBTA_AG_RFC *) GKI_getbuf(sizeof(tBTA_AG_RFC))) != NULL)
+                    {
+                        p_buf->hdr.event = BTA_AG_RFC_CLOSE_EVT;
+                        p_buf->hdr.layer_specific = bta_ag_scb_to_idx(ag_scb);
+                        bta_sys_sendmsg(p_buf);
+                    }
                 }
             }
             else
@@ -699,8 +711,7 @@ void bta_ag_rfc_data(tBTA_AG_SCB *p_scb, tBTA_AG_DATA *p_data)
 
     memset(buf, 0, BTA_AG_RFC_READ_MAX);
 
-    APPL_TRACE_DEBUG("%s", __func__);
-
+    APPL_TRACE_DEBUG("bta_ag_rfc_data");
     /* do the following */
     for(;;)
     {
@@ -723,10 +734,11 @@ void bta_ag_rfc_data(tBTA_AG_SCB *p_scb, tBTA_AG_DATA *p_data)
         {
             APPL_TRACE_IMP("bta_ag_rfc_data, change link policy for SCO");
             bta_sys_sco_open(BTA_ID_AG, p_scb->app_id, p_scb->peer_addr);
-        } else {
+        }
+        else
+        {
             bta_sys_idle(BTA_ID_AG, p_scb->app_id, p_scb->peer_addr);
         }
-
         /* no more data to read, we're done */
         if (len < BTA_AG_RFC_READ_MAX)
         {
@@ -875,7 +887,8 @@ void bta_ag_svc_conn_open(tBTA_AG_SCB *p_scb, tBTA_AG_DATA *p_data)
         /* Clear AT+BIA mask from previous SLC if any. */
         p_scb->bia_masked_out = 0;
 
-        alarm_cancel(p_scb->ring_timer);
+        /* stop timer */
+        bta_sys_stop_timer(&p_scb->act_timer);
 
         /* call callback */
         evt.hdr.handle = bta_ag_scb_to_idx(p_scb);

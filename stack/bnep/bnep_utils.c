@@ -22,11 +22,9 @@
  *
  ******************************************************************************/
 
-#include <cutils/log.h>
-
 #include <stdio.h>
 #include <string.h>
-#include "bt_common.h"
+#include "gki.h"
 #include "bt_types.h"
 #include "bnep_int.h"
 #include "btu.h"
@@ -34,8 +32,6 @@
 #include "bt_utils.h"
 #include "device/include/controller.h"
 
-
-extern fixed_queue_t *btu_general_alarm_queue;
 
 /********************************************************************************/
 /*              L O C A L    F U N C T I O N     P R O T O T Y P E S            */
@@ -122,13 +118,12 @@ tBNEP_CONN *bnepu_allocate_bcb (BD_ADDR p_rem_bda)
     {
         if (p_bcb->con_state == BNEP_STATE_IDLE)
         {
-            alarm_free(p_bcb->conn_timer);
             memset ((UINT8 *)p_bcb, 0, sizeof (tBNEP_CONN));
-            p_bcb->conn_timer = alarm_new("bnep.conn_timer");
+
+            p_bcb->conn_tle.param = (UINT32) p_bcb;
 
             memcpy ((UINT8 *)(p_bcb->rem_bda), (UINT8 *)p_rem_bda, BD_ADDR_LEN);
             p_bcb->handle = xx + 1;
-            p_bcb->xmit_q = fixed_queue_new(SIZE_MAX);
 
             return (p_bcb);
         }
@@ -151,21 +146,17 @@ tBNEP_CONN *bnepu_allocate_bcb (BD_ADDR p_rem_bda)
 void bnepu_release_bcb (tBNEP_CONN *p_bcb)
 {
     /* Ensure timer is stopped */
-    alarm_free(p_bcb->conn_timer);
-    p_bcb->conn_timer = NULL;
+    btu_stop_timer (&p_bcb->conn_tle);
 
     /* Drop any response pointer we may be holding */
     p_bcb->con_state        = BNEP_STATE_IDLE;
-    osi_free(p_bcb->p_pending_data);
     p_bcb->p_pending_data   = NULL;
 
     /* Free transmit queue */
-    while (!fixed_queue_is_empty(p_bcb->xmit_q))
+    while (!GKI_queue_is_empty(&p_bcb->xmit_q))
     {
-        osi_free(fixed_queue_try_dequeue(p_bcb->xmit_q));
+        GKI_freebuf (GKI_dequeue (&p_bcb->xmit_q));
     }
-    fixed_queue_free(p_bcb->xmit_q, NULL);
-    p_bcb->xmit_q = NULL;
 }
 
 
@@ -180,11 +171,16 @@ void bnepu_release_bcb (tBNEP_CONN *p_bcb)
 *******************************************************************************/
 void bnep_send_conn_req (tBNEP_CONN *p_bcb)
 {
-    BT_HDR  *p_buf = (BT_HDR *)osi_malloc(BNEP_BUF_SIZE);
+    BT_HDR  *p_buf;
     UINT8   *p, *p_start;
 
     BNEP_TRACE_DEBUG ("%s: sending setup req with dst uuid %x",
         __func__, p_bcb->dst_uuid.uu.uuid16);
+    if ((p_buf = (BT_HDR *)GKI_getpoolbuf (BNEP_POOL_ID)) == NULL)
+    {
+        BNEP_TRACE_ERROR ("%s: not able to send connection request", __func__);
+        return;
+    }
 
     p_buf->offset = L2CAP_MIN_OFFSET;
     p = p_start = (UINT8 *)(p_buf + 1) + L2CAP_MIN_OFFSET;
@@ -237,10 +233,15 @@ void bnep_send_conn_req (tBNEP_CONN *p_bcb)
 *******************************************************************************/
 void bnep_send_conn_responce (tBNEP_CONN *p_bcb, UINT16 resp_code)
 {
-    BT_HDR  *p_buf = (BT_HDR *)osi_malloc(BNEP_BUF_SIZE);
+    BT_HDR  *p_buf;
     UINT8   *p;
 
     BNEP_TRACE_EVENT ("BNEP - bnep_send_conn_responce for CID: 0x%x", p_bcb->l2cap_cid);
+    if ((p_buf = (BT_HDR *)GKI_getpoolbuf (BNEP_POOL_ID)) == NULL)
+    {
+        BNEP_TRACE_ERROR ("BNEP - not able to send connection response");
+        return;
+    }
 
     p_buf->offset = L2CAP_MIN_OFFSET;
     p = (UINT8 *)(p_buf + 1) + L2CAP_MIN_OFFSET;
@@ -271,11 +272,17 @@ void bnep_send_conn_responce (tBNEP_CONN *p_bcb, UINT16 resp_code)
 *******************************************************************************/
 void bnepu_send_peer_our_filters (tBNEP_CONN *p_bcb)
 {
-    BT_HDR      *p_buf = (BT_HDR *)osi_malloc(BNEP_BUF_SIZE);
+    BT_HDR      *p_buf;
     UINT8       *p;
     UINT16      xx;
 
     BNEP_TRACE_DEBUG ("BNEP sending peer our filters");
+
+    if ((p_buf = (BT_HDR *)GKI_getpoolbuf (BNEP_POOL_ID)) == NULL)
+    {
+        BNEP_TRACE_ERROR ("BNEP - no buffer send filters");
+        return;
+    }
 
     p_buf->offset = L2CAP_MIN_OFFSET;
     p = (UINT8 *)(p_buf + 1) + L2CAP_MIN_OFFSET;
@@ -300,9 +307,7 @@ void bnepu_send_peer_our_filters (tBNEP_CONN *p_bcb)
     p_bcb->con_flags |= BNEP_FLAGS_FILTER_RESP_PEND;
 
     /* Start timer waiting for setup response */
-    alarm_set_on_queue(p_bcb->conn_timer, BNEP_FILTER_SET_TIMEOUT_MS,
-                       bnep_conn_timer_timeout, p_bcb,
-                       btu_general_alarm_queue);
+    btu_start_timer (&p_bcb->conn_tle, BTU_TTYPE_BNEP, BNEP_FILTER_SET_TIMEOUT);
 }
 
 
@@ -317,11 +322,17 @@ void bnepu_send_peer_our_filters (tBNEP_CONN *p_bcb)
 *******************************************************************************/
 void bnepu_send_peer_our_multi_filters (tBNEP_CONN *p_bcb)
 {
-    BT_HDR      *p_buf = (BT_HDR *)osi_malloc(BNEP_BUF_SIZE);
+    BT_HDR      *p_buf;
     UINT8       *p;
     UINT16      xx;
 
     BNEP_TRACE_DEBUG ("BNEP sending peer our multicast filters");
+
+    if ((p_buf = (BT_HDR *)GKI_getpoolbuf (BNEP_POOL_ID)) == NULL)
+    {
+        BNEP_TRACE_ERROR ("BNEP - no buffer to send multicast filters");
+        return;
+    }
 
     p_buf->offset = L2CAP_MIN_OFFSET;
     p = (UINT8 *)(p_buf + 1) + L2CAP_MIN_OFFSET;
@@ -348,9 +359,7 @@ void bnepu_send_peer_our_multi_filters (tBNEP_CONN *p_bcb)
     p_bcb->con_flags |= BNEP_FLAGS_MULTI_RESP_PEND;
 
     /* Start timer waiting for setup response */
-    alarm_set_on_queue(p_bcb->conn_timer, BNEP_FILTER_SET_TIMEOUT_MS,
-                       bnep_conn_timer_timeout, p_bcb,
-                       btu_general_alarm_queue);
+    btu_start_timer (&p_bcb->conn_tle, BTU_TTYPE_BNEP, BNEP_FILTER_SET_TIMEOUT);
 }
 
 
@@ -365,10 +374,15 @@ void bnepu_send_peer_our_multi_filters (tBNEP_CONN *p_bcb)
 *******************************************************************************/
 void bnepu_send_peer_filter_rsp (tBNEP_CONN *p_bcb, UINT16 response_code)
 {
-    BT_HDR  *p_buf = (BT_HDR *)osi_malloc(BNEP_BUF_SIZE);
+    BT_HDR  *p_buf;
     UINT8   *p;
 
     BNEP_TRACE_DEBUG ("BNEP sending filter response");
+    if ((p_buf = (BT_HDR *)GKI_getpoolbuf (BNEP_POOL_ID)) == NULL)
+    {
+        BNEP_TRACE_ERROR ("BNEP - no buffer filter rsp");
+        return;
+    }
 
     p_buf->offset = L2CAP_MIN_OFFSET;
     p = (UINT8 *)(p_buf + 1) + L2CAP_MIN_OFFSET;
@@ -398,10 +412,15 @@ void bnepu_send_peer_filter_rsp (tBNEP_CONN *p_bcb, UINT16 response_code)
 *******************************************************************************/
 void bnep_send_command_not_understood (tBNEP_CONN *p_bcb, UINT8 cmd_code)
 {
-    BT_HDR  *p_buf = (BT_HDR *)osi_malloc(BNEP_BUF_SIZE);
+    BT_HDR  *p_buf;
     UINT8   *p;
 
     BNEP_TRACE_EVENT ("BNEP - bnep_send_command_not_understood for CID: 0x%x, cmd 0x%x", p_bcb->l2cap_cid, cmd_code);
+    if ((p_buf = (BT_HDR *)GKI_getpoolbuf (BNEP_POOL_ID)) == NULL)
+    {
+        BNEP_TRACE_ERROR ("BNEP - not able to send connection response");
+        return;
+    }
 
     p_buf->offset = L2CAP_MIN_OFFSET;
     p = (UINT8 *)(p_buf + 1) + L2CAP_MIN_OFFSET;
@@ -437,15 +456,15 @@ void bnepu_check_send_packet (tBNEP_CONN *p_bcb, BT_HDR *p_buf)
     BNEP_TRACE_EVENT ("BNEP - bnepu_check_send_packet for CID: 0x%x", p_bcb->l2cap_cid);
     if (p_bcb->con_flags & BNEP_FLAGS_L2CAP_CONGESTED)
     {
-        if (fixed_queue_length(p_bcb->xmit_q) >= BNEP_MAX_XMITQ_DEPTH)
+        if (GKI_queue_length(&p_bcb->xmit_q) >= BNEP_MAX_XMITQ_DEPTH)
         {
             BNEP_TRACE_EVENT ("BNEP - congested, dropping buf, CID: 0x%x", p_bcb->l2cap_cid);
 
-            osi_free(p_buf);
+            GKI_freebuf (p_buf);
         }
         else
         {
-            fixed_queue_enqueue(p_bcb->xmit_q, p_buf);
+            GKI_enqueue (&p_bcb->xmit_q, p_buf);
         }
     }
     else
@@ -722,7 +741,7 @@ void bnep_process_setup_conn_responce (tBNEP_CONN *p_bcb, UINT8 *p_setup)
             memcpy ((UINT8 *)&(p_bcb->dst_uuid), (UINT8 *)&(p_bcb->prv_dst_uuid), sizeof (tBT_UUID));
 
             /* Ensure timer is stopped */
-            alarm_cancel(p_bcb->conn_timer);
+            btu_stop_timer (&p_bcb->conn_tle);
             p_bcb->re_transmits = 0;
 
             /* Tell the user if he has a callback */
@@ -765,60 +784,35 @@ void bnep_process_setup_conn_responce (tBNEP_CONN *p_bcb, UINT8 *p_setup)
 UINT8 *bnep_process_control_packet (tBNEP_CONN *p_bcb, UINT8 *p, UINT16 *rem_len, BOOLEAN is_ext)
 {
     UINT8       control_type;
+    BOOLEAN     bad_pkt = FALSE;
     UINT16      len, ext_len = 0;
-
-    if (p == NULL || rem_len == NULL) {
-        if (rem_len != NULL) *rem_len = 0;
-        BNEP_TRACE_DEBUG("%s: invalid packet: p = %p rem_len = %p", __func__, p,
-                         rem_len);
-        return NULL;
-    }
-    UINT16 rem_len_orig = *rem_len;
 
     if (is_ext)
     {
-        if (*rem_len < 1) goto bad_packet_length;
         ext_len = *p++;
         *rem_len = *rem_len - 1;
     }
 
-    if (*rem_len < 1) goto bad_packet_length;
     control_type = *p++;
     *rem_len = *rem_len - 1;
 
-    BNEP_TRACE_EVENT("%s: BNEP processing control packet rem_len %d, is_ext %d, ctrl_type %d",
-                     __func__, *rem_len, is_ext, control_type);
+    BNEP_TRACE_EVENT ("BNEP processing control packet rem_len %d, is_ext %d, ctrl_type %d", *rem_len, is_ext, control_type);
 
     switch (control_type)
     {
     case BNEP_CONTROL_COMMAND_NOT_UNDERSTOOD:
-        if (*rem_len < 1) {
-            BNEP_TRACE_ERROR(
-              "%s: Received BNEP_CONTROL_COMMAND_NOT_UNDERSTOOD with bad length",
-              __func__);
-            goto bad_packet_length;
-        }
-        BNEP_TRACE_ERROR(
-          "%s: Received BNEP_CONTROL_COMMAND_NOT_UNDERSTOOD for pkt type: %d",
-          __func__, *p);
+        BNEP_TRACE_ERROR ("BNEP Received Cmd not understood for ctl pkt type: %d", *p);
         p++;
         *rem_len = *rem_len - 1;
         break;
 
     case BNEP_SETUP_CONNECTION_REQUEST_MSG:
-        if (*rem_len < 1) {
-            BNEP_TRACE_ERROR(
-                "%s: Received BNEP_SETUP_CONNECTION_REQUEST_MSG with bad length",
-                __func__);
-            android_errorWriteLog(0x534e4554, "69177292");
-            goto bad_packet_length;
-        }
         len = *p++;
-        if (*rem_len < ((2 * len) + 1)) {
-            BNEP_TRACE_ERROR(
-              "%s: Received BNEP_SETUP_CONNECTION_REQUEST_MSG with bad length",
-              __func__);
-            goto bad_packet_length;
+        if (*rem_len < ((2 * len) + 1))
+        {
+            bad_pkt = TRUE;
+            BNEP_TRACE_ERROR ("BNEP Received Setup message with bad length");
+            break;
         }
         if (!is_ext)
             bnep_process_setup_conn_req (p_bcb, p, (UINT8)len);
@@ -827,12 +821,6 @@ UINT8 *bnep_process_control_packet (tBNEP_CONN *p_bcb, UINT8 *p, UINT16 *rem_len
         break;
 
     case BNEP_SETUP_CONNECTION_RESPONSE_MSG:
-        if (*rem_len < 2) {
-            BNEP_TRACE_ERROR(
-              "%s: Received BNEP_SETUP_CONNECTION_RESPONSE_MSG with bad length",
-              __func__);
-            goto bad_packet_length;
-        }
         if (!is_ext)
             bnep_process_setup_conn_responce (p_bcb, p);
         p += 2;
@@ -840,20 +828,12 @@ UINT8 *bnep_process_control_packet (tBNEP_CONN *p_bcb, UINT8 *p, UINT16 *rem_len
         break;
 
     case BNEP_FILTER_NET_TYPE_SET_MSG:
-        if (*rem_len < 2) {
-            BNEP_TRACE_ERROR(
-                "%s: Received BNEP_FILTER_NET_TYPE_SET_MSG with bad length",
-                __func__);
-            android_errorWriteLog(0x534e4554, "69177292");
-            goto bad_packet_length;
-        }
         BE_STREAM_TO_UINT16 (len, p);
         if (*rem_len < (len + 2))
         {
-            BNEP_TRACE_ERROR(
-              "%s: Received BNEP_FILTER_NET_TYPE_SET_MSG with bad length",
-              __func__);
-            goto bad_packet_length;
+            bad_pkt = TRUE;
+            BNEP_TRACE_ERROR ("BNEP Received Filter set message with bad length");
+            break;
         }
         bnepu_process_peer_filter_set (p_bcb, p, len);
         p += len;
@@ -861,32 +841,18 @@ UINT8 *bnep_process_control_packet (tBNEP_CONN *p_bcb, UINT8 *p, UINT16 *rem_len
         break;
 
     case BNEP_FILTER_NET_TYPE_RESPONSE_MSG:
-        if (*rem_len < 2) {
-            BNEP_TRACE_ERROR(
-              "%s: Received BNEP_FILTER_NET_TYPE_RESPONSE_MSG with bad length",
-              __func__);
-            goto bad_packet_length;
-        }
         bnepu_process_peer_filter_rsp (p_bcb, p);
         p += 2;
         *rem_len = *rem_len - 2;
         break;
 
     case BNEP_FILTER_MULTI_ADDR_SET_MSG:
-        if (*rem_len < 2) {
-            BNEP_TRACE_ERROR(
-                "%s: Received BNEP_FILTER_MULTI_ADDR_SET_MSG with bad length",
-                __func__);
-            android_errorWriteLog(0x534e4554, "69177292");
-            goto bad_packet_length;
-        }
         BE_STREAM_TO_UINT16 (len, p);
         if (*rem_len < (len + 2))
         {
-            BNEP_TRACE_ERROR(
-              "%s: Received BNEP_FILTER_MULTI_ADDR_SET_MSG with bad length",
-              __func__);
-            goto bad_packet_length;
+            bad_pkt = TRUE;
+            BNEP_TRACE_ERROR ("BNEP Received Multicast Filter Set message with bad length");
+            break;
         }
         bnepu_process_peer_multicast_filter_set (p_bcb, p, len);
         p += len;
@@ -894,38 +860,30 @@ UINT8 *bnep_process_control_packet (tBNEP_CONN *p_bcb, UINT8 *p, UINT16 *rem_len
         break;
 
     case BNEP_FILTER_MULTI_ADDR_RESPONSE_MSG:
-        if (*rem_len < 2) {
-            BNEP_TRACE_ERROR(
-              "%s: Received BNEP_FILTER_MULTI_ADDR_RESPONSE_MSG with bad length",
-              __func__);
-            goto bad_packet_length;
-        }
         bnepu_process_multicast_filter_rsp (p_bcb, p);
         p += 2;
         *rem_len = *rem_len - 2;
         break;
 
     default :
-        BNEP_TRACE_ERROR("%s: BNEP - bad ctl pkt type: %d", __func__,
-                         control_type);
+        BNEP_TRACE_ERROR ("BNEP - bad ctl pkt type: %d", control_type);
         bnep_send_command_not_understood (p_bcb, control_type);
-        if (is_ext && (ext_len > 0))
+        if (is_ext)
         {
-            if (*rem_len < (ext_len - 1)) {
-                goto bad_packet_length;
-            }
             p += (ext_len - 1);
             *rem_len -= (ext_len - 1);
         }
         break;
     }
-    return p;
 
-bad_packet_length:
-    BNEP_TRACE_ERROR("%s: bad control packet length: original=%d remaining=%d",
-                     __func__, rem_len_orig, *rem_len);
-    *rem_len = 0;
-    return NULL;
+    if (bad_pkt)
+    {
+        BNEP_TRACE_ERROR ("BNEP - bad ctl pkt length: %d", *rem_len);
+        *rem_len = 0;
+        return NULL;
+    }
+
+    return p;
 }
 
 
@@ -1040,7 +998,7 @@ void bnepu_process_peer_filter_rsp (tBNEP_CONN *p_bcb, UINT8 *p_data)
     }
 
     /* Ensure timer is stopped */
-    alarm_cancel(p_bcb->conn_timer);
+    btu_stop_timer (&p_bcb->conn_tle);
     p_bcb->con_flags &= ~BNEP_FLAGS_FILTER_RESP_PEND;
     p_bcb->re_transmits = 0;
 
@@ -1086,7 +1044,7 @@ void bnepu_process_multicast_filter_rsp (tBNEP_CONN *p_bcb, UINT8 *p_data)
     }
 
     /* Ensure timer is stopped */
-    alarm_cancel(p_bcb->conn_timer);
+    btu_stop_timer (&p_bcb->conn_tle);
     p_bcb->con_flags &= ~BNEP_FLAGS_MULTI_RESP_PEND;
     p_bcb->re_transmits = 0;
 
@@ -1193,10 +1151,15 @@ void bnepu_process_peer_multicast_filter_set (tBNEP_CONN *p_bcb, UINT8 *p_filter
 *******************************************************************************/
 void bnepu_send_peer_multicast_filter_rsp (tBNEP_CONN *p_bcb, UINT16 response_code)
 {
-    BT_HDR  *p_buf = (BT_HDR *)osi_malloc(BNEP_BUF_SIZE);
+    BT_HDR  *p_buf;
     UINT8   *p;
 
     BNEP_TRACE_DEBUG ("BNEP sending multicast filter response %d", response_code);
+    if ((p_buf = (BT_HDR *)GKI_getpoolbuf (BNEP_POOL_ID)) == NULL)
+    {
+        BNEP_TRACE_ERROR ("BNEP - no buffer filter rsp");
+        return;
+    }
 
     p_buf->offset = L2CAP_MIN_OFFSET;
     p = (UINT8 *)(p_buf + 1) + L2CAP_MIN_OFFSET;
@@ -1279,9 +1242,7 @@ void bnep_sec_check_complete (BD_ADDR bd_addr, tBT_TRANSPORT trasnport,
         p_bcb->con_state = BNEP_STATE_CONN_SETUP;
 
         bnep_send_conn_req (p_bcb);
-        alarm_set_on_queue(p_bcb->conn_timer, BNEP_CONN_TIMEOUT_MS,
-                           bnep_conn_timer_timeout, p_bcb,
-                           btu_general_alarm_queue);
+        btu_start_timer (&p_bcb->conn_tle, BTU_TTYPE_BNEP, BNEP_CONN_TIMEOUT);
         return;
     }
 

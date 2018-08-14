@@ -26,7 +26,7 @@
 #include <stddef.h>
 
 #include "bt_target.h"
-#include "bt_common.h"
+#include "gki.h"
 #include "bta_api.h"
 #include "bta_av_int.h"
 
@@ -72,12 +72,7 @@ const UINT16  bta_av_audio_flush_to[] = {
 #if AVRC_METADATA_INCLUDED == TRUE
 
 #if AVCT_BROWSE_INCLUDED == TRUE
-#if (defined(AVCT_COVER_ART_INCLUDED) && (AVCT_COVER_ART_INCLUDED == TRUE))
-#define BTA_AV_RC_SUPF_TG       (AVRC_SUPF_TG_CAT1 | AVRC_SUPF_TG_BROWSE | AVRC_SUPF_TG_APP_SETTINGS | AVRC_SUPF_TG_PLAYER_COVER_ART)
-#else
 #define BTA_AV_RC_SUPF_TG       (AVRC_SUPF_TG_CAT1 | AVRC_SUPF_TG_BROWSE | AVRC_SUPF_TG_APP_SETTINGS)
-#endif
-
 #else
 #define BTA_AV_RC_SUPF_TG       (AVRC_SUPF_TG_CAT1 | AVRC_SUPF_TG_APP_SETTINGS)
 #endif
@@ -114,7 +109,6 @@ const UINT8  bta_avk_meta_caps_evt_ids[] = {
 #ifndef BTA_AVK_NUM_RC_EVT_IDS
 #define BTA_AVK_NUM_RC_EVT_IDS   (sizeof(bta_avk_meta_caps_evt_ids) / sizeof(bta_avk_meta_caps_evt_ids[0]))
 #endif /* BTA_AVK_NUM_RC_EVT_IDS */
-
 
 /* the MTU for the AVRCP browsing channel */
 #ifndef BTA_AV_MAX_RC_BR_MTU

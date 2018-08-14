@@ -26,13 +26,14 @@
 
 #if defined(BTA_GATT_INCLUDED) && (BTA_GATT_INCLUDED == TRUE)
 
-#include "bt_common.h"
+#include "gki.h"
 #include <stdio.h>
 #include <string.h>
 #include "gatt_api.h"
 #include "gatt_int.h"
 #include "l2c_api.h"
 #include "btm_int.h"
+
 
 /*******************************************************************************
 **
@@ -247,7 +248,7 @@ UINT16 GATTS_CreateService (tGATT_IF gatt_if, tBT_UUID *p_svc_uuid,
         }
 
         if (p_buf)
-            osi_free(fixed_queue_try_remove_from_queue(gatt_cb.pending_new_srv_start_q, p_buf));
+            GKI_freebuf (GKI_remove_from_queue (&gatt_cb.pending_new_srv_start_q, p_buf));
         return(0);
     }
 
@@ -420,7 +421,7 @@ BOOLEAN GATTS_DeleteService (tGATT_IF gatt_if, tBT_UUID *p_svc_uuid, UINT16 svc_
                                          p_list->asgn_range.svc_inst)) != NULL)
     {
         GATT_TRACE_DEBUG ("Delete a new service changed item - the service has not yet started");
-        osi_free(fixed_queue_try_remove_from_queue(gatt_cb.pending_new_srv_start_q, p_buf));
+        GKI_freebuf (GKI_remove_from_queue (&gatt_cb.pending_new_srv_start_q, p_buf));
     }
     else
     {
@@ -540,7 +541,7 @@ tGATT_STATUS GATTS_StartService (tGATT_IF gatt_if, UINT16 service_handle,
         gatt_proc_srv_chg();
         /* remove the new service element after the srv changed processing is completed*/
 
-        osi_free(fixed_queue_try_remove_from_queue(gatt_cb.pending_new_srv_start_q, p_buf));
+        GKI_freebuf (GKI_remove_from_queue (&gatt_cb.pending_new_srv_start_q, p_buf));
     }
     return GATT_SUCCESS;
 }
@@ -895,6 +896,7 @@ tGATT_STATUS GATTC_Read (UINT16 conn_id, tGATT_READ_TYPE type, tGATT_READ_PARAM 
 {
     tGATT_STATUS status = GATT_SUCCESS;
     tGATT_CLCB          *p_clcb;
+    tGATT_READ_MULTI    *p_read_multi;
     tGATT_IF            gatt_if=GATT_GET_GATT_IF(conn_id);
     UINT8               tcb_idx = GATT_GET_TCB_IDX(conn_id);
     tGATT_TCB           *p_tcb = gatt_get_tcb_by_idx(tcb_idx);
@@ -933,10 +935,9 @@ tGATT_STATUS GATTC_Read (UINT16 conn_id, tGATT_READ_TYPE type, tGATT_READ_PARAM 
             case GATT_READ_MULTIPLE:
                 p_clcb->s_handle = 0;
                 /* copy multiple handles in CB */
-                tGATT_READ_MULTI *p_read_multi =
-                    (tGATT_READ_MULTI *)osi_malloc(sizeof(tGATT_READ_MULTI));
+                p_read_multi = (tGATT_READ_MULTI *)GKI_getbuf(sizeof(tGATT_READ_MULTI));
                 p_clcb->p_attr_buf = (UINT8*)p_read_multi;
-                memcpy(p_read_multi, &p_read->read_multiple, sizeof(tGATT_READ_MULTI));
+                memcpy (p_read_multi, &p_read->read_multiple, sizeof(tGATT_READ_MULTI));
             case GATT_READ_BY_HANDLE:
             case GATT_READ_PARTIAL:
                 memset(&p_clcb->uuid, 0, sizeof(tBT_UUID));
@@ -1008,22 +1009,32 @@ tGATT_STATUS GATTC_Write (UINT16 conn_id, tGATT_WRITE_TYPE type, tGATT_VALUE *p_
         p_clcb->op_subtype = type;
         p_clcb->auth_req = p_write->auth_req;
 
-        p_clcb->p_attr_buf = (UINT8 *)osi_malloc(sizeof(tGATT_VALUE));
-        memcpy(p_clcb->p_attr_buf, (void *)p_write, sizeof(tGATT_VALUE));
+        if (( p_clcb->p_attr_buf = (UINT8 *)GKI_getbuf((UINT16)sizeof(tGATT_VALUE))) != NULL)
+        {
+            memcpy(p_clcb->p_attr_buf, (void *)p_write, sizeof(tGATT_VALUE));
 
-        p = (tGATT_VALUE *)p_clcb->p_attr_buf;
-        if (type == GATT_WRITE_PREPARE) {
-            p_clcb->start_offset = p_write->offset;
-            p->offset = 0;
+            p =  (tGATT_VALUE *)p_clcb->p_attr_buf;
+            if (type == GATT_WRITE_PREPARE)
+            {
+                p_clcb->start_offset = p_write->offset;
+                p->offset = 0;
+            }
+
+            if (gatt_security_check_start(p_clcb) == FALSE)
+            {
+                status = GATT_NO_RESOURCES;
+            }
         }
-
-        if (gatt_security_check_start(p_clcb) == FALSE) {
+        else
+        {
             status = GATT_NO_RESOURCES;
         }
 
         if (status == GATT_NO_RESOURCES)
             gatt_clcb_dealloc(p_clcb);
-    } else {
+    }
+    else
+    {
         status = GATT_NO_RESOURCES;
     }
     return status;
@@ -1105,7 +1116,7 @@ tGATT_STATUS GATTC_SendHandleValueConfirm (UINT16 conn_id, UINT16 handle)
     {
         if (p_tcb->ind_count > 0 )
         {
-            alarm_cancel(p_tcb->ind_ack_timer);
+            btu_stop_timer (&p_tcb->ind_ack_timer_ent);
 
             GATT_TRACE_DEBUG ("notif_count=%d ", p_tcb->ind_count);
             /* send confirmation now */
@@ -1191,7 +1202,7 @@ tGATT_IF GATT_Register (tBT_UUID *p_app_uuid128, tGATT_CBACK *p_cb_info)
     UINT8        i_gatt_if=0;
     tGATT_IF     gatt_if=0;
 
-    GATT_TRACE_API ("%s", __func__);
+    GATT_TRACE_API ("GATT_Register");
     gatt_dbg_display_uuid(*p_app_uuid128);
 
     for (i_gatt_if = 0, p_reg = gatt_cb.cl_rcb; i_gatt_if < GATT_MAX_APPS; i_gatt_if++, p_reg++)
@@ -1215,13 +1226,11 @@ tGATT_IF GATT_Register (tBT_UUID *p_app_uuid128, tGATT_CBACK *p_cb_info)
             p_reg->app_cb      = *p_cb_info;
             p_reg->in_use      = TRUE;
 
-            GATT_TRACE_API ("%s: allocated gatt_if=%d", __func__, gatt_if);
-            return gatt_if;
+            break;
         }
     }
-
-    GATT_TRACE_ERROR ("%s: can't Register GATT client, MAX client reached!", __func__);
-    return 0;
+    GATT_TRACE_API ("allocated gatt_if=%d", gatt_if);
+    return gatt_if;
 }
 
 
@@ -1276,7 +1285,12 @@ void GATT_Deregister (tGATT_IF gatt_if)
         {
             if (gatt_get_ch_state(p_tcb) != GATT_CH_CLOSE)
             {
-                gatt_update_app_use_link_flag(gatt_if, p_tcb,  FALSE, TRUE);
+                gatt_update_app_use_link_flag(gatt_if, p_tcb,  FALSE, FALSE);
+                if (!gatt_num_apps_hold_link(p_tcb))
+                {
+                    /* this will disconnect the link or cancel the pending connect request at lower layer*/
+                    gatt_disconnect(p_tcb);
+                }
             }
 
             for (j = 0, p_clcb= &gatt_cb.clcb[j]; j < GATT_CL_MAX_LCB; j++, p_clcb++)
@@ -1285,7 +1299,7 @@ void GATT_Deregister (tGATT_IF gatt_if)
                     (p_clcb->p_reg->gatt_if == gatt_if) &&
                     (p_clcb->p_tcb->tcb_idx == p_tcb->tcb_idx))
                 {
-                    alarm_cancel(p_clcb->gatt_rsp_timer_ent);
+                    btu_stop_timer(&p_clcb->rsp_timer_ent);
                     gatt_clcb_dealloc (p_clcb);
                     break;
                 }
@@ -1357,8 +1371,7 @@ void GATT_StartIf (tGATT_IF gatt_if)
 ** Returns          TRUE if connection started; FALSE if connection start failure.
 **
 *******************************************************************************/
-BOOLEAN GATT_Connect (tGATT_IF gatt_if, BD_ADDR bd_addr, BOOLEAN is_direct,
-                      tBT_TRANSPORT transport, BOOLEAN opportunistic)
+BOOLEAN GATT_Connect (tGATT_IF gatt_if, BD_ADDR bd_addr, BOOLEAN is_direct, tBT_TRANSPORT transport)
 {
     tGATT_REG    *p_reg;
     BOOLEAN status = FALSE;
@@ -1373,7 +1386,7 @@ BOOLEAN GATT_Connect (tGATT_IF gatt_if, BD_ADDR bd_addr, BOOLEAN is_direct,
     }
 
     if (is_direct)
-        status = gatt_act_connect (p_reg, bd_addr, transport, opportunistic);
+        status = gatt_act_connect (p_reg, bd_addr, transport);
     else
     {
         if (transport == BT_TRANSPORT_LE)
@@ -1493,7 +1506,11 @@ tGATT_STATUS GATT_Disconnect (UINT16 conn_id)
 
     if (p_tcb)
     {
-        gatt_update_app_use_link_flag(gatt_if, p_tcb, FALSE, TRUE);
+        gatt_update_app_use_link_flag(gatt_if, p_tcb, FALSE, FALSE);
+        if (!gatt_num_apps_hold_link(p_tcb))
+        {
+            gatt_disconnect(p_tcb);
+        }
         ret = GATT_SUCCESS;
     }
     return ret;

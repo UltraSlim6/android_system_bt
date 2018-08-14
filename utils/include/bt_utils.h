@@ -51,22 +51,11 @@ typedef enum {
     METHOD_NAME
 } tBLACKLIST_METHOD;
 
-typedef enum {
-    BT_SOC_DEFAULT = 0,
-    BT_SOC_SMD,
-    BT_SOC_AR3K,
-    BT_SOC_ROME,
-    BT_SOC_CHEROKEE,
-    /* Add chipset type here */
-    BT_SOC_RESERVED
-} bt_soc_type;
-
 #define MAX_NAME_LEN                  (50)
 #define IOT_DEV_BASE_CONF_FILE        "/etc/bluetooth/iot_devlist.conf"
 #define IOT_DEV_CONF_FILE             "/data/misc/bluedroid/iot_devlist.conf"
 #define IOT_DEV_CONF_BKP_FILE         "/data/misc/bluedroid/iot_devlist_bkp.conf"
 #define IOT_ROLE_CHANGE_BLACKLIST     "RoleChangeBlacklistAddr"
-#define IOT_HFP_1_7_BLACKLIST          "Hfp1_7BlacklistAddr"
 #define COD_AUDIO_DEVICE              (0x200400)
 void raise_priority_a2dp(tHIGH_PRIORITY_TASK high_task);
 void adjust_priority_a2dp(int start);
@@ -77,6 +66,36 @@ bool add_iot_device(const char *filename, char* header,
     unsigned char* device_details, tBLACKLIST_METHOD method_type);
 bool remove_iot_device(const char *filename, char* header,
     unsigned char* device_details, tBLACKLIST_METHOD method_type);
-bt_soc_type get_soc_type();
 #define UNUSED(x) (void)(x)
+
+#include <time.h>
+
+#define USEC_PER_SEC 1000000L
+
+static inline uint64_t time_now_us();
+
+static inline void time_now_timespec(struct timespec *ts)
+{
+#ifdef HAVE_ANDROID_OS
+    uint64_t now_us;
+
+    now_us = time_now_us();
+    ts->tv_sec = now_us / USEC_PER_SEC;
+    ts->tv_nsec = (now_us % USEC_PER_SEC) * 1000;
+#else
+    clock_gettime(CLOCK_BOOTTIME, ts);
+#endif
+}
+
+static inline uint64_t time_now_us()
+{
+#ifdef HAVE_ANDROID_OS
+    extern int64_t _ZN7android19elapsedRealtimeNanoEv();
+    return (uint64_t) _ZN7android19elapsedRealtimeNanoEv() / 1000;
+#else
+    struct timespec ts_now;
+    time_now_timespec(&ts_now);
+    return ((uint64_t)ts_now.tv_sec * USEC_PER_SEC) + ((uint64_t)ts_now.tv_nsec / 1000);
+#endif
+}
 #endif /* BT_UTILS_H */

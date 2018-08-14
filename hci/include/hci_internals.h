@@ -17,6 +17,7 @@
  ******************************************************************************/
 
 #pragma once
+
 #ifdef HAS_BDROID_BUILDCFG
 #include "bdroid_buildcfg.h"
 #endif
@@ -26,9 +27,9 @@
 #endif
 
 #if (defined(REMOVE_EAGER_THREADS) && (REMOVE_EAGER_THREADS == TRUE))
-#include "osi/include/allocator.h"
-#include "osi/include/thread.h"
-#include "osi/include/reactor.h"
+#include "allocator.h"
+#include "thread.h"
+#include "reactor.h"
 #endif
 
 // 2 bytes for opcode, 1 byte for parameter length (Volume 2, Part E, 5.4.1)

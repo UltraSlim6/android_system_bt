@@ -18,8 +18,6 @@
 
 #define LOG_TAG "bt_osi_config"
 
-#include "osi/include/config.h"
-
 #include <assert.h>
 #include <ctype.h>
 #include <errno.h>
@@ -28,10 +26,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 
 #include "osi/include/allocator.h"
+#include "osi/include/config.h"
 #include "osi/include/list.h"
 #include "osi/include/log.h"
 
@@ -52,7 +51,7 @@ struct config_t {
 // Empty definition; this type is aliased to list_node_t.
 struct config_section_iter_t {};
 
-static bool config_parse(FILE *fp, config_t *config);
+static void config_parse(FILE *fp, config_t *config);
 
 static section_t *section_new(const char *name);
 static void section_free(void *ptr);
@@ -64,10 +63,14 @@ static entry_t *entry_find(const config_t *config, const char *section, const ch
 
 config_t *config_new_empty(void) {
   config_t *config = osi_calloc(sizeof(config_t));
+  if (!config) {
+    LOG_ERROR("%s unable to allocate memory for config_t.", __func__);
+    goto error;
+  }
 
   config->sections = list_new(section_free);
   if (!config->sections) {
-    LOG_ERROR(LOG_TAG, "%s unable to allocate list for sections.", __func__);
+    LOG_ERROR("%s unable to allocate list for sections.", __func__);
     goto error;
   }
 
@@ -87,16 +90,11 @@ config_t *config_new(const char *filename) {
 
   FILE *fp = fopen(filename, "rt");
   if (!fp) {
-    LOG_ERROR(LOG_TAG, "%s unable to open file '%s': %s", __func__, filename, strerror(errno));
+    LOG_ERROR("%s unable to open file '%s': %s", __func__, filename, strerror(errno));
     config_free(config);
     return NULL;
   }
-
-  if (!config_parse(fp, config)) {
-    config_free(config);
-    config = NULL;
-  }
-
+  config_parse(fp, config);
   fclose(fp);
   return config;
 }
@@ -213,26 +211,26 @@ void config_set_string(config_t *config, const char *section, const char *key, c
   section_t *sec = section_find(config, section);
   if (!sec) {
     sec = section_new(section);
-    if (sec)
-      list_append(config->sections, sec);
-    else {
-      LOG_ERROR(LOG_TAG,"%s: Unable to allocate memory for section", __func__);
+  if (sec)
+    list_append(config->sections, sec);
+  else
+  {
+      ALOGE("%s: Unable to allocate memory for section", __func__);
+      return;
+  }
+ }
+
+  for (const list_node_t *node = list_begin(sec->entries); node != list_end(sec->entries); node = list_next(node)) {
+    entry_t *entry = list_node(node);
+    if (!strcmp(entry->key, key)) {
+      osi_free(entry->value);
+      entry->value = osi_strdup(value);
+      return;
     }
   }
 
-  if (sec) {
-    for (const list_node_t *node = list_begin(sec->entries); node != list_end(sec->entries); node = list_next(node)) {
-      entry_t *entry = list_node(node);
-      if (!strcmp(entry->key, key)) {
-        osi_free(entry->value);
-        entry->value = osi_strdup(value);
-        return;
-      }
-    }
-
-    entry_t *entry = entry_new(key, value);
-    list_append(sec->entries, entry);
-  }
+  entry_t *entry = entry_new(key, value);
+  list_append(sec->entries, entry);
 }
 
 bool config_remove_section(config_t *config, const char *section) {
@@ -308,33 +306,33 @@ bool config_save(const config_t *config, const char *filename) {
   char *temp_dirname = osi_strdup(filename);
   const char *directoryname = dirname(temp_dirname);
   if (!directoryname) {
-    LOG_ERROR(LOG_TAG, "%s error extracting directory from '%s': %s", __func__, filename, strerror(errno));
+    LOG_ERROR("%s error extracting directory from '%s': %s", __func__, filename, strerror(errno));
     goto error;
   }
 
-  dir_fd = open(directoryname, O_RDONLY);
+  dir_fd = TEMP_FAILURE_RETRY(open(directoryname, O_RDONLY));
   if (dir_fd < 0) {
-    LOG_ERROR(LOG_TAG, "%s unable to open dir '%s': %s", __func__, directoryname, strerror(errno));
+    LOG_ERROR("%s unable to open dir '%s': %s", __func__, directoryname, strerror(errno));
     goto error;
   }
 
   fp = fopen(temp_filename, "wt");
   if (!fp) {
-    LOG_ERROR(LOG_TAG, "%s unable to write file '%s': %s", __func__, temp_filename, strerror(errno));
+    LOG_ERROR("%s unable to write file '%s': %s", __func__, temp_filename, strerror(errno));
     goto error;
   }
 
   for (const list_node_t *node = list_begin(config->sections); node != list_end(config->sections); node = list_next(node)) {
     const section_t *section = (const section_t *)list_node(node);
     if (fprintf(fp, "[%s]\n", section->name) < 0) {
-      LOG_ERROR(LOG_TAG, "%s unable to write to file '%s': %s", __func__, temp_filename, strerror(errno));
+      LOG_ERROR("%s unable to write to file '%s': %s", __func__, temp_filename, strerror(errno));
       goto error;
     }
 
     for (const list_node_t *enode = list_begin(section->entries); enode != list_end(section->entries); enode = list_next(enode)) {
       const entry_t *entry = (const entry_t *)list_node(enode);
       if (fprintf(fp, "%s = %s\n", entry->key, entry->value) < 0) {
-        LOG_ERROR(LOG_TAG, "%s unable to write to file '%s': %s", __func__, temp_filename, strerror(errno));
+        LOG_ERROR("%s unable to write to file '%s': %s", __func__, temp_filename, strerror(errno));
         goto error;
       }
     }
@@ -342,7 +340,7 @@ bool config_save(const config_t *config, const char *filename) {
     // Only add a separating newline if there are more sections.
     if (list_next(node) != list_end(config->sections)) {
       if (fputc('\n', fp) == EOF) {
-        LOG_ERROR(LOG_TAG, "%s unable to write to file '%s': %s", __func__, temp_filename, strerror(errno));
+        LOG_ERROR("%s unable to write to file '%s': %s", __func__, temp_filename, strerror(errno));
         goto error;
       }
     }
@@ -350,34 +348,34 @@ bool config_save(const config_t *config, const char *filename) {
 
   // Sync written temp file out to disk. fsync() is blocking until data makes it to disk.
   if (fsync(fileno(fp)) < 0) {
-    LOG_WARN(LOG_TAG, "%s unable to fsync file '%s': %s", __func__, temp_filename, strerror(errno));
+    LOG_WARN("%s unable to fsync file '%s': %s", __func__, temp_filename, strerror(errno));
   }
 
   if (fclose(fp) == EOF) {
-    LOG_ERROR(LOG_TAG, "%s unable to close file '%s': %s", __func__, temp_filename, strerror(errno));
+    LOG_ERROR("%s unable to close file '%s': %s", __func__, temp_filename, strerror(errno));
     goto error;
   }
   fp = NULL;
 
   // Change the file's permissions to Read/Write by User and Group
   if (chmod(temp_filename, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP) == -1) {
-    LOG_ERROR(LOG_TAG, "%s unable to change file permissions '%s': %s", __func__, filename, strerror(errno));
+    LOG_ERROR("%s unable to change file permissions '%s': %s", __func__, filename, strerror(errno));
     goto error;
   }
 
   // Rename written temp file to the actual config file.
   if (rename(temp_filename, filename) == -1) {
-    LOG_ERROR(LOG_TAG, "%s unable to commit file '%s': %s", __func__, filename, strerror(errno));
+    LOG_ERROR("%s unable to commit file '%s': %s", __func__, filename, strerror(errno));
     goto error;
   }
 
   // This should ensure the directory is updated as well.
   if (fsync(dir_fd) < 0) {
-    LOG_WARN(LOG_TAG, "%s unable to fsync dir '%s': %s", __func__, directoryname, strerror(errno));
+    LOG_WARN("%s unable to fsync dir '%s': %s", __func__, directoryname, strerror(errno));
   }
 
   if (close(dir_fd) < 0) {
-    LOG_ERROR(LOG_TAG, "%s unable to close dir '%s': %s", __func__, directoryname, strerror(errno));
+    LOG_ERROR("%s unable to close dir '%s': %s", __func__, directoryname, strerror(errno));
     goto error;
   }
 
@@ -397,6 +395,16 @@ error:
   return false;
 }
 
+void config_flush (const char *filename)
+{
+  int fd = open (filename, O_WRONLY | O_APPEND, 0660);
+  if (fd != -1)
+  {
+    fsync (fd);
+    close (fd);
+  }
+}
+
 static char *trim(char *str) {
   while (isspace(*str))
     ++str;
@@ -412,7 +420,7 @@ static char *trim(char *str) {
   return str;
 }
 
-static bool config_parse(FILE *fp, config_t *config) {
+static void config_parse(FILE *fp, config_t *config) {
   assert(fp != NULL);
   assert(config != NULL);
 
@@ -432,27 +440,28 @@ static bool config_parse(FILE *fp, config_t *config) {
     if (*line_ptr == '[') {
       size_t len = strlen(line_ptr);
       if (line_ptr[len - 1] != ']') {
-        LOG_DEBUG(LOG_TAG, "%s unterminated section name on line %d.", __func__, line_num);
-        return false;
+        LOG_DEBUG("%s unterminated section name on line %d.", __func__, line_num);
+        continue;
       }
       strncpy(section, line_ptr + 1, len - 2);
       section[len - 2] = '\0';
     } else {
       char *split = strchr(line_ptr, '=');
       if (!split) {
-        LOG_DEBUG(LOG_TAG, "%s no key/value separator found on line %d.", __func__, line_num);
-        return false;
+        LOG_DEBUG("%s no key/value separator found on line %d.", __func__, line_num);
+        continue;
       }
 
       *split = '\0';
       config_set_string(config, section, trim(line_ptr), trim(split + 1));
     }
   }
-  return true;
 }
 
 static section_t *section_new(const char *name) {
   section_t *section = osi_calloc(sizeof(section_t));
+  if (!section)
+    return NULL;
 
   section->name = osi_strdup(name);
   section->entries = list_new(entry_free);
@@ -481,6 +490,8 @@ static section_t *section_find(const config_t *config, const char *section) {
 
 static entry_t *entry_new(const char *key, const char *value) {
   entry_t *entry = osi_calloc(sizeof(entry_t));
+  if (!entry)
+    return NULL;
 
   entry->key = osi_strdup(key);
   entry->value = osi_strdup(value);

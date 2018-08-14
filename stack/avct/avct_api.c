@@ -26,7 +26,7 @@
 #include "bt_types.h"
 #include "bt_target.h"
 #include "bt_utils.h"
-#include "bt_common.h"
+#include "gki.h"
 #include "l2c_api.h"
 #include "l2cdefs.h"
 #include "btm_api.h"
@@ -89,9 +89,6 @@ void AVCT_Register(UINT16 mtu, UINT16 mtu_br, UINT8 sec_mask)
     /* set security level */
     BTM_SetSecurityLevel(TRUE, "", BTM_SEC_SERVICE_AVCTP, sec_mask, AVCT_PSM, 0, 0);
     BTM_SetSecurityLevel(FALSE, "", BTM_SEC_SERVICE_AVCTP, sec_mask, AVCT_PSM, 0, 0);
-
-    /* initialize AVCTP data structures */
-    memset(&avct_cb, 0, sizeof(tAVCT_CB));
 
 #if (AVCT_BROWSE_INCLUDED == TRUE)
     /* Include the browsing channel which uses eFCR */
@@ -451,13 +448,13 @@ UINT16 AVCT_MsgReq(UINT8 handle, UINT8 label, UINT8 cr, BT_HDR *p_msg)
     if ((p_ccb = avct_ccb_by_idx(handle)) == NULL)
     {
         result = AVCT_BAD_HANDLE;
-        osi_free(p_msg);
+        GKI_freebuf(p_msg);
     }
     /* verify channel is bound to link */
     else if (p_ccb->p_lcb == NULL)
     {
         result = AVCT_NOT_OPEN;
-        osi_free(p_msg);
+        GKI_freebuf(p_msg);
     }
 
     if (result == AVCT_SUCCESS)
@@ -475,7 +472,7 @@ UINT16 AVCT_MsgReq(UINT8 handle, UINT8 label, UINT8 cr, BT_HDR *p_msg)
             {
                 /* BCB channel is not open and not allocated */
                 result = AVCT_BAD_HANDLE;
-                osi_free(p_msg);
+                GKI_freebuf(p_msg);
             }
             else
             {
@@ -485,7 +482,7 @@ UINT16 AVCT_MsgReq(UINT8 handle, UINT8 label, UINT8 cr, BT_HDR *p_msg)
                 else
                 {
                     result = AVCT_BAD_HANDLE;
-                    osi_free(p_msg);
+                    GKI_freebuf(p_msg);
                 }
             }
         }
@@ -499,29 +496,6 @@ UINT16 AVCT_MsgReq(UINT8 handle, UINT8 label, UINT8 cr, BT_HDR *p_msg)
     return result;
 }
 
-/*******************************************************************************
-**
-** Function         AVCT_CheckIncomingConn
-**
-** Description      Check for incoming connection in progress
-**
-** Return           TRUE if incoming connection in progress, FALSE otherwise
-******************************************************************************/
-BOOLEAN AVCT_CheckIncomingConn(BD_ADDR peer_addr)
-{
-    tAVCT_LCB *p_lcb;
-
-    p_lcb = avct_lcb_by_bd(peer_addr);
-    if (p_lcb != NULL)
-    {
-        if (p_lcb->ch_state != AVCT_CH_IDLE)
-        {
-            AVCT_TRACE_ERROR("%s: Incoming AVCT connection in progress",__func__);
-            return TRUE;
-        }
-    }
-    return FALSE;
-}
 /******************************************************************************
 **
 ** Function         AVCT_SetTraceLevel

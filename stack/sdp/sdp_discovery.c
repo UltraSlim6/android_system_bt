@@ -27,9 +27,8 @@
 #include <stdio.h>
 
 #include "bt_target.h"
-#include "bt_common.h"
+#include "gki.h"
 #include "l2cdefs.h"
-#include "log/log.h"
 #include "hcidefs.h"
 #include "hcimsgs.h"
 #include "sdp_api.h"
@@ -46,12 +45,9 @@
 /*              L O C A L    F U N C T I O N     P R O T O T Y P E S            */
 /********************************************************************************/
 #if SDP_CLIENT_ENABLED == TRUE
-static void          process_service_search_rsp (tCONN_CB* p_ccb, uint8_t* p_reply,
-                                                 uint8_t* p_reply_end);
-static void          process_service_attr_rsp (tCONN_CB* p_ccb, uint8_t* p_reply,
-                                               uint8_t* p_reply_end);
-static void          process_service_search_attr_rsp (tCONN_CB* p_ccb, uint8_t* p_reply,
-                                                      uint8_t* p_reply_end);
+static void          process_service_search_rsp (tCONN_CB *p_ccb, UINT8 *p_reply);
+static void          process_service_attr_rsp (tCONN_CB *p_ccb, UINT8 *p_reply);
+static void          process_service_search_attr_rsp (tCONN_CB *p_ccb, UINT8 *p_reply);
 static UINT8         *save_attr_seq (tCONN_CB *p_ccb, UINT8 *p, UINT8 *p_msg_end);
 static tSDP_DISC_REC *add_record (tSDP_DISCOVERY_DB *p_db, BD_ADDR p_bda);
 static UINT8         *add_attr (UINT8 *p, tSDP_DISCOVERY_DB *p_db, tSDP_DISC_REC *p_rec,
@@ -60,7 +56,6 @@ static UINT8         *add_attr (UINT8 *p, tSDP_DISCOVERY_DB *p_db, tSDP_DISC_REC
 /* Safety check in case we go crazy */
 #define MAX_NEST_LEVELS     5
 
-extern fixed_queue_t *btu_general_alarm_queue;
 
 /*******************************************************************************
 **
@@ -107,6 +102,7 @@ static UINT8 *sdpu_build_uuid_seq (UINT8 *p_out, UINT16 num_uuids, tSDP_UUID *p_
         {
             SDP_TRACE_ERROR("SDP: Passed Uuid is of Invalid length: %x",p_uuid_list->len);
         }
+
     }
 
     /* Now, put in the length */
@@ -128,10 +124,16 @@ static UINT8 *sdpu_build_uuid_seq (UINT8 *p_out, UINT16 num_uuids, tSDP_UUID *p_
 static void sdp_snd_service_search_req(tCONN_CB *p_ccb, UINT8 cont_len, UINT8 * p_cont)
 {
     UINT8           *p, *p_start, *p_param_len;
-    BT_HDR          *p_cmd = (BT_HDR *) osi_malloc(SDP_DATA_BUF_SIZE);
+    BT_HDR          *p_cmd;
     UINT16          param_len;
 
-    /* Prepare the buffer for sending the packet to L2CAP */
+    /* Get a buffer to send the packet to L2CAP */
+    if ((p_cmd = (BT_HDR *) GKI_getpoolbuf (SDP_POOL_ID)) == NULL)
+    {
+        sdp_disconnect (p_ccb, SDP_NO_RESOURCES);
+        return;
+    }
+
     p_cmd->offset = L2CAP_MIN_OFFSET;
     p = p_start = (UINT8 *)(p_cmd + 1) + L2CAP_MIN_OFFSET;
 
@@ -181,8 +183,8 @@ static void sdp_snd_service_search_req(tCONN_CB *p_ccb, UINT8 cont_len, UINT8 * 
     L2CA_DataWrite (p_ccb->connection_id, p_cmd);
 
     /* Start inactivity timer */
-    alarm_set_on_queue(p_ccb->sdp_conn_timer, SDP_INACT_TIMEOUT_MS,
-                       sdp_conn_timer_timeout, p_ccb, btu_general_alarm_queue);
+    btu_start_timer (&p_ccb->timer_entry, BTU_TTYPE_SDP, SDP_INACT_TIMEOUT);
+
 }
 
 /*******************************************************************************
@@ -201,7 +203,7 @@ void sdp_disc_connected (tCONN_CB *p_ccb)
     {
         p_ccb->disc_state = SDP_DISC_WAIT_SEARCH_ATTR;
 
-        process_service_search_attr_rsp (p_ccb, NULL, NULL);
+        process_service_search_attr_rsp (p_ccb, NULL);
     }
     else
     {
@@ -235,11 +237,10 @@ void sdp_disc_server_rsp (tCONN_CB *p_ccb, BT_HDR *p_msg)
 #endif
 
     /* stop inactivity timer when we receive a response */
-    alarm_cancel(p_ccb->sdp_conn_timer);
+    btu_stop_timer (&p_ccb->timer_entry);
 
     /* Got a reply!! Check what we got back */
     p = (UINT8 *)(p_msg + 1) + p_msg->offset;
-    uint8_t* p_end = p + p_msg->len;
 
     BE_STREAM_TO_UINT8 (rsp_pdu, p);
 
@@ -250,7 +251,7 @@ void sdp_disc_server_rsp (tCONN_CB *p_ccb, BT_HDR *p_msg)
     case SDP_PDU_SERVICE_SEARCH_RSP:
         if (p_ccb->disc_state == SDP_DISC_WAIT_HANDLES)
         {
-            process_service_search_rsp (p_ccb, p, p_end);
+            process_service_search_rsp (p_ccb, p);
             invalid_pdu = FALSE;
         }
         break;
@@ -258,7 +259,7 @@ void sdp_disc_server_rsp (tCONN_CB *p_ccb, BT_HDR *p_msg)
     case SDP_PDU_SERVICE_ATTR_RSP:
         if (p_ccb->disc_state == SDP_DISC_WAIT_ATTR)
         {
-            process_service_attr_rsp (p_ccb, p, p_end);
+            process_service_attr_rsp (p_ccb, p);
             invalid_pdu = FALSE;
         }
         break;
@@ -266,7 +267,7 @@ void sdp_disc_server_rsp (tCONN_CB *p_ccb, BT_HDR *p_msg)
     case SDP_PDU_SERVICE_SEARCH_ATTR_RSP:
         if (p_ccb->disc_state == SDP_DISC_WAIT_SEARCH_ATTR)
         {
-            process_service_search_attr_rsp (p_ccb, p, p_end);
+            process_service_search_attr_rsp (p_ccb, p);
             invalid_pdu = FALSE;
         }
         break;
@@ -289,8 +290,7 @@ void sdp_disc_server_rsp (tCONN_CB *p_ccb, BT_HDR *p_msg)
 ** Returns          void
 **
 *******************************************************************************/
-static void process_service_search_rsp (tCONN_CB* p_ccb, uint8_t* p_reply,
-                                        uint8_t* p_reply_end)
+static void process_service_search_rsp (tCONN_CB *p_ccb, UINT8 *p_reply)
 {
     UINT16      xx;
     UINT16      total, cur_handles, orig;
@@ -327,11 +327,6 @@ static void process_service_search_rsp (tCONN_CB* p_ccb, uint8_t* p_reply,
             sdp_disconnect (p_ccb, SDP_INVALID_CONT_STATE);
             return;
         }
-        if (p_reply + cont_len > p_reply_end) {
-            android_errorWriteLog(0x534e4554, "68161546");
-            sdp_disconnect(p_ccb, SDP_INVALID_CONT_STATE);
-            return;
-        }
         /* stay in the same state */
         sdp_snd_service_search_req(p_ccb, cont_len, p_reply);
     }
@@ -341,7 +336,7 @@ static void process_service_search_rsp (tCONN_CB* p_ccb, uint8_t* p_reply,
         p_ccb->disc_state = SDP_DISC_WAIT_ATTR;
 
         /* Kick off the first attribute request */
-        process_service_attr_rsp (p_ccb, NULL, NULL);
+        process_service_attr_rsp (p_ccb, NULL);
     }
 }
 
@@ -358,7 +353,7 @@ static void process_service_search_rsp (tCONN_CB* p_ccb, uint8_t* p_reply,
 #if (SDP_RAW_DATA_INCLUDED == TRUE)
 static void sdp_copy_raw_data (tCONN_CB *p_ccb, BOOLEAN offset)
 {
-    unsigned int    cpy_len, rem_len;
+    unsigned int    cpy_len;
     UINT32          list_len;
     UINT8           *p;
     UINT8           type;
@@ -389,17 +384,10 @@ static void sdp_copy_raw_data (tCONN_CB *p_ccb, BOOLEAN offset)
         {
             cpy_len = list_len;
         }
-        rem_len = SDP_MAX_LIST_BYTE_COUNT - (unsigned int) (p - &p_ccb->rsp_list[0]);
-        if (cpy_len > rem_len)
-        {
-            SDP_TRACE_WARNING("rem_len :%d less than cpy_len:%d", rem_len, cpy_len);
-            cpy_len = rem_len;
-        }
-        SDP_TRACE_WARNING(
-          "%s: list_len:%d cpy_len:%d p:%p p_ccb:%p p_db:%p raw_size:%d "
-          "raw_used:%d raw_data:%p",
-          __func__, list_len, cpy_len, p, p_ccb, p_ccb->p_db,
-          p_ccb->p_db->raw_size, p_ccb->p_db->raw_used, p_ccb->p_db->raw_data);
+#if (SDP_DEBUG_RAW == TRUE)
+        SDP_TRACE_WARNING("list_len :%d cpy_len:%d raw_size:%d raw_used:%d",
+            list_len, cpy_len, p_ccb->p_db->raw_size, p_ccb->p_db->raw_used);
+#endif
         memcpy (&p_ccb->p_db->raw_data[p_ccb->p_db->raw_used], p, cpy_len);
         p_ccb->p_db->raw_used += cpy_len;
     }
@@ -416,8 +404,7 @@ static void sdp_copy_raw_data (tCONN_CB *p_ccb, BOOLEAN offset)
 ** Returns          void
 **
 *******************************************************************************/
-static void process_service_attr_rsp (tCONN_CB* p_ccb, uint8_t* p_reply,
-                                      uint8_t* p_reply_end)
+static void process_service_attr_rsp (tCONN_CB *p_ccb, UINT8 *p_reply)
 {
     UINT8           *p_start, *p_param_len;
     UINT16          param_len, list_byte_count;
@@ -454,8 +441,16 @@ static void process_service_attr_rsp (tCONN_CB* p_ccb, uint8_t* p_reply,
             p_ccb->list_len, list_byte_count);
 #endif
         if (p_ccb->rsp_list == NULL)
-            p_ccb->rsp_list = (UINT8 *)osi_malloc(SDP_MAX_LIST_BYTE_COUNT);
-        memcpy(&p_ccb->rsp_list[p_ccb->list_len], p_reply, list_byte_count);
+        {
+            p_ccb->rsp_list = (UINT8 *)GKI_getbuf (SDP_MAX_LIST_BYTE_COUNT);
+            if (p_ccb->rsp_list == NULL)
+            {
+                SDP_TRACE_ERROR ("SDP - no gki buf to save rsp");
+                sdp_disconnect (p_ccb, SDP_NO_RESOURCES);
+                return;
+            }
+        }
+        memcpy (&p_ccb->rsp_list[p_ccb->list_len], p_reply, list_byte_count);
         p_ccb->list_len += list_byte_count;
         p_reply         += list_byte_count;
 #if (SDP_DEBUG_RAW == TRUE)
@@ -495,8 +490,14 @@ static void process_service_attr_rsp (tCONN_CB* p_ccb, uint8_t* p_reply,
     /* Now, ask for the next handle. Re-use the buffer we just got. */
     if (p_ccb->cur_handle < p_ccb->num_handles)
     {
-        BT_HDR  *p_msg = (BT_HDR *)osi_malloc(SDP_DATA_BUF_SIZE);
+        BT_HDR  *p_msg = (BT_HDR *) GKI_getpoolbuf (SDP_POOL_ID);
         UINT8   *p;
+
+        if (!p_msg)
+        {
+            sdp_disconnect (p_ccb, SDP_NO_RESOURCES);
+            return;
+        }
 
         p_msg->offset = L2CAP_MIN_OFFSET;
         p = p_start = (UINT8 *)(p_msg + 1) + L2CAP_MIN_OFFSET;
@@ -524,12 +525,8 @@ static void process_service_attr_rsp (tCONN_CB* p_ccb, uint8_t* p_reply,
         /* Was this a continuation request ? */
         if (cont_request_needed)
         {
-            if ((p_reply + *p_reply + 1) <= p_reply_end) {
-                memcpy(p, p_reply, *p_reply + 1);
-                p += *p_reply + 1;
-            } else {
-                android_errorWriteLog(0x534e4554, "68161546");
-            }
+            memcpy (p, p_reply, *p_reply + 1);
+            p += *p_reply + 1;
         }
         else
             UINT8_TO_BE_STREAM (p, 0);
@@ -545,9 +542,7 @@ static void process_service_attr_rsp (tCONN_CB* p_ccb, uint8_t* p_reply,
         L2CA_DataWrite (p_ccb->connection_id, p_msg);
 
         /* Start inactivity timer */
-        alarm_set_on_queue(p_ccb->sdp_conn_timer, SDP_INACT_TIMEOUT_MS,
-                           sdp_conn_timer_timeout, p_ccb,
-                           btu_general_alarm_queue);
+        btu_start_timer (&p_ccb->timer_entry, BTU_TTYPE_SDP, SDP_INACT_TIMEOUT);
     }
     else
     {
@@ -567,8 +562,7 @@ static void process_service_attr_rsp (tCONN_CB* p_ccb, uint8_t* p_reply,
 ** Returns          void
 **
 *******************************************************************************/
-static void process_service_search_attr_rsp (tCONN_CB* p_ccb, uint8_t* p_reply,
-                                             uint8_t* p_reply_end)
+static void process_service_search_attr_rsp (tCONN_CB *p_ccb, UINT8 *p_reply)
 {
     UINT8           *p, *p_start, *p_end, *p_param_len;
     UINT8           type;
@@ -606,7 +600,15 @@ static void process_service_search_attr_rsp (tCONN_CB* p_ccb, uint8_t* p_reply,
             p_ccb->list_len, lists_byte_count);
 #endif
         if (p_ccb->rsp_list == NULL)
-            p_ccb->rsp_list = (UINT8 *)osi_malloc(SDP_MAX_LIST_BYTE_COUNT);
+        {
+            p_ccb->rsp_list = (UINT8 *)GKI_getbuf (SDP_MAX_LIST_BYTE_COUNT);
+            if (p_ccb->rsp_list == NULL)
+            {
+                SDP_TRACE_ERROR ("SDP - no gki buf to save rsp");
+                sdp_disconnect (p_ccb, SDP_NO_RESOURCES);
+                return;
+            }
+        }
         memcpy (&p_ccb->rsp_list[p_ccb->list_len], p_reply, lists_byte_count);
         p_ccb->list_len += lists_byte_count;
         p_reply         += lists_byte_count;
@@ -634,8 +636,14 @@ static void process_service_search_attr_rsp (tCONN_CB* p_ccb, uint8_t* p_reply,
     /* If continuation request (or first time request) */
     if ((cont_request_needed) || (!p_reply))
     {
-        BT_HDR  *p_msg = (BT_HDR *)osi_malloc(SDP_DATA_BUF_SIZE);
+        BT_HDR  *p_msg = (BT_HDR *) GKI_getpoolbuf (SDP_POOL_ID);
         UINT8   *p;
+
+        if (!p_msg)
+        {
+            sdp_disconnect (p_ccb, SDP_NO_RESOURCES);
+            return;
+        }
 
         p_msg->offset = L2CAP_MIN_OFFSET;
         p = p_start = (UINT8 *)(p_msg + 1) + L2CAP_MIN_OFFSET;
@@ -668,12 +676,8 @@ static void process_service_search_attr_rsp (tCONN_CB* p_ccb, uint8_t* p_reply,
         /* No continuation for first request */
         if (p_reply)
         {
-            if ((p_reply + *p_reply + 1) <= p_reply_end) {
-                memcpy(p, p_reply, *p_reply + 1);
-                p += *p_reply + 1;
-            } else {
-                android_errorWriteLog(0x534e4554, "68161546");
-            }
+            memcpy (p, p_reply, *p_reply + 1);
+            p += *p_reply + 1;
         }
         else
             UINT8_TO_BE_STREAM (p, 0);
@@ -689,9 +693,7 @@ static void process_service_search_attr_rsp (tCONN_CB* p_ccb, uint8_t* p_reply,
         L2CA_DataWrite (p_ccb->connection_id, p_msg);
 
         /* Start inactivity timer */
-        alarm_set_on_queue(p_ccb->sdp_conn_timer, SDP_INACT_TIMEOUT_MS,
-                           sdp_conn_timer_timeout, p_ccb,
-                           btu_general_alarm_queue);
+        btu_start_timer (&p_ccb->timer_entry, BTU_TTYPE_SDP, SDP_INACT_TIMEOUT);
 
         return;
     }

@@ -18,15 +18,13 @@
 
 #pragma once
 
-#include <stdbool.h>
-
-#include "osi/include/future.h"
+#include "future.h"
 
 typedef struct {
   void (*init_stack)(void);
   void (*start_up_stack_async)(void);
   void (*shut_down_stack_async)(void);
-  void (*clean_up_stack)(void);
+  void (*clean_up_stack_async)(void);
 
   bool (*get_stack_is_running)(void);
 } stack_manager_t;

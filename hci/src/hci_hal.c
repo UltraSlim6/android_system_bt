@@ -15,28 +15,23 @@
  *  limitations under the License.
  *
  ******************************************************************************/
-#include <string.h>
+
 #include "hci_hal.h"
 #include "hci_internals.h"
-#include "bt_utils.h"
 #if (defined(REMOVE_EAGER_THREADS) && (REMOVE_EAGER_THREADS == TRUE))
 #include <assert.h>
-#include "osi/include/eager_reader.h"
-#include "osi/include/osi.h"
-#include "osi/include/log.h"
+#include <string.h>
+#include "eager_reader.h"
+#include "osi.h"
+#include "log.h"
 #endif
 
-bt_soc_type soc_type;
-
 const hci_hal_t *hci_hal_get_interface() {
-    soc_type = get_soc_type();
-
-    if (soc_type == BT_SOC_ROME || soc_type == BT_SOC_CHEROKEE
-            || soc_type == BT_SOC_AR3K || soc_type == BT_SOC_DEFAULT) {
-        return hci_hal_h4_get_interface();
-    } else {
-        return hci_hal_mct_get_interface();
-    }
+#if HCI_USE_MCT
+  return hci_hal_mct_get_interface();
+#else
+  return hci_hal_h4_get_interface();
+#endif
 }
 
 #if (defined(REMOVE_EAGER_THREADS) && (REMOVE_EAGER_THREADS == TRUE))
@@ -104,7 +99,7 @@ error:;
 }
 
 size_t hci_reader_read(hci_reader_t *reader, uint8_t *buffer, size_t req_size) {
-  int bytes_read = 0;
+  size_t bytes_read = 0;
   assert(reader != NULL);
   assert(buffer != NULL);
 
@@ -112,14 +107,12 @@ size_t hci_reader_read(hci_reader_t *reader, uint8_t *buffer, size_t req_size) {
   // any bytes available before reading.
   if (reader->rd_ptr < reader->wr_ptr) {
     bytes_read = reader->wr_ptr - reader->rd_ptr;
-    if ((size_t) bytes_read > req_size)
+    if (bytes_read > req_size)
       bytes_read = req_size;
     memcpy(buffer, reader->data_buffer+reader->rd_ptr, bytes_read);
     reader->rd_ptr += bytes_read;
   } else {
     bytes_read = read(reader->inbound_fd, buffer, req_size);
-    if(bytes_read == -1)
-      bytes_read = 0;
   }
 
   return bytes_read;

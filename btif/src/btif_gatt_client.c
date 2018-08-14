@@ -16,6 +16,7 @@
  *
  ******************************************************************************/
 
+
 /*******************************************************************************
  *
  *  Filename:      btif_gatt_client.c
@@ -24,15 +25,13 @@
  *
  *******************************************************************************/
 
-#define LOG_TAG "bt_btif_gattc"
-
-#include <errno.h>
 #include <hardware/bluetooth.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <string.h>
-#include "device/include/controller.h"
 
+#define LOG_TAG "bt_btif_gattc"
 
 #include "btcore/include/bdaddr.h"
 #include "btif_common.h"
@@ -40,17 +39,18 @@
 
 #if (defined(BLE_INCLUDED) && (BLE_INCLUDED == TRUE))
 
+#include "btif_gatt_multi_adv_util.h"
 #include <hardware/bt_gatt.h>
-
 #include "bta_api.h"
 #include "bta_gatt_api.h"
+#include "btif_storage.h"
 #include "btif_config.h"
-#include "btif_dm.h"
+
 #include "btif_gatt.h"
-#include "btif_gatt_multi_adv_util.h"
 #include "btif_gatt_util.h"
+#include "btif_dm.h"
 #include "btif_storage.h"
-#include "btif_storage.h"
+
 #include "osi/include/log.h"
 #include "vendor_api.h"
 
@@ -60,10 +60,10 @@
 
 #define CHECK_BTGATT_INIT() if (bt_gatt_callbacks == NULL)\
     {\
-        LOG_WARN(LOG_TAG, "%s: BTGATT not initialized", __FUNCTION__);\
+        LOG_WARN("%s: BTGATT not initialized", __FUNCTION__);\
         return BT_STATUS_NOT_READY;\
     } else {\
-        LOG_VERBOSE(LOG_TAG, "%s", __FUNCTION__);\
+        LOG_VERBOSE("%s", __FUNCTION__);\
     }
 
 #define BLE_RESOLVE_ADDR_MSB                 0x40   /* bit7, bit6 is 01 to be resolvable random */
@@ -78,6 +78,12 @@ typedef enum {
     BTIF_GATTC_OPEN,
     BTIF_GATTC_CLOSE,
     BTIF_GATTC_SEARCH_SERVICE,
+    BTIF_GATTC_GET_FIRST_CHAR,
+    BTIF_GATTC_GET_NEXT_CHAR,
+    BTIF_GATTC_GET_FIRST_CHAR_DESCR,
+    BTIF_GATTC_GET_NEXT_CHAR_DESCR,
+    BTIF_GATTC_GET_FIRST_INCL_SERVICE,
+    BTIF_GATTC_GET_NEXT_INCL_SERVICE,
     BTIF_GATTC_READ_CHAR,
     BTIF_GATTC_READ_CHAR_DESCR,
     BTIF_GATTC_WRITE_CHAR,
@@ -103,8 +109,7 @@ typedef enum {
     BTIF_GATTC_CONFIG_STORAGE_PARAMS,
     BTIF_GATTC_ENABLE_BATCH_SCAN,
     BTIF_GATTC_READ_BATCH_SCAN_REPORTS,
-    BTIF_GATTC_DISABLE_BATCH_SCAN,
-    BTIF_GATTC_GET_GATT_DB
+    BTIF_GATTC_DISABLE_BATCH_SCAN
 } btif_gattc_event_t;
 
 #define BTIF_GATT_MAX_OBSERVED_DEV 40
@@ -146,6 +151,7 @@ typedef struct
     btgatt_batch_reports  read_reports;
 } btgatt_batch_track_cb_t;
 
+
 typedef tBTA_DM_BLE_PF_FILT_PARAMS btgatt_adv_filt_param_t;
 
 typedef struct
@@ -180,7 +186,6 @@ typedef struct
     btgatt_srvc_id_t incl_srvc_id;
     btgatt_gatt_id_t char_id;
     btgatt_gatt_id_t descr_id;
-    uint16_t    handle;
     bt_uuid_t   uuid;
     bt_uuid_t   uuid_mask;
     uint16_t    conn_id;
@@ -240,9 +245,9 @@ static uint8_t rssi_request_client_if;
 ********************************************************************************/
 
 static bt_status_t btif_gattc_multi_adv_disable(int client_if);
-static void btif_multi_adv_stop_cb(void *data)
+static void btif_multi_adv_stop_cb(void *p_tle)
 {
-    int client_if = PTR_TO_INT(data);
+    int client_if = ((TIMER_LIST_ENT*)p_tle)->data;
     btif_gattc_multi_adv_disable(client_if); // Does context switch
 }
 
@@ -311,7 +316,7 @@ static void btapp_gattc_req_data(UINT16 event, char *p_dest, char *p_src)
        return;
 
     // Copy basic structure first
-    maybe_non_aligned_memcpy(p_dest_data, p_src_data, sizeof(*p_src_data));
+    memcpy(p_dest_data, p_src_data, sizeof(tBTA_GATTC));
 
     // Allocate buffer for request data if necessary
     switch (event)
@@ -321,21 +326,31 @@ static void btapp_gattc_req_data(UINT16 event, char *p_dest, char *p_src)
 
             if (p_src_data->read.p_value != NULL)
             {
-                p_dest_data->read.p_value = osi_malloc(sizeof(tBTA_GATT_UNFMT));
+                p_dest_data->read.p_value = GKI_getbuf(sizeof(tBTA_GATT_READ_VAL));
 
-                memcpy(p_dest_data->read.p_value, p_src_data->read.p_value,
-                       sizeof(tBTA_GATT_UNFMT));
+                if (p_dest_data->read.p_value != NULL)
+                {
+                    memcpy(p_dest_data->read.p_value, p_src_data->read.p_value,
+                        sizeof(tBTA_GATT_READ_VAL));
 
-                // Allocate buffer for att value if necessary
-                if (p_src_data->read.p_value->len > 0 &&
-                    p_src_data->read.p_value->p_value != NULL) {
-                    p_dest_data->read.p_value->p_value =
-                        osi_malloc(p_src_data->read.p_value->len);
-                    memcpy(p_dest_data->read.p_value->p_value,
-                           p_src_data->read.p_value->p_value,
-                           p_src_data->read.p_value->len);
+                    // Allocate buffer for att value if necessary
+                    if (get_uuid16(&p_src_data->read.descr_type.uuid) != GATT_UUID_CHAR_AGG_FORMAT
+                      && p_src_data->read.p_value->unformat.len > 0
+                      && p_src_data->read.p_value->unformat.p_value != NULL)
+                    {
+                        p_dest_data->read.p_value->unformat.p_value =
+                                       GKI_getbuf(p_src_data->read.p_value->unformat.len);
+                        if (p_dest_data->read.p_value->unformat.p_value != NULL)
+                        {
+                            memcpy(p_dest_data->read.p_value->unformat.p_value,
+                                   p_src_data->read.p_value->unformat.p_value,
+                                   p_src_data->read.p_value->unformat.len);
+                        }
+                    }
                 }
-            } else {
+            }
+            else
+            {
                 BTIF_TRACE_WARNING("%s :Src read.p_value ptr is NULL for event  0x%x",
                                     __FUNCTION__, event);
                 p_dest_data->read.p_value = NULL;
@@ -356,10 +371,13 @@ static void btapp_gattc_free_req_data(UINT16 event, tBTA_GATTC *p_data)
         case BTA_GATTC_READ_DESCR_EVT:
             if (p_data != NULL && p_data->read.p_value != NULL)
             {
-                if (p_data->read.p_value->len > 0)
-                    osi_free_and_reset((void **)&p_data->read.p_value->p_value);
-
-                osi_free_and_reset((void **)&p_data->read.p_value);
+                if (get_uuid16 (&p_data->read.descr_type.uuid) != GATT_UUID_CHAR_AGG_FORMAT
+                  && p_data->read.p_value->unformat.len > 0
+                  && p_data->read.p_value->unformat.p_value != NULL)
+                {
+                    GKI_freebuf(p_data->read.p_value->unformat.p_value);
+                }
+                GKI_freebuf(p_data->read.p_value);
             }
             break;
 
@@ -383,7 +401,7 @@ static void btif_gattc_add_remote_bdaddr (BD_ADDR p_bda, uint8_t addr_type)
             memcpy(p_dev_cb->remote_dev[i].bd_addr.address, p_bda, BD_ADDR_LEN);
             p_dev_cb->addr_type = addr_type;
             p_dev_cb->remote_dev[i].in_use = TRUE;
-            LOG_VERBOSE(LOG_TAG, "%s device added idx=%d", __FUNCTION__, i  );
+            LOG_VERBOSE("%s device added idx=%d", __FUNCTION__, i  );
             break;
         }
     }
@@ -394,7 +412,7 @@ static void btif_gattc_add_remote_bdaddr (BD_ADDR p_bda, uint8_t addr_type)
         memcpy(p_dev_cb->remote_dev[i].bd_addr.address, p_bda, BD_ADDR_LEN);
         p_dev_cb->addr_type = addr_type;
         p_dev_cb->remote_dev[i].in_use = TRUE;
-        LOG_VERBOSE(LOG_TAG, "%s device overwrite idx=%d", __FUNCTION__, i  );
+        LOG_VERBOSE("%s device overwrite idx=%d", __FUNCTION__, i  );
         p_dev_cb->next_storage_idx++;
         if (p_dev_cb->next_storage_idx >= BTIF_GATT_MAX_OBSERVED_DEV)
                p_dev_cb->next_storage_idx = 0;
@@ -435,7 +453,7 @@ static void btif_gattc_update_properties ( btif_gattc_cb_t *p_btif_cb )
         memcpy(bdname.name, p_eir_remote_name, remote_name_len);
         bdname.name[remote_name_len]='\0';
 
-        LOG_VERBOSE(LOG_TAG, "%s BLE device name=%s len=%d dev_type=%d", __FUNCTION__, bdname.name,
+        LOG_DEBUG("%s BLE device name=%s len=%d dev_type=%d", __FUNCTION__, bdname.name,
               remote_name_len, p_btif_cb->device_type  );
         btif_dm_update_ble_remote_properties( p_btif_cb->bd_addr.address,   bdname.name,
                                                p_btif_cb->device_type);
@@ -444,7 +462,7 @@ static void btif_gattc_update_properties ( btif_gattc_cb_t *p_btif_cb )
 
 static void btif_gattc_upstreams_evt(uint16_t event, char* p_param)
 {
-    LOG_VERBOSE(LOG_TAG, "%s: Event %d", __FUNCTION__, event);
+    LOG_VERBOSE("%s: Event %d", __FUNCTION__, event);
 
     tBTA_GATTC *p_data = (tBTA_GATTC*) p_param;
     switch (event)
@@ -477,8 +495,13 @@ static void btif_gattc_upstreams_evt(uint16_t event, char* p_param)
         case BTA_GATTC_WRITE_CHAR_EVT:
         case BTA_GATTC_PREP_WRITE_EVT:
         {
-            HAL_CBACK(bt_gatt_callbacks, client->write_characteristic_cb,
-                p_data->write.conn_id, p_data->write.status, p_data->write.handle);
+            btgatt_write_params_t data;
+            bta_to_btif_srvc_id(&data.srvc_id, &p_data->write.srvc_id);
+            bta_to_btif_gatt_id(&data.char_id, &p_data->write.char_id);
+
+            HAL_CBACK(bt_gatt_callbacks, client->write_characteristic_cb
+                , p_data->write.conn_id, p_data->write.status, &data
+            );
             break;
         }
 
@@ -499,7 +522,10 @@ static void btif_gattc_upstreams_evt(uint16_t event, char* p_param)
 
         case BTA_GATTC_SEARCH_RES_EVT:
         {
-            /* Do nothing */
+            btgatt_srvc_id_t data;
+            bta_to_btif_srvc_id(&data, &(p_data->srvc_res.service_uuid));
+            HAL_CBACK(bt_gatt_callbacks, client->search_result_cb
+                , p_data->srvc_res.conn_id, &data);
             break;
         }
 
@@ -515,8 +541,13 @@ static void btif_gattc_upstreams_evt(uint16_t event, char* p_param)
 
         case BTA_GATTC_WRITE_DESCR_EVT:
         {
-            HAL_CBACK(bt_gatt_callbacks, client->write_descriptor_cb,
-                p_data->write.conn_id, p_data->write.status, p_data->write.handle);
+            btgatt_write_params_t data;
+            bta_to_btif_srvc_id(&data.srvc_id, &p_data->write.srvc_id);
+            bta_to_btif_gatt_id(&data.char_id, &p_data->write.char_id);
+            bta_to_btif_gatt_id(&data.descr_id, &p_data->write.descr_type);
+
+            HAL_CBACK(bt_gatt_callbacks, client->write_descriptor_cb
+                , p_data->write.conn_id, p_data->write.status, &data);
             break;
         }
 
@@ -525,17 +556,22 @@ static void btif_gattc_upstreams_evt(uint16_t event, char* p_param)
             btgatt_notify_params_t data;
 
             bdcpy(data.bda.address, p_data->notify.bda);
+
+            bta_to_btif_srvc_id(&data.srvc_id, &p_data->notify.char_id.srvc_id);
+            bta_to_btif_gatt_id(&data.char_id, &p_data->notify.char_id.char_id);
             memcpy(data.value, p_data->notify.value, p_data->notify.len);
 
-            data.handle = p_data->notify.handle;
             data.is_notify = p_data->notify.is_notify;
             data.len = p_data->notify.len;
 
-            HAL_CBACK(bt_gatt_callbacks, client->notify_cb, p_data->notify.conn_id, &data);
+            HAL_CBACK(bt_gatt_callbacks, client->notify_cb
+                , p_data->notify.conn_id, &data);
 
             if (p_data->notify.is_notify == FALSE)
-                BTA_GATTC_SendIndConfirm(p_data->notify.conn_id, p_data->notify.handle);
-
+            {
+                BTA_GATTC_SendIndConfirm(p_data->notify.conn_id,
+                                         &p_data->notify.char_id);
+            }
             break;
         }
 
@@ -570,7 +606,7 @@ static void btif_gattc_upstreams_evt(uint16_t event, char* p_param)
         }
 
         case BTA_GATTC_ACL_EVT:
-            LOG_DEBUG(LOG_TAG, "BTA_GATTC_ACL_EVT: status = %d", p_data->status);
+            LOG_DEBUG("BTA_GATTC_ACL_EVT: status = %d", p_data->status);
             /* Ignore for now */
             break;
 
@@ -649,8 +685,7 @@ static void btif_gattc_upstreams_evt(uint16_t event, char* p_param)
                     , p_btif_cb->status
                 );
             btif_multi_adv_timer_ctrl(p_btif_cb->client_if,
-                                      (p_btif_cb->status == BTA_GATT_OK) ?
-                                      btif_multi_adv_stop_cb : NULL);
+                    (p_btif_cb->status==0 ? btif_multi_adv_stop_cb : NULL));
             break;
         }
 
@@ -662,8 +697,7 @@ static void btif_gattc_upstreams_evt(uint16_t event, char* p_param)
                 , p_btif_cb->status
             );
             btif_multi_adv_timer_ctrl(p_btif_cb->client_if,
-                                      (p_btif_cb->status == BTA_GATT_OK) ?
-                                      btif_multi_adv_stop_cb : NULL);
+                    (p_btif_cb->status==0 ? btif_multi_adv_stop_cb : NULL));
             break;
         }
 
@@ -748,14 +782,15 @@ static void btif_gattc_upstreams_evt(uint16_t event, char* p_param)
 
             if (p_data->read_reports.data_len > 0 && NULL != p_data->read_reports.p_rep_data)
             {
-                p_rep_data = osi_malloc(p_data->read_reports.data_len);
+                p_rep_data = GKI_getbuf(p_data->read_reports.data_len);
                 memcpy(p_rep_data, p_data->read_reports.p_rep_data, p_data->read_reports.data_len);
             }
 
             HAL_CBACK(bt_gatt_callbacks, client->batchscan_reports_cb
                     , p_data->client_if, p_data->status, p_data->read_reports.report_format
                     , p_data->read_reports.num_records, p_data->read_reports.data_len, p_rep_data);
-            osi_free(p_rep_data);
+            if (NULL != p_rep_data)
+                GKI_freebuf(p_rep_data);
             break;
         }
 
@@ -810,7 +845,7 @@ static void btif_gattc_upstreams_evt(uint16_t event, char* p_param)
         }
 
         default:
-            LOG_ERROR(LOG_TAG, "%s: Unhandled event (%d)!", __FUNCTION__, event);
+            LOG_ERROR("%s: Unhandled event (%d)!", __FUNCTION__, event);
             break;
     }
 
@@ -965,16 +1000,16 @@ static void bta_batch_scan_reports_cb(tBTA_DM_BLE_REF_VALUE ref_value, UINT8 rep
 
     if (data_len > 0)
     {
-        btif_scan_track_cb.read_reports.p_rep_data = osi_malloc(data_len);
+        btif_scan_track_cb.read_reports.p_rep_data = GKI_getbuf(data_len);
         memcpy(btif_scan_track_cb.read_reports.p_rep_data, p_rep_data, data_len);
-        osi_free(p_rep_data);
+        GKI_freebuf(p_rep_data);
     }
 
     btif_transfer_context(btif_gattc_upstreams_evt, BTA_GATTC_BTH_SCAN_RD_EVT,
         (char*) &btif_scan_track_cb, sizeof(btgatt_batch_track_cb_t), NULL);
 
     if (data_len > 0)
-        osi_free_and_reset((void **)&btif_scan_track_cb.read_reports.p_rep_data);
+        GKI_freebuf(btif_scan_track_cb.read_reports.p_rep_data);
 }
 
 static void bta_scan_results_cb (tBTA_DM_SEARCH_EVT event, tBTA_DM_SEARCH *p_data)
@@ -1031,9 +1066,6 @@ static void bta_track_adv_event_cb(tBTA_DM_BLE_TRACK_ADV_DATA *p_track_adv_data)
 
 static void btm_read_rssi_cb (tBTM_RSSI_RESULTS *p_result)
 {
-    if (!p_result)
-      return;
-
     btif_gattc_cb_t btif_cb;
 
     bdcpy(btif_cb.bd_addr.address, p_result->rem_bda);
@@ -1101,7 +1133,7 @@ static void btgattc_free_event_data(UINT16 event, char *event_data)
         case BTIF_GATTC_ADV_INSTANCE_SET_DATA:
         case BTIF_GATTC_SET_ADV_DATA:
         {
-            btif_adv_data_t *adv_data = (btif_adv_data_t *)event_data;
+            const btif_adv_data_t *adv_data = (btif_adv_data_t*) event_data;
             btif_gattc_adv_data_cleanup(adv_data);
             break;
         }
@@ -1115,12 +1147,20 @@ static void btgattc_handle_event(uint16_t event, char* p_param)
 {
     tBTA_GATT_STATUS           status;
     tBT_UUID                   uuid;
+    tBTA_GATT_SRVC_ID          srvc_id;
+    tGATT_CHAR_PROP            out_char_prop;
+    tBTA_GATTC_CHAR_ID         in_char_id;
+    tBTA_GATTC_CHAR_ID         out_char_id;
+    tBTA_GATTC_CHAR_DESCR_ID   in_char_descr_id;
+    tBTA_GATTC_CHAR_DESCR_ID   out_char_descr_id;
+    tBTA_GATTC_INCL_SVC_ID     in_incl_svc_id;
+    tBTA_GATTC_INCL_SVC_ID     out_incl_svc_id;
     tBTA_GATT_UNFMT            descr_val;
 
     btif_gattc_cb_t* p_cb = (btif_gattc_cb_t*) p_param;
     if (!p_cb) return;
 
-    LOG_VERBOSE(LOG_TAG, "%s: Event %d", __FUNCTION__, event);
+    LOG_VERBOSE("%s: Event %d", __FUNCTION__, event);
 
     switch (event)
     {
@@ -1159,15 +1199,14 @@ static void btgattc_handle_event(uint16_t event, char* p_param)
                 BTA_DmAddBleDevice(p_cb->bd_addr.address, addr_type, device_type);
             }
 
-            // Check for background connections
+            // Mark background connections
             if (!p_cb->is_direct)
             {
-                // Check for privacy 1.0 and 1.1 controller and do not start background
-                // connection if RPA offloading is not supported, since it will not
-                // connect after change of random address
-                if (!controller_get_interface()->supports_ble_privacy() &&
-                   (p_cb->addr_type == BLE_ADDR_RANDOM) &&
-                   BTM_BLE_IS_RESOLVE_BDA(p_cb->bd_addr.address))
+                // Check if RPA offloading is supported, otherwise, do not start
+                // background connection, since it will not connect after address
+                // changes
+                if ((p_cb->addr_type == BLE_ADDR_RANDOM)
+                        && BTM_BLE_IS_RESOLVE_BDA(p_cb->bd_addr.address))
                 {
                     tBTM_BLE_VSC_CB vnd_capabilities;
                     BTM_BleGetVendorCapabilities(&vnd_capabilities);
@@ -1181,11 +1220,10 @@ static void btgattc_handle_event(uint16_t event, char* p_param)
                 BTA_DmBleSetBgConnType(BTM_BLE_CONN_AUTO, NULL);
             }
 
-            // Determine transport
-            if (p_cb->transport != GATT_TRANSPORT_AUTO)
-            {
+            if(p_cb->transport != GATT_TRANSPORT_AUTO)
                 transport = p_cb->transport;
-            } else {
+            else
+            {
                 switch(device_type)
                 {
                     case BT_DEVICE_TYPE_BREDR:
@@ -1206,8 +1244,8 @@ static void btgattc_handle_event(uint16_t event, char* p_param)
             }
 
             // Connect!
-            BTIF_TRACE_DEBUG ("%s Transport=%d, device type=%d",
-                                __func__, transport, device_type);
+            BTIF_TRACE_DEBUG ("BTA_GATTC_Open Transport  = %d, dev type = %d",
+                                transport, device_type);
             BTA_GATTC_Open(p_cb->client_if, p_cb->bd_addr.address, p_cb->is_direct, transport);
             break;
         }
@@ -1235,36 +1273,145 @@ static void btgattc_handle_event(uint16_t event, char* p_param)
             break;
         }
 
-        case BTIF_GATTC_GET_GATT_DB:
+        case BTIF_GATTC_GET_FIRST_CHAR:
         {
-            btgatt_db_element_t *db = NULL;
-            int count = 0;
-            BTA_GATTC_GetGattDb(p_cb->conn_id, 0x0000, 0xFFFF, &db, &count);
+            btgatt_gatt_id_t char_id;
+            btif_to_bta_srvc_id(&srvc_id, &p_cb->srvc_id);
+            status = BTA_GATTC_GetFirstChar(p_cb->conn_id, &srvc_id, NULL,
+                                            &out_char_id, &out_char_prop);
 
-            HAL_CBACK(bt_gatt_callbacks, client->get_gatt_db_cb,
-                p_cb->conn_id, db, count);
-            osi_free(db);
+            if (status == 0)
+                bta_to_btif_gatt_id(&char_id, &out_char_id.char_id);
+
+            HAL_CBACK(bt_gatt_callbacks, client->get_characteristic_cb,
+                p_cb->conn_id, status, &p_cb->srvc_id,
+                &char_id, out_char_prop);
+            break;
+        }
+
+        case BTIF_GATTC_GET_NEXT_CHAR:
+        {
+            btgatt_gatt_id_t char_id;
+            btif_to_bta_srvc_id(&in_char_id.srvc_id, &p_cb->srvc_id);
+            btif_to_bta_gatt_id(&in_char_id.char_id, &p_cb->char_id);
+
+            status = BTA_GATTC_GetNextChar(p_cb->conn_id, &in_char_id, NULL,
+                                            &out_char_id, &out_char_prop);
+
+            if (status == 0)
+                bta_to_btif_gatt_id(&char_id, &out_char_id.char_id);
+
+            HAL_CBACK(bt_gatt_callbacks, client->get_characteristic_cb,
+                p_cb->conn_id, status, &p_cb->srvc_id,
+                &char_id, out_char_prop);
+            break;
+        }
+
+        case BTIF_GATTC_GET_FIRST_CHAR_DESCR:
+        {
+            btgatt_gatt_id_t descr_id;
+            btif_to_bta_srvc_id(&in_char_id.srvc_id, &p_cb->srvc_id);
+            btif_to_bta_gatt_id(&in_char_id.char_id, &p_cb->char_id);
+
+            status = BTA_GATTC_GetFirstCharDescr(p_cb->conn_id, &in_char_id, NULL,
+                                                    &out_char_descr_id);
+
+            if (status == 0)
+                bta_to_btif_gatt_id(&descr_id, &out_char_descr_id.descr_id);
+
+            HAL_CBACK(bt_gatt_callbacks, client->get_descriptor_cb,
+                p_cb->conn_id, status, &p_cb->srvc_id,
+                &p_cb->char_id, &descr_id);
+            break;
+        }
+
+        case BTIF_GATTC_GET_NEXT_CHAR_DESCR:
+        {
+            btgatt_gatt_id_t descr_id;
+            btif_to_bta_srvc_id(&in_char_descr_id.char_id.srvc_id, &p_cb->srvc_id);
+            btif_to_bta_gatt_id(&in_char_descr_id.char_id.char_id, &p_cb->char_id);
+            btif_to_bta_gatt_id(&in_char_descr_id.descr_id, &p_cb->descr_id);
+
+            status = BTA_GATTC_GetNextCharDescr(p_cb->conn_id, &in_char_descr_id
+                                        , NULL, &out_char_descr_id);
+
+            if (status == 0)
+                bta_to_btif_gatt_id(&descr_id, &out_char_descr_id.descr_id);
+
+            HAL_CBACK(bt_gatt_callbacks, client->get_descriptor_cb,
+                p_cb->conn_id, status, &p_cb->srvc_id,
+                &p_cb->char_id, &descr_id);
+            break;
+        }
+
+        case BTIF_GATTC_GET_FIRST_INCL_SERVICE:
+        {
+            btgatt_srvc_id_t incl_srvc_id;
+            btif_to_bta_srvc_id(&srvc_id, &p_cb->srvc_id);
+
+            status = BTA_GATTC_GetFirstIncludedService(p_cb->conn_id,
+                        &srvc_id, NULL, &out_incl_svc_id);
+
+            bta_to_btif_srvc_id(&incl_srvc_id, &out_incl_svc_id.incl_svc_id);
+
+            HAL_CBACK(bt_gatt_callbacks, client->get_included_service_cb,
+                p_cb->conn_id, status, &p_cb->srvc_id,
+                &incl_srvc_id);
+            break;
+        }
+
+        case BTIF_GATTC_GET_NEXT_INCL_SERVICE:
+        {
+            btgatt_srvc_id_t incl_srvc_id;
+            btif_to_bta_srvc_id(&in_incl_svc_id.srvc_id, &p_cb->srvc_id);
+            btif_to_bta_srvc_id(&in_incl_svc_id.incl_svc_id, &p_cb->incl_srvc_id);
+
+            status = BTA_GATTC_GetNextIncludedService(p_cb->conn_id,
+                        &in_incl_svc_id, NULL, &out_incl_svc_id);
+
+            bta_to_btif_srvc_id(&incl_srvc_id, &out_incl_svc_id.incl_svc_id);
+
+            HAL_CBACK(bt_gatt_callbacks, client->get_included_service_cb,
+                p_cb->conn_id, status, &p_cb->srvc_id,
+                &incl_srvc_id);
             break;
         }
 
         case BTIF_GATTC_READ_CHAR:
-            BTA_GATTC_ReadCharacteristic(p_cb->conn_id, p_cb->handle, p_cb->auth_req);
+            btif_to_bta_srvc_id(&in_char_id.srvc_id, &p_cb->srvc_id);
+            btif_to_bta_gatt_id(&in_char_id.char_id, &p_cb->char_id);
+
+            BTA_GATTC_ReadCharacteristic(p_cb->conn_id, &in_char_id, p_cb->auth_req);
             break;
 
         case BTIF_GATTC_READ_CHAR_DESCR:
-            BTA_GATTC_ReadCharDescr(p_cb->conn_id, p_cb->handle, p_cb->auth_req);
+            btif_to_bta_srvc_id(&in_char_descr_id.char_id.srvc_id, &p_cb->srvc_id);
+            btif_to_bta_gatt_id(&in_char_descr_id.char_id.char_id, &p_cb->char_id);
+            btif_to_bta_gatt_id(&in_char_descr_id.descr_id, &p_cb->descr_id);
+
+            BTA_GATTC_ReadCharDescr(p_cb->conn_id, &in_char_descr_id, p_cb->auth_req);
             break;
 
         case BTIF_GATTC_WRITE_CHAR:
-            BTA_GATTC_WriteCharValue(p_cb->conn_id, p_cb->handle, p_cb->write_type,
-                                     p_cb->len, p_cb->value, p_cb->auth_req);
+            btif_to_bta_srvc_id(&in_char_id.srvc_id, &p_cb->srvc_id);
+            btif_to_bta_gatt_id(&in_char_id.char_id, &p_cb->char_id);
+
+            BTA_GATTC_WriteCharValue(p_cb->conn_id, &in_char_id,
+                                     p_cb->write_type,
+                                     p_cb->len,
+                                     p_cb->value,
+                                     p_cb->auth_req);
             break;
 
         case BTIF_GATTC_WRITE_CHAR_DESCR:
+            btif_to_bta_srvc_id(&in_char_descr_id.char_id.srvc_id, &p_cb->srvc_id);
+            btif_to_bta_gatt_id(&in_char_descr_id.char_id.char_id, &p_cb->char_id);
+            btif_to_bta_gatt_id(&in_char_descr_id.descr_id, &p_cb->descr_id);
+
             descr_val.len = p_cb->len;
             descr_val.p_value = p_cb->value;
 
-            BTA_GATTC_WriteCharDescr(p_cb->conn_id, p_cb->handle,
+            BTA_GATTC_WriteCharDescr(p_cb->conn_id, &in_char_descr_id,
                                      p_cb->write_type, &descr_val,
                                      p_cb->auth_req);
             break;
@@ -1274,19 +1421,27 @@ static void btgattc_handle_event(uint16_t event, char* p_param)
             break;
 
         case BTIF_GATTC_REG_FOR_NOTIFICATION:
+            btif_to_bta_srvc_id(&in_char_id.srvc_id, &p_cb->srvc_id);
+            btif_to_bta_gatt_id(&in_char_id.char_id, &p_cb->char_id);
+
             status = BTA_GATTC_RegisterForNotifications(p_cb->client_if,
-                                    p_cb->bd_addr.address, p_cb->handle);
+                                    p_cb->bd_addr.address, &in_char_id);
 
             HAL_CBACK(bt_gatt_callbacks, client->register_for_notification_cb,
-                p_cb->conn_id, 1, status, p_cb->handle);
+                p_cb->conn_id, 1, status, &p_cb->srvc_id,
+                &p_cb->char_id);
             break;
 
         case BTIF_GATTC_DEREG_FOR_NOTIFICATION:
+            btif_to_bta_srvc_id(&in_char_id.srvc_id, &p_cb->srvc_id);
+            btif_to_bta_gatt_id(&in_char_id.char_id, &p_cb->char_id);
+
             status = BTA_GATTC_DeregisterForNotifications(p_cb->client_if,
-                                        p_cb->bd_addr.address, p_cb->handle);
+                                        p_cb->bd_addr.address, &in_char_id);
 
             HAL_CBACK(bt_gatt_callbacks, client->register_for_notification_cb,
-                p_cb->conn_id, 0, status, p_cb->handle);
+                p_cb->conn_id, 0, status, &p_cb->srvc_id,
+                &p_cb->char_id);
             break;
 
         case BTIF_GATTC_REFRESH:
@@ -1343,7 +1498,7 @@ static void btgattc_handle_event(uint16_t event, char* p_param)
                     cond.srvc_uuid.p_uuid_mask = NULL;
                     if (p_adv_filt_cb->has_mask)
                     {
-                        btif_to_bta_uuid_mask(&uuid_mask, &p_adv_filt_cb->uuid_mask);
+                        btif_to_bta_uuid_mask(&uuid_mask, &p_adv_filt_cb->uuid_mask, &p_adv_filt_cb->uuid);
                         cond.srvc_uuid.p_uuid_mask = &uuid_mask;
                     }
                     BTA_DmBleCfgFilterCondition(p_adv_filt_cb->action,
@@ -1403,7 +1558,7 @@ static void btgattc_handle_event(uint16_t event, char* p_param)
                 }
 
                 default:
-                    LOG_ERROR(LOG_TAG, "%s: Unknown filter type (%d)!", __FUNCTION__, p_cb->action);
+                    LOG_ERROR("%s: Unknown filter type (%d)!", __FUNCTION__, p_cb->action);
                     break;
             }
             break;
@@ -1520,7 +1675,7 @@ static void btgattc_handle_event(uint16_t event, char* p_param)
                     btif_obtain_multi_adv_data_cb();
                 BTA_BleCfgAdvInstData(
                     (UINT8)inst_id,
-                    p_adv_data->set_scan_rsp,
+                    p_multi_adv_data_cb->inst_cb[cbindex].is_scan_rsp,
                     p_multi_adv_data_cb->inst_cb[cbindex].mask,
                     &p_multi_adv_data_cb->inst_cb[cbindex].data);
             }
@@ -1606,7 +1761,7 @@ static void btgattc_handle_event(uint16_t event, char* p_param)
         }
 
         default:
-            LOG_ERROR(LOG_TAG, "%s: Unknown event (%d)!", __FUNCTION__, event);
+            LOG_ERROR("%s: Unknown event (%d)!", __FUNCTION__, event);
             break;
     }
 
@@ -1686,24 +1841,24 @@ static void btif_gattc_deep_copy(UINT16 event, char *p_dest, char *p_src)
         {
             const btif_adv_data_t *src = (btif_adv_data_t*) p_src;
             btif_adv_data_t *dst = (btif_adv_data_t*) p_dest;
-            maybe_non_aligned_memcpy(dst, src, sizeof(*src));
+            memcpy(dst, src, sizeof(*src));
 
             if (src->p_manufacturer_data)
             {
-                dst->p_manufacturer_data = osi_malloc(src->manufacturer_len);
+                dst->p_manufacturer_data = GKI_getbuf(src->manufacturer_len);
                 memcpy(dst->p_manufacturer_data, src->p_manufacturer_data,
                        src->manufacturer_len);
             }
 
             if (src->p_service_data)
             {
-                dst->p_service_data = osi_malloc(src->service_data_len);
+                dst->p_service_data = GKI_getbuf(src->service_data_len);
                 memcpy(dst->p_service_data, src->p_service_data, src->service_data_len);
             }
 
             if (src->p_service_uuid)
             {
-                dst->p_service_uuid = osi_malloc(src->service_uuid_len);
+                dst->p_service_uuid = GKI_getbuf(src->service_uuid_len);
                 memcpy(dst->p_service_uuid, src->p_service_uuid, src->service_uuid_len);
             }
             break;
@@ -1757,65 +1912,121 @@ static bt_status_t btif_gattc_search_service(int conn_id, bt_uuid_t *filter_uuid
                                  (char*) &btif_cb, sizeof(btif_gattc_cb_t), NULL);
 }
 
-static bt_status_t btif_gattc_get_gatt_db(int conn_id)
+static bt_status_t btif_gattc_get_characteristic( int conn_id
+        , btgatt_srvc_id_t *srvc_id, btgatt_gatt_id_t *start_char_id)
 {
     CHECK_BTGATT_INIT();
     btif_gattc_cb_t btif_cb;
     btif_cb.conn_id = (uint16_t) conn_id;
-
-    return btif_transfer_context(btgattc_handle_event, BTIF_GATTC_GET_GATT_DB,
+    memcpy(&btif_cb.srvc_id, srvc_id, sizeof(btgatt_srvc_id_t));
+    if (start_char_id)
+    {
+        memcpy(&btif_cb.char_id, start_char_id, sizeof(btgatt_gatt_id_t));
+        return btif_transfer_context(btgattc_handle_event, BTIF_GATTC_GET_NEXT_CHAR,
+                                 (char*) &btif_cb, sizeof(btif_gattc_cb_t), NULL);
+    }
+    return btif_transfer_context(btgattc_handle_event, BTIF_GATTC_GET_FIRST_CHAR,
                                  (char*) &btif_cb, sizeof(btif_gattc_cb_t), NULL);
 }
 
-
-static bt_status_t btif_gattc_read_char(int conn_id, uint16_t handle, int auth_req)
+static bt_status_t btif_gattc_get_descriptor( int conn_id
+        , btgatt_srvc_id_t *srvc_id, btgatt_gatt_id_t *char_id
+        , btgatt_gatt_id_t *start_descr_id)
 {
     CHECK_BTGATT_INIT();
     btif_gattc_cb_t btif_cb;
     btif_cb.conn_id = (uint16_t) conn_id;
-    btif_cb.handle = (uint16_t) handle;
+    memcpy(&btif_cb.srvc_id, srvc_id, sizeof(btgatt_srvc_id_t));
+    memcpy(&btif_cb.char_id, char_id, sizeof(btgatt_gatt_id_t));
+    if (start_descr_id)
+    {
+        memcpy(&btif_cb.descr_id, start_descr_id, sizeof(btgatt_gatt_id_t));
+        return btif_transfer_context(btgattc_handle_event, BTIF_GATTC_GET_NEXT_CHAR_DESCR,
+                                 (char*) &btif_cb, sizeof(btif_gattc_cb_t), NULL);
+    }
+
+    return btif_transfer_context(btgattc_handle_event, BTIF_GATTC_GET_FIRST_CHAR_DESCR,
+                                 (char*) &btif_cb, sizeof(btif_gattc_cb_t), NULL);
+}
+
+static bt_status_t btif_gattc_get_included_service(int conn_id, btgatt_srvc_id_t *srvc_id,
+                                                   btgatt_srvc_id_t *start_incl_srvc_id)
+{
+    CHECK_BTGATT_INIT();
+    btif_gattc_cb_t btif_cb;
+    btif_cb.conn_id = (uint16_t) conn_id;
+    memcpy(&btif_cb.srvc_id, srvc_id, sizeof(btgatt_srvc_id_t));
+    if (start_incl_srvc_id)
+    {
+        memcpy(&btif_cb.incl_srvc_id, start_incl_srvc_id, sizeof(btgatt_srvc_id_t));
+        return btif_transfer_context(btgattc_handle_event, BTIF_GATTC_GET_NEXT_INCL_SERVICE,
+                                 (char*) &btif_cb, sizeof(btif_gattc_cb_t), NULL);
+    }
+    return btif_transfer_context(btgattc_handle_event, BTIF_GATTC_GET_FIRST_INCL_SERVICE,
+                                 (char*) &btif_cb, sizeof(btif_gattc_cb_t), NULL);
+}
+
+static bt_status_t btif_gattc_read_char(int conn_id, btgatt_srvc_id_t* srvc_id,
+                                        btgatt_gatt_id_t* char_id, int auth_req )
+{
+    CHECK_BTGATT_INIT();
+    btif_gattc_cb_t btif_cb;
+    btif_cb.conn_id = (uint16_t) conn_id;
     btif_cb.auth_req = (uint8_t) auth_req;
+    memcpy(&btif_cb.srvc_id, srvc_id, sizeof(btgatt_srvc_id_t));
+    memcpy(&btif_cb.char_id, char_id, sizeof(btgatt_gatt_id_t));
     return btif_transfer_context(btgattc_handle_event, BTIF_GATTC_READ_CHAR,
                                  (char*) &btif_cb, sizeof(btif_gattc_cb_t), NULL);
 }
 
-static bt_status_t btif_gattc_read_char_descr(int conn_id, uint16_t handle, int auth_req)
+static bt_status_t btif_gattc_read_char_descr(int conn_id, btgatt_srvc_id_t* srvc_id,
+                                              btgatt_gatt_id_t* char_id,
+                                              btgatt_gatt_id_t* descr_id,
+                                              int auth_req )
 {
     CHECK_BTGATT_INIT();
     btif_gattc_cb_t btif_cb;
     btif_cb.conn_id = (uint16_t) conn_id;
-    btif_cb.handle = (uint16_t) handle;
     btif_cb.auth_req = (uint8_t) auth_req;
+    memcpy(&btif_cb.srvc_id, srvc_id, sizeof(btgatt_srvc_id_t));
+    memcpy(&btif_cb.char_id, char_id, sizeof(btgatt_gatt_id_t));
+    memcpy(&btif_cb.descr_id, descr_id, sizeof(btgatt_gatt_id_t));
     return btif_transfer_context(btgattc_handle_event, BTIF_GATTC_READ_CHAR_DESCR,
                                  (char*) &btif_cb, sizeof(btif_gattc_cb_t), NULL);
 }
 
-static bt_status_t btif_gattc_write_char(int conn_id, uint16_t handle, int write_type,
+static bt_status_t btif_gattc_write_char(int conn_id, btgatt_srvc_id_t* srvc_id,
+                                         btgatt_gatt_id_t* char_id, int write_type,
                                          int len, int auth_req, char* p_value)
 {
     CHECK_BTGATT_INIT();
     btif_gattc_cb_t btif_cb;
     btif_cb.conn_id = (uint16_t) conn_id;
-    btif_cb.handle = (uint16_t) handle;
     btif_cb.auth_req = (uint8_t) auth_req;
     btif_cb.write_type = (uint8_t) write_type;
     btif_cb.len = len > BTGATT_MAX_ATTR_LEN ? BTGATT_MAX_ATTR_LEN : len;
+    memcpy(&btif_cb.srvc_id, srvc_id, sizeof(btgatt_srvc_id_t));
+    memcpy(&btif_cb.char_id, char_id, sizeof(btgatt_gatt_id_t));
     memcpy(btif_cb.value, p_value, btif_cb.len);
     return btif_transfer_context(btgattc_handle_event, BTIF_GATTC_WRITE_CHAR,
                                  (char*) &btif_cb, sizeof(btif_gattc_cb_t), NULL);
 }
 
-static bt_status_t btif_gattc_write_char_descr(int conn_id, uint16_t handle,
+static bt_status_t btif_gattc_write_char_descr(int conn_id, btgatt_srvc_id_t* srvc_id,
+                                               btgatt_gatt_id_t* char_id,
+                                               btgatt_gatt_id_t* descr_id,
                                                int write_type, int len, int auth_req,
                                                char* p_value)
 {
     CHECK_BTGATT_INIT();
     btif_gattc_cb_t btif_cb;
     btif_cb.conn_id = (uint16_t) conn_id;
-    btif_cb.handle = (uint16_t) handle;
     btif_cb.auth_req = (uint8_t) auth_req;
     btif_cb.write_type = (uint8_t) write_type;
     btif_cb.len = len > BTGATT_MAX_ATTR_LEN ? BTGATT_MAX_ATTR_LEN : len;
+    memcpy(&btif_cb.srvc_id, srvc_id, sizeof(btgatt_srvc_id_t));
+    memcpy(&btif_cb.char_id, char_id, sizeof(btgatt_gatt_id_t));
+    memcpy(&btif_cb.descr_id, descr_id, sizeof(btgatt_gatt_id_t));
     memcpy(btif_cb.value, p_value, btif_cb.len);
     return btif_transfer_context(btgattc_handle_event, BTIF_GATTC_WRITE_CHAR_DESCR,
                                  (char*) &btif_cb, sizeof(btif_gattc_cb_t), NULL);
@@ -1832,25 +2043,29 @@ static bt_status_t btif_gattc_execute_write(int conn_id, int execute)
 }
 
 static bt_status_t btif_gattc_reg_for_notification(int client_if, const bt_bdaddr_t *bd_addr,
-                                                   uint16_t handle)
+                                                   btgatt_srvc_id_t* srvc_id,
+                                                   btgatt_gatt_id_t* char_id)
 {
     CHECK_BTGATT_INIT();
     btif_gattc_cb_t btif_cb;
     btif_cb.client_if = (uint8_t) client_if;
     bdcpy(btif_cb.bd_addr.address, bd_addr->address);
-    btif_cb.handle = handle;
+    memcpy(&btif_cb.srvc_id, srvc_id, sizeof(btgatt_srvc_id_t));
+    memcpy(&btif_cb.char_id, char_id, sizeof(btgatt_gatt_id_t));
     return btif_transfer_context(btgattc_handle_event, BTIF_GATTC_REG_FOR_NOTIFICATION,
                                  (char*) &btif_cb, sizeof(btif_gattc_cb_t), NULL);
 }
 
 static bt_status_t btif_gattc_dereg_for_notification(int client_if, const bt_bdaddr_t *bd_addr,
-                                                     uint16_t handle)
+                                                     btgatt_srvc_id_t* srvc_id,
+                                                     btgatt_gatt_id_t* char_id)
 {
     CHECK_BTGATT_INIT();
     btif_gattc_cb_t btif_cb;
     btif_cb.client_if = (uint8_t) client_if;
     bdcpy(btif_cb.bd_addr.address, bd_addr->address);
-    btif_cb.handle = handle;
+    memcpy(&btif_cb.srvc_id, srvc_id, sizeof(btgatt_srvc_id_t));
+    memcpy(&btif_cb.char_id, char_id, sizeof(btgatt_gatt_id_t));
     return btif_transfer_context(btgattc_handle_event, BTIF_GATTC_DEREG_FOR_NOTIFICATION,
                                  (char*) &btif_cb, sizeof(btif_gattc_cb_t), NULL);
 }
@@ -2142,6 +2357,7 @@ static bt_status_t btif_gattc_test_command(int command, btgatt_test_params_t* pa
     return btif_gattc_test_command_impl(command, params);
 }
 
+
 const btgatt_client_interface_t btgattClientInterface = {
     btif_gattc_register_app,
     btif_gattc_unregister_app,
@@ -2151,6 +2367,9 @@ const btgatt_client_interface_t btgattClientInterface = {
     btif_gattc_listen,
     btif_gattc_refresh,
     btif_gattc_search_service,
+    btif_gattc_get_included_service,
+    btif_gattc_get_characteristic,
+    btif_gattc_get_descriptor,
     btif_gattc_read_char,
     btif_gattc_write_char,
     btif_gattc_read_char_descr,
@@ -2176,8 +2395,7 @@ const btgatt_client_interface_t btgattClientInterface = {
     btif_gattc_enb_batch_scan,
     btif_gattc_dis_batch_scan,
     btif_gattc_read_batch_scan_reports,
-    btif_gattc_test_command,
-    btif_gattc_get_gatt_db
+    btif_gattc_test_command
 };
 
 #endif

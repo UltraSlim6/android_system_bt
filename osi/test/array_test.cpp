@@ -3,7 +3,7 @@
 #include "AllocationTestHarness.h"
 
 extern "C" {
-#include "osi/include/array.h"
+#include "array.h"
 }
 
 class ArrayTest : public AllocationTestHarness {};

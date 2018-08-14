@@ -25,7 +25,7 @@
 #include <stdint.h>
 #include "bta_hh_api.h"
 #include "btu.h"
-#include "osi/include/list.h"
+
 
 /*******************************************************************************
 **  Constants & Macros
@@ -43,7 +43,7 @@
 #define BTIF_HH_KEYSTATE_MASK_NUMLOCK    0x01
 #define BTIF_HH_KEYSTATE_MASK_CAPSLOCK   0x02
 #define BTIF_HH_KEYSTATE_MASK_SCROLLLOCK 0x04
-#define BTIF_HH_OUTPUT_REPORT_SIZE       2
+
 
 /*******************************************************************************
 **  Type definitions and return values
@@ -72,11 +72,11 @@ typedef struct
     BOOLEAN                       ready_for_data;
     pthread_t                     hh_poll_thread_id;
     UINT8                         hh_keep_polling;
-    alarm_t                       *vup_timer;
-    list_t                        *set_rpt_id_list; // Owns a collection of set_rpt_id objects.
+    BOOLEAN                       vup_timer_active;
+    UINT8                         set_rpt_snt;
     UINT8                         get_rpt_snt;
+    TIMER_LIST_ENT                vup_timer;
     BOOLEAN                       local_vup; // Indicated locally initiated VUP
-    UINT8                         last_output_rpt_data[BTIF_HH_OUTPUT_REPORT_SIZE];
 } btif_hh_device_t;
 
 /* Control block to maintain properties of devices */
@@ -98,6 +98,7 @@ typedef struct
     UINT32                  device_num;
     btif_hh_added_device_t  added_devices[BTIF_HH_MAX_ADDED_DEV];
     btif_hh_device_t        *p_curr_dev;
+    BOOLEAN                 service_dereg_active;
 } btif_hh_cb_t;
 
 
@@ -116,6 +117,7 @@ extern void btif_hh_setreport(btif_hh_device_t *p_dev, bthh_report_type_t r_type
                     UINT16 size, UINT8* report);
 extern void btif_hh_getreport(btif_hh_device_t *p_dev, bthh_report_type_t r_type,
                     UINT8 reportId, UINT16 bufferSize);
+extern void btif_hh_service_registration(BOOLEAN enable);
 
 BOOLEAN btif_hh_add_added_dev(bt_bdaddr_t bd_addr, tBTA_HH_ATTR_MASK attr_mask);
 

@@ -32,7 +32,7 @@
 #include "btm_api.h"
 #include "port_api.h"
 #include "rfcdefs.h"
-#include "bt_common.h"
+#include "gki.h"
 #include "utl.h"
 
 /* Event mask for RfCOMM port callback */
@@ -87,6 +87,7 @@ const tBTA_AG_DATA_CBACK bta_ag_data_cback_tbl[] =
 *******************************************************************************/
 static void bta_ag_port_cback(UINT32 code, UINT16 port_handle, UINT16 handle)
 {
+    BT_HDR      *p_buf;
     tBTA_AG_SCB *p_scb;
     UNUSED(code);
 
@@ -100,10 +101,12 @@ static void bta_ag_port_cback(UINT32 code, UINT16 port_handle, UINT16 handle)
             return;
         }
 
-        BT_HDR *p_buf = (BT_HDR *)osi_malloc(sizeof(BT_HDR));
-        p_buf->event = BTA_AG_RFC_DATA_EVT;
-        p_buf->layer_specific = handle;
-        bta_sys_sendmsg(p_buf);
+        if ((p_buf = (BT_HDR *) GKI_getbuf(sizeof(BT_HDR))) != NULL)
+        {
+            p_buf->event = BTA_AG_RFC_DATA_EVT;
+            p_buf->layer_specific = handle;
+            bta_sys_sendmsg(p_buf);
+        }
     }
 }
 
@@ -119,6 +122,7 @@ static void bta_ag_port_cback(UINT32 code, UINT16 port_handle, UINT16 handle)
 *******************************************************************************/
 static void bta_ag_mgmt_cback(UINT32 code, UINT16 port_handle, UINT16 handle)
 {
+    tBTA_AG_RFC     *p_buf;
     tBTA_AG_SCB     *p_scb;
     UINT16          event;
     UINT8           i;
@@ -170,11 +174,13 @@ static void bta_ag_mgmt_cback(UINT32 code, UINT16 port_handle, UINT16 handle)
             event = BTA_AG_RFC_SRV_CLOSE_EVT;
         }
 
-        tBTA_AG_RFC *p_buf = (tBTA_AG_RFC *)osi_malloc(sizeof(tBTA_AG_RFC));
-        p_buf->hdr.event = event;
-        p_buf->hdr.layer_specific = handle;
-        p_buf->port_handle = port_handle;
-        bta_sys_sendmsg(p_buf);
+        if ((p_buf = (tBTA_AG_RFC *) GKI_getbuf(sizeof(tBTA_AG_RFC))) != NULL)
+        {
+            p_buf->hdr.event = event;
+            p_buf->hdr.layer_specific = handle;
+            p_buf->port_handle = port_handle;
+            bta_sys_sendmsg(p_buf);
+        }
     }
 }
 
@@ -287,12 +293,13 @@ void bta_ag_start_servers(tBTA_AG_SCB *p_scb, tBTA_SERVICE_MASK services)
         {
             BTM_SetSecurityLevel(FALSE, "", bta_ag_sec_id[i], p_scb->serv_sec_mask,
                 BT_PSM_RFCOMM, BTM_SEC_PROTO_RFCOMM, bta_ag_cb.profile[i].scn);
-            /* Fix for below klockwork issue
-             * Array 'bta_ag_mgmt_cback_tbl' size is 3.
-             * Possible attempt to access element -1,3..USHRT_MAX-1 of array 'bta_ag_mgmt_cback_tbl'. */
+           /* Fix for below klockwork issue
+            * Array 'bta_ag_mgmt_cback_tbl' size is 3.
+            * Possible attempt to access element -1,3..USHRT_MAX-1 of array 'bta_ag_mgmt_cback_tbl'. */
             bta_ag_port_status =  RFCOMM_CreateConnection(bta_ag_uuid[i], bta_ag_cb.profile[i].scn,
                 TRUE, BTA_AG_MTU, (UINT8 *) bd_addr_any, &(p_scb->serv_handle[i]),
                 bta_ag_mgmt_cback_tbl[(UINT16)(bta_ag_scb_to_idx(p_scb) - 1)]);
+
             if( bta_ag_port_status  == PORT_SUCCESS )
             {
                 bta_ag_setup_port(p_scb, p_scb->serv_handle[i]);
@@ -370,9 +377,10 @@ void bta_ag_rfc_do_open(tBTA_AG_SCB *p_scb, tBTA_AG_DATA *p_data)
 {
     BTM_SetSecurityLevel(TRUE, "", bta_ag_sec_id[p_scb->conn_service],
         p_scb->cli_sec_mask, BT_PSM_RFCOMM, BTM_SEC_PROTO_RFCOMM, p_scb->peer_scn);
-    /* Fix for below klockwork issue
-     * Array 'bta_ag_mgmt_cback_tbl' size is 3.
-     * Possible attempt to access element -1,3..USHRT_MAX-1 of array 'bta_ag_mgmt_cback_tbl' */
+
+   /* Fix for below klockwork issue
+    * Array 'bta_ag_mgmt_cback_tbl' size is 3.
+    * Possible attempt to access element -1,3..USHRT_MAX-1 of array 'bta_ag_mgmt_cback_tbl' */
     if (RFCOMM_CreateConnection(bta_ag_uuid[p_scb->conn_service], p_scb->peer_scn,
             FALSE, BTA_AG_MTU, p_scb->peer_addr, &(p_scb->conn_handle),
             bta_ag_mgmt_cback_tbl[(UINT16)(bta_ag_scb_to_idx(p_scb) - 1)]) == PORT_SUCCESS)
@@ -399,18 +407,24 @@ void bta_ag_rfc_do_open(tBTA_AG_SCB *p_scb, tBTA_AG_DATA *p_data)
 *******************************************************************************/
 void bta_ag_rfc_do_close(tBTA_AG_SCB *p_scb, tBTA_AG_DATA *p_data)
 {
+    tBTA_AG_RFC     *p_buf;
     UNUSED(p_data);
 
-    if (p_scb->conn_handle) {
+    if (p_scb->conn_handle)
+    {
         RFCOMM_RemoveConnection(p_scb->conn_handle);
-    } else {
+    }
+    else
+    {
         /* Close API was called while AG is in Opening state.               */
         /* Need to trigger the state machine to send callback to the app    */
         /* and move back to INIT state.                                     */
-        tBTA_AG_RFC *p_buf = (tBTA_AG_RFC *)osi_malloc(sizeof(tBTA_AG_RFC));
-        p_buf->hdr.event = BTA_AG_RFC_CLOSE_EVT;
-        p_buf->hdr.layer_specific = bta_ag_scb_to_idx(p_scb);
-        bta_sys_sendmsg(p_buf);
+        if ((p_buf = (tBTA_AG_RFC *) GKI_getbuf(sizeof(tBTA_AG_RFC))) != NULL)
+        {
+            p_buf->hdr.event = BTA_AG_RFC_CLOSE_EVT;
+            p_buf->hdr.layer_specific = bta_ag_scb_to_idx(p_scb);
+            bta_sys_sendmsg(p_buf);
+        }
 
         /* Cancel SDP if it had been started. */
         /*

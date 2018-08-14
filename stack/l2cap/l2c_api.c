@@ -25,23 +25,21 @@
 #define LOG_TAG "bt_l2cap"
 
 #include <assert.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
+#include "gki.h"
 #include "bt_types.h"
-#include "btm_api.h"
-#include "btu.h"
-#include "bt_common.h"
+#include "btcore/include/counter.h"
 #include "hcidefs.h"
 #include "hcimsgs.h"
-#include "l2c_int.h"
 #include "l2cdefs.h"
+#include "l2c_int.h"
+#include "btu.h"
+#include "btm_api.h"
 #include "osi/include/allocator.h"
 #include "osi/include/log.h"
-
-
-extern fixed_queue_t *btu_general_alarm_queue;
 
 /*******************************************************************************
 **
@@ -91,7 +89,11 @@ UINT16 L2CA_Register (UINT16 psm, tL2CAP_APPL_INFO *p_cb_info)
     {
         for (vpsm = 0x1002; vpsm < 0x8000; vpsm += 2)
         {
+#if (defined(LE_L2CAP_CFC_INCLUDED) && (LE_L2CAP_CFC_INCLUDED == TRUE))
+            if ((p_rcb = l2cu_find_rcb_by_psm (vpsm,  BT_TRANSPORT_BR_EDR)) == NULL)
+#else
             if ((p_rcb = l2cu_find_rcb_by_psm (vpsm)) == NULL)
+#endif
                 break;
         }
 
@@ -99,9 +101,17 @@ UINT16 L2CA_Register (UINT16 psm, tL2CAP_APPL_INFO *p_cb_info)
     }
 
     /* If registration block already there, just overwrite it */
+#if (defined(LE_L2CAP_CFC_INCLUDED) && (LE_L2CAP_CFC_INCLUDED == TRUE))
+    if ((p_rcb = l2cu_find_rcb_by_psm (vpsm, BT_TRANSPORT_BR_EDR)) == NULL)
+#else
     if ((p_rcb = l2cu_find_rcb_by_psm (vpsm)) == NULL)
+#endif
     {
+#if (defined(LE_L2CAP_CFC_INCLUDED) && (LE_L2CAP_CFC_INCLUDED == TRUE))
+        if ((p_rcb = l2cu_allocate_rcb (vpsm, BT_TRANSPORT_BR_EDR)) == NULL)
+#else
         if ((p_rcb = l2cu_allocate_rcb (vpsm)) == NULL)
+#endif
         {
             L2CAP_TRACE_WARNING ("L2CAP - no RCB available, PSM: 0x%04x  vPSM: 0x%04x", psm, vpsm);
             return (0);
@@ -113,6 +123,8 @@ UINT16 L2CA_Register (UINT16 psm, tL2CAP_APPL_INFO *p_cb_info)
 
     return (vpsm);
 }
+
+
 
 /*******************************************************************************
 **
@@ -133,7 +145,11 @@ void L2CA_Deregister (UINT16 psm)
 
     L2CAP_TRACE_WARNING ("L2CAP - L2CA_Deregister() called for PSM: 0x%04x", psm);
 
+#if (defined(LE_L2CAP_CFC_INCLUDED) && (LE_L2CAP_CFC_INCLUDED == TRUE))
+    if ((p_rcb = l2cu_find_rcb_by_psm (psm, BT_TRANSPORT_BR_EDR)) != NULL)
+#else
     if ((p_rcb = l2cu_find_rcb_by_psm (psm)) != NULL)
+#endif
     {
         p_lcb = &l2cb.lcb_pool[0];
         for (ii = 0; ii < MAX_L2CAP_LINKS; ii++, p_lcb++)
@@ -195,7 +211,11 @@ UINT16 L2CA_AllocatePSM(void)
             continue;
 
         /* make sure the newlly allocated psm is not used right now */
+#if (defined(LE_L2CAP_CFC_INCLUDED) && (LE_L2CAP_CFC_INCLUDED == TRUE))
+        if ((l2cu_find_rcb_by_psm (psm, BT_TRANSPORT_BR_EDR)) == NULL)
+#else
         if ((l2cu_find_rcb_by_psm (psm)) == NULL)
+#endif
             done = TRUE;
     }
     l2cb.dyn_psm = psm;
@@ -242,11 +262,12 @@ UINT16 L2CA_ErtmConnectReq (UINT16 psm, BD_ADDR p_bd_addr, tL2CAP_ERTM_INFO *p_e
     tL2C_CCB        *p_ccb;
     tL2C_RCB        *p_rcb;
 
+    counter_add("l2cap.conn.req", 1);
     L2CAP_TRACE_WARNING ("L2CA_ErtmConnectReq()  PSM: 0x%04x  BDA: %08x%04x  p_ertm_info: 0x%08x allowed:0x%x preferred:%d", psm,
-                      (p_bd_addr[0]<<24)+(p_bd_addr[1]<<16)+(p_bd_addr[2]<<8)+p_bd_addr[3],
-                      (p_bd_addr[4]<<8)+p_bd_addr[5], p_ertm_info,
-                      (p_ertm_info) ? p_ertm_info->allowed_modes : 0,
-                      (p_ertm_info) ? p_ertm_info->preferred_mode : 0);
+                   (p_bd_addr[0]<<24)+(p_bd_addr[1]<<16)+(p_bd_addr[2]<<8)+p_bd_addr[3],
+                   (p_bd_addr[4]<<8)+p_bd_addr[5], p_ertm_info,
+                   (p_ertm_info) ? p_ertm_info->allowed_modes : 0,
+                   (p_ertm_info) ? p_ertm_info->preferred_mode : 0);
 
     /* Fail if we have not established communications with the controller */
     if (!BTM_IsDeviceUp())
@@ -255,7 +276,11 @@ UINT16 L2CA_ErtmConnectReq (UINT16 psm, BD_ADDR p_bd_addr, tL2CAP_ERTM_INFO *p_e
         return (0);
     }
     /* Fail if the PSM is not registered */
+#if (defined(LE_L2CAP_CFC_INCLUDED) && (LE_L2CAP_CFC_INCLUDED == TRUE))
+    if ((p_rcb = l2cu_find_rcb_by_psm (psm, BT_TRANSPORT_BR_EDR)) == NULL)
+#else
     if ((p_rcb = l2cu_find_rcb_by_psm (psm)) == NULL)
+#endif
     {
         L2CAP_TRACE_WARNING ("L2CAP - no RCB for L2CA_conn_req, PSM: 0x%04x", psm);
         return (0);
@@ -290,19 +315,19 @@ UINT16 L2CA_ErtmConnectReq (UINT16 psm, BD_ADDR p_bd_addr, tL2CAP_ERTM_INFO *p_e
         p_ccb->ertm_info  = *p_ertm_info;
 
         /* Replace default indicators with the actual default pool */
-        if (p_ccb->ertm_info.fcr_rx_buf_size == L2CAP_INVALID_ERM_BUF_SIZE)
-            p_ccb->ertm_info.fcr_rx_buf_size = L2CAP_FCR_RX_BUF_SIZE;
+        if (p_ccb->ertm_info.fcr_rx_pool_id == L2CAP_DEFAULT_ERM_POOL_ID)
+            p_ccb->ertm_info.fcr_rx_pool_id = L2CAP_FCR_RX_POOL_ID;
 
-        if (p_ccb->ertm_info.fcr_tx_buf_size == L2CAP_INVALID_ERM_BUF_SIZE)
-            p_ccb->ertm_info.fcr_tx_buf_size = L2CAP_FCR_TX_BUF_SIZE;
+        if (p_ccb->ertm_info.fcr_tx_pool_id == L2CAP_DEFAULT_ERM_POOL_ID)
+            p_ccb->ertm_info.fcr_tx_pool_id = L2CAP_FCR_TX_POOL_ID;
 
-        if (p_ccb->ertm_info.user_rx_buf_size == L2CAP_INVALID_ERM_BUF_SIZE)
-            p_ccb->ertm_info.user_rx_buf_size = L2CAP_USER_RX_BUF_SIZE;
+        if (p_ccb->ertm_info.user_rx_pool_id == L2CAP_DEFAULT_ERM_POOL_ID)
+            p_ccb->ertm_info.user_rx_pool_id = HCI_ACL_POOL_ID;
 
-        if (p_ccb->ertm_info.user_tx_buf_size == L2CAP_INVALID_ERM_BUF_SIZE)
-            p_ccb->ertm_info.user_tx_buf_size = L2CAP_USER_TX_BUF_SIZE;
+        if (p_ccb->ertm_info.user_tx_pool_id == L2CAP_DEFAULT_ERM_POOL_ID)
+            p_ccb->ertm_info.user_tx_pool_id = HCI_ACL_POOL_ID;
 
-        p_ccb->max_rx_mtu = p_ertm_info->user_rx_buf_size -
+        p_ccb->max_rx_mtu = GKI_get_pool_bufsize (p_ertm_info->user_rx_pool_id) -
             (L2CAP_MIN_OFFSET + L2CAP_SDU_LEN_OFFSET + L2CAP_FCS_LEN);
     }
 
@@ -332,308 +357,6 @@ UINT16 L2CA_ErtmConnectReq (UINT16 psm, BD_ADDR p_bd_addr, tL2CAP_ERTM_INFO *p_e
     return (p_ccb->local_cid);
 }
 
-/*******************************************************************************
-**
-** Function         L2CA_RegisterLECoc
-**
-** Description      Other layers call this function to register for L2CAP
-**                  Connection Oriented Channel.
-**
-** Returns          PSM to use or zero if error. Typically, the PSM returned
-**                  is the same as was passed in, but for an outgoing-only
-**                  connection to a dynamic PSM, a "virtual" PSM is returned
-**                  and should be used in the calls to L2CA_ConnectLECocReq()
-**                  and L2CA_DeregisterLECoc()
-**
-*******************************************************************************/
-UINT16 L2CA_RegisterLECoc(UINT16 psm, tL2CAP_APPL_INFO *p_cb_info)
-{
-    L2CAP_TRACE_API("%s called for LE PSM: 0x%04x", __func__, psm);
-
-    /* Verify that the required callback info has been filled in
-    **      Note:  Connection callbacks are required but not checked
-    **             for here because it is possible to be only a client
-    **             or only a server.
-    */
-    if ((!p_cb_info->pL2CA_DataInd_Cb)
-     || (!p_cb_info->pL2CA_DisconnectInd_Cb))
-    {
-        L2CAP_TRACE_ERROR("%s No cb registering BLE PSM: 0x%04x", __func__, psm);
-        return 0;
-    }
-
-    /* Verify PSM is valid */
-    if (!L2C_IS_VALID_LE_PSM(psm))
-    {
-        L2CAP_TRACE_ERROR("%s Invalid BLE PSM value, PSM: 0x%04x", __func__, psm);
-        return 0;
-    }
-
-    tL2C_RCB    *p_rcb;
-    UINT16      vpsm = psm;
-
-    /* Check if this is a registration for an outgoing-only connection to */
-    /* a dynamic PSM. If so, allocate a "virtual" PSM for the app to use. */
-    if ((psm >= 0x0080) && (p_cb_info->pL2CA_ConnectInd_Cb == NULL))
-    {
-        for (vpsm = 0x0080; vpsm < 0x0100; vpsm++)
-        {
-            p_rcb = l2cu_find_ble_rcb_by_psm(vpsm);
-            if (p_rcb == NULL)
-                break;
-        }
-
-        L2CAP_TRACE_API("%s Real PSM: 0x%04x  Virtual PSM: 0x%04x", __func__, psm, vpsm);
-    }
-
-    /* If registration block already there, just overwrite it */
-    p_rcb = l2cu_find_ble_rcb_by_psm(vpsm);
-    if (p_rcb == NULL)
-    {
-        p_rcb = l2cu_allocate_ble_rcb(vpsm);
-        if (p_rcb == NULL)
-        {
-            L2CAP_TRACE_WARNING("%s No BLE RCB available, PSM: 0x%04x  vPSM: 0x%04x",
-                  __func__, psm, vpsm);
-            return 0;
-        }
-    }
-
-    p_rcb->api      = *p_cb_info;
-    p_rcb->real_psm = psm;
-
-    return vpsm;
-}
-
-/*******************************************************************************
-**
-** Function         L2CA_DeregisterLECoc
-**
-** Description      Other layers call this function to de-register for L2CAP
-**                  Connection Oriented Channel.
-**
-** Returns          void
-**
-*******************************************************************************/
-void L2CA_DeregisterLECoc(UINT16 psm)
-{
-    L2CAP_TRACE_API("%s called for PSM: 0x%04x", __func__, psm);
-
-    tL2C_RCB *p_rcb = l2cu_find_ble_rcb_by_psm(psm);
-    if (p_rcb == NULL)
-    {
-        L2CAP_TRACE_WARNING("%s PSM: 0x%04x not found for deregistration", psm);
-        return;
-    }
-
-    tL2C_LCB *p_lcb = &l2cb.lcb_pool[0];
-    for (int i = 0; i < MAX_L2CAP_LINKS; i++, p_lcb++)
-    {
-        if (!p_lcb->in_use || p_lcb->transport != BT_TRANSPORT_LE)
-            continue;
-
-        tL2C_CCB *p_ccb = p_lcb->ccb_queue.p_first_ccb;
-        if ((p_ccb == NULL) || (p_lcb->link_state == LST_DISCONNECTING))
-            continue;
-
-        if (p_ccb->in_use &&
-           (p_ccb->chnl_state == CST_W4_L2CAP_DISCONNECT_RSP ||
-            p_ccb->chnl_state == CST_W4_L2CA_DISCONNECT_RSP))
-            continue;
-
-        if (p_ccb->p_rcb == p_rcb)
-            l2c_csm_execute(p_ccb, L2CEVT_L2CA_DISCONNECT_REQ, NULL);
-    }
-
-    l2cu_release_rcb (p_rcb);
-}
-
-/*******************************************************************************
-**
-** Function         L2CA_ConnectLECocReq
-**
-** Description      Higher layers call this function to create an L2CAP connection.
-**                  Note that the connection is not established at this time, but
-**                  connection establishment gets started. The callback function
-**                  will be invoked when connection establishes or fails.
-**
-**  Parameters:     PSM: L2CAP PSM for the connection
-**                  BD address of the peer
-**                  Local Coc configurations
-
-** Returns          the CID of the connection, or 0 if it failed to start
-**
-*******************************************************************************/
-UINT16 L2CA_ConnectLECocReq(UINT16 psm, BD_ADDR p_bd_addr, tL2CAP_LE_CFG_INFO *p_cfg)
-{
-    L2CAP_TRACE_API("%s PSM: 0x%04x BDA: %02x:%02x:%02x:%02x:%02x:%02x", __func__, psm,
-        p_bd_addr[0], p_bd_addr[1], p_bd_addr[2], p_bd_addr[3], p_bd_addr[4], p_bd_addr[5]);
-
-    /* Fail if we have not established communications with the controller */
-    if (!BTM_IsDeviceUp())
-    {
-        L2CAP_TRACE_WARNING("%s BTU not ready", __func__);
-        return 0;
-    }
-
-    /* Fail if the PSM is not registered */
-    tL2C_RCB *p_rcb = l2cu_find_ble_rcb_by_psm(psm);
-    if (p_rcb == NULL)
-    {
-        L2CAP_TRACE_WARNING("%s No BLE RCB, PSM: 0x%04x", __func__, psm);
-        return 0;
-    }
-
-    /* First, see if we already have a le link to the remote */
-    tL2C_LCB *p_lcb = l2cu_find_lcb_by_bd_addr(p_bd_addr, BT_TRANSPORT_LE);
-    if (p_lcb == NULL)
-    {
-        /* No link. Get an LCB and start link establishment */
-        p_lcb = l2cu_allocate_lcb(p_bd_addr, FALSE, BT_TRANSPORT_LE);
-        if ((p_lcb == NULL)
-             /* currently use BR/EDR for ERTM mode l2cap connection */
-         || (l2cu_create_conn(p_lcb, BT_TRANSPORT_LE) == FALSE) )
-        {
-            L2CAP_TRACE_WARNING("%s conn not started for PSM: 0x%04x  p_lcb: 0x%08x",
-                __func__, psm, p_lcb);
-            return 0;
-        }
-    }
-
-    /* Allocate a channel control block */
-    tL2C_CCB *p_ccb = l2cu_allocate_ccb(p_lcb, 0);
-    if (p_ccb == NULL)
-    {
-        L2CAP_TRACE_WARNING("%s no CCB, PSM: 0x%04x", __func__, psm);
-        return 0;
-    }
-
-    /* Save registration info */
-    p_ccb->p_rcb = p_rcb;
-
-    /* Save the configuration */
-    if (p_cfg)
-        memcpy(&p_ccb->local_conn_cfg, p_cfg, sizeof(tL2CAP_LE_CFG_INFO));
-
-    /* If link is up, start the L2CAP connection */
-    if (p_lcb->link_state == LST_CONNECTED)
-    {
-        if (p_ccb->p_lcb->transport == BT_TRANSPORT_LE)
-        {
-            L2CAP_TRACE_DEBUG("%s LE Link is up", __func__);
-            l2c_csm_execute(p_ccb, L2CEVT_L2CA_CONNECT_REQ, NULL);
-        }
-    }
-
-    /* If link is disconnecting, save link info to retry after disconnect
-     * Possible Race condition when a reconnect occurs
-     * on the channel during a disconnect of link. This
-     * ccb will be automatically retried after link disconnect
-     * arrives
-     */
-    else if (p_lcb->link_state == LST_DISCONNECTING)
-    {
-        L2CAP_TRACE_DEBUG("%s link disconnecting: RETRY LATER", __func__);
-
-        /* Save ccb so it can be started after disconnect is finished */
-        p_lcb->p_pending_ccb = p_ccb;
-    }
-
-    L2CAP_TRACE_API("%s(psm: 0x%04x) returned CID: 0x%04x", __func__, psm, p_ccb->local_cid);
-
-    /* Return the local CID as our handle */
-    return p_ccb->local_cid;
-}
-
-/*******************************************************************************
-**
-** Function         L2CA_ConnectLECocRsp
-**
-** Description      Higher layers call this function to accept an incoming
-**                  L2CAP COC connection, for which they had gotten an connect
-**                  indication callback.
-**
-** Returns          TRUE for success, FALSE for failure
-**
-*******************************************************************************/
-BOOLEAN L2CA_ConnectLECocRsp (BD_ADDR p_bd_addr, UINT8 id, UINT16 lcid, UINT16 result,
-                             UINT16 status, tL2CAP_LE_CFG_INFO *p_cfg)
-{
-    L2CAP_TRACE_API("%s CID: 0x%04x Result: %d Status: %d BDA: %02x:%02x:%02x:%02x:%02x:%02x",
-        __func__, lcid, result, status,
-        p_bd_addr[0], p_bd_addr[1], p_bd_addr[2], p_bd_addr[3], p_bd_addr[4], p_bd_addr[5]);
-
-
-    /* First, find the link control block */
-    tL2C_LCB *p_lcb = l2cu_find_lcb_by_bd_addr(p_bd_addr, BT_TRANSPORT_LE);
-    if (p_lcb == NULL)
-    {
-        /* No link. Get an LCB and start link establishment */
-        L2CAP_TRACE_WARNING("%s no LCB", __func__);
-        return FALSE;
-    }
-
-    /* Now, find the channel control block */
-    tL2C_CCB *p_ccb = l2cu_find_ccb_by_cid(p_lcb, lcid);
-    if (p_ccb == NULL)
-    {
-        L2CAP_TRACE_WARNING("%s no CCB", __func__);
-        return FALSE;
-    }
-
-    /* The IDs must match */
-    if (p_ccb->remote_id != id)
-    {
-        L2CAP_TRACE_WARNING("%s bad id. Expected: %d  Got: %d", __func__, p_ccb->remote_id, id);
-        return FALSE;
-    }
-
-    if (p_cfg)
-        memcpy(&p_ccb->local_conn_cfg, p_cfg, sizeof(tL2CAP_LE_CFG_INFO));
-
-    if (result == L2CAP_CONN_OK)
-        l2c_csm_execute (p_ccb, L2CEVT_L2CA_CONNECT_RSP, NULL);
-    else
-    {
-        tL2C_CONN_INFO conn_info;
-        memcpy(conn_info.bd_addr, p_bd_addr, BD_ADDR_LEN);
-        conn_info.l2cap_result = result;
-        conn_info.l2cap_status = status;
-        l2c_csm_execute(p_ccb, L2CEVT_L2CA_CONNECT_RSP_NEG, &conn_info);
-    }
-
-    return TRUE;
-}
-
-/*******************************************************************************
-**
-**  Function         L2CA_GetPeerLECocConfig
-**
-**  Description      Get a peers configuration for LE Connection Oriented Channel.
-**
-**  Parameters:      local channel id
-**                   Pointers to peers configuration storage area
-**
-**  Return value:    TRUE if peer is connected
-**
-*******************************************************************************/
-BOOLEAN L2CA_GetPeerLECocConfig (UINT16 lcid, tL2CAP_LE_CFG_INFO* peer_cfg)
-{
-    L2CAP_TRACE_API ("%s CID: 0x%04x", __func__, lcid);
-
-    tL2C_CCB *p_ccb = l2cu_find_ccb_by_cid(NULL, lcid);
-    if (p_ccb == NULL)
-    {
-        L2CAP_TRACE_ERROR("%s No CCB for CID:0x%04x", __func__, lcid);
-        return FALSE;
-    }
-
-    if (peer_cfg != NULL)
-        memcpy(peer_cfg, &p_ccb->peer_conn_cfg, sizeof(tL2CAP_LE_CFG_INFO));
-
-    return TRUE;
-}
-
 bool L2CA_SetConnectionCallbacks(uint16_t local_cid, const tL2CAP_APPL_INFO *callbacks) {
   assert(callbacks != NULL);
   assert(callbacks->pL2CA_ConnectInd_Cb == NULL);
@@ -648,7 +371,7 @@ bool L2CA_SetConnectionCallbacks(uint16_t local_cid, const tL2CAP_APPL_INFO *cal
 
   tL2C_CCB *channel_control_block = l2cu_find_ccb_by_cid(NULL, local_cid);
   if (!channel_control_block) {
-    LOG_ERROR(LOG_TAG, "%s no channel control block found for L2CAP LCID=0x%04x.", __func__, local_cid);
+    LOG_ERROR("%s no channel control block found for L2CAP LCID=0x%04x.", __func__, local_cid);
     return false;
   }
 
@@ -659,6 +382,10 @@ bool L2CA_SetConnectionCallbacks(uint16_t local_cid, const tL2CAP_APPL_INFO *cal
   tL2C_RCB *registration_control_block = channel_control_block->p_rcb;
   if (!channel_control_block->should_free_rcb) {
     registration_control_block = (tL2C_RCB *)osi_calloc(sizeof(tL2C_RCB));
+    if (!registration_control_block) {
+      LOG_ERROR("%s unable to allocate registration control block.", __func__);
+      return false;
+    }
 
     *registration_control_block = *channel_control_block->p_rcb;
     channel_control_block->p_rcb = registration_control_block;
@@ -686,6 +413,7 @@ BOOLEAN L2CA_ConnectRsp (BD_ADDR p_bd_addr, UINT8 id, UINT16 lcid,
     return L2CA_ErtmConnectRsp (p_bd_addr, id, lcid, result, status, NULL);
 }
 
+
 /*******************************************************************************
 **
 ** Function         L2CA_ErtmConnectRsp
@@ -703,7 +431,8 @@ BOOLEAN L2CA_ErtmConnectRsp (BD_ADDR p_bd_addr, UINT8 id, UINT16 lcid, UINT16 re
     tL2C_LCB        *p_lcb;
     tL2C_CCB        *p_ccb;
 
-    L2CAP_TRACE_WARNING ("L2CA_ErtmConnectRsp()  CID: 0x%04x  Result: %d  Status: %d  BDA: %08x%04x  p_ertm_info:0x%08x",
+    counter_add("l2cap.conn.rsp", 1);
+    L2CAP_TRACE_WARNING ("L2CA_ErtmConnectRsp()  CID: 0x%04x  Result: %d  Status: %d  BDA: %08x%04x p_ertm_info:0x%08x",
                       lcid, result, status,
                       (p_bd_addr[0]<<24)+(p_bd_addr[1]<<16)+(p_bd_addr[2]<<8)+p_bd_addr[3],
                       (p_bd_addr[4]<<8)+p_bd_addr[5], p_ertm_info);
@@ -735,20 +464,19 @@ BOOLEAN L2CA_ErtmConnectRsp (BD_ADDR p_bd_addr, UINT8 id, UINT16 lcid, UINT16 re
         p_ccb->ertm_info  = *p_ertm_info;
 
         /* Replace default indicators with the actual default pool */
-        if (p_ccb->ertm_info.fcr_rx_buf_size == L2CAP_INVALID_ERM_BUF_SIZE)
-            p_ccb->ertm_info.fcr_rx_buf_size = L2CAP_FCR_RX_BUF_SIZE;
+        if (p_ccb->ertm_info.fcr_rx_pool_id == L2CAP_DEFAULT_ERM_POOL_ID)
+            p_ccb->ertm_info.fcr_rx_pool_id = L2CAP_FCR_RX_POOL_ID;
 
-        if (p_ccb->ertm_info.fcr_tx_buf_size == L2CAP_INVALID_ERM_BUF_SIZE)
-            p_ccb->ertm_info.fcr_tx_buf_size = L2CAP_FCR_TX_BUF_SIZE;
+        if (p_ccb->ertm_info.fcr_tx_pool_id == L2CAP_DEFAULT_ERM_POOL_ID)
+            p_ccb->ertm_info.fcr_tx_pool_id = L2CAP_FCR_TX_POOL_ID;
 
-        if (p_ccb->ertm_info.user_rx_buf_size == L2CAP_INVALID_ERM_BUF_SIZE)
-            p_ccb->ertm_info.user_rx_buf_size = L2CAP_USER_RX_BUF_SIZE;
+        if (p_ccb->ertm_info.user_rx_pool_id == L2CAP_DEFAULT_ERM_POOL_ID)
+            p_ccb->ertm_info.user_rx_pool_id = HCI_ACL_POOL_ID;
 
-        if (p_ccb->ertm_info.user_tx_buf_size == L2CAP_INVALID_ERM_BUF_SIZE)
-            p_ccb->ertm_info.user_tx_buf_size = L2CAP_USER_TX_BUF_SIZE;
+        if (p_ccb->ertm_info.user_tx_pool_id == L2CAP_DEFAULT_ERM_POOL_ID)
+            p_ccb->ertm_info.user_tx_pool_id = HCI_ACL_POOL_ID;
 
-        p_ccb->max_rx_mtu = p_ertm_info->user_rx_buf_size -
-            (L2CAP_MIN_OFFSET + L2CAP_SDU_LEN_OFFSET + L2CAP_FCS_LEN);
+        p_ccb->max_rx_mtu = GKI_get_pool_bufsize (p_ertm_info->user_rx_pool_id) - (L2CAP_MIN_OFFSET + L2CAP_SDU_LEN_OFFSET + L2CAP_FCS_LEN);
     }
 
     if (result == L2CAP_CONN_OK)
@@ -771,6 +499,7 @@ BOOLEAN L2CA_ErtmConnectRsp (BD_ADDR p_bd_addr, UINT8 id, UINT16 lcid, UINT16 re
     return (TRUE);
 }
 
+
 /*******************************************************************************
 **
 ** Function         L2CA_ConfigReq
@@ -786,6 +515,7 @@ BOOLEAN L2CA_ConfigReq (UINT16 cid, tL2CAP_CFG_INFO *p_cfg)
 {
     tL2C_CCB        *p_ccb;
 
+    counter_add("l2cap.cfg.req", 1);
     L2CAP_TRACE_API ("L2CA_ConfigReq()  CID 0x%04x: fcr_present:%d (mode %d) mtu_present:%d (%d)",
         cid, p_cfg->fcr_present, p_cfg->fcr.mode, p_cfg->mtu_present, p_cfg->mtu);
 
@@ -822,6 +552,7 @@ BOOLEAN L2CA_ConfigReq (UINT16 cid, tL2CAP_CFG_INFO *p_cfg)
     return (TRUE);
 }
 
+
 /*******************************************************************************
 **
 ** Function         L2CA_ConfigRsp
@@ -836,6 +567,7 @@ BOOLEAN L2CA_ConfigRsp (UINT16 cid, tL2CAP_CFG_INFO *p_cfg)
 {
     tL2C_CCB        *p_ccb;
 
+    counter_add("l2cap.cfg.rsp", 1);
     L2CAP_TRACE_API ("L2CA_ConfigRsp()  CID: 0x%04x  Result: %d MTU present:%d Flush TO:%d FCR:%d FCS:%d",
         cid, p_cfg->result, p_cfg->mtu_present, p_cfg->flush_to_present, p_cfg->fcr_present, p_cfg->fcs_present);
 
@@ -866,6 +598,7 @@ BOOLEAN L2CA_ConfigRsp (UINT16 cid, tL2CAP_CFG_INFO *p_cfg)
     return (TRUE);
 }
 
+
 /*******************************************************************************
 **
 ** Function         L2CA_DisconnectReq
@@ -879,6 +612,7 @@ BOOLEAN L2CA_DisconnectReq (UINT16 cid)
 {
     tL2C_CCB        *p_ccb;
 
+    counter_add("l2cap.disconn.req", 1);
     L2CAP_TRACE_WARNING ("L2CA_DisconnectReq()  CID: 0x%04x", cid);
 
     /* Find the channel control block. We don't know the link it is on. */
@@ -888,6 +622,15 @@ BOOLEAN L2CA_DisconnectReq (UINT16 cid)
         return (FALSE);
     }
 
+
+#if (defined(LE_L2CAP_CFC_INCLUDED) && (LE_L2CAP_CFC_INCLUDED == TRUE))
+    if((BT_TRANSPORT_LE == l2cu_get_chnl_transport(p_ccb)) &&
+       (p_ccb->is_le_coc == TRUE))
+    {
+        l2c_le_csm_execute (p_ccb, L2CEVT_L2CA_DISCONNECT_REQ, NULL);
+    }
+    else
+#endif
     l2c_csm_execute (p_ccb, L2CEVT_L2CA_DISCONNECT_REQ, NULL);
 
     return (TRUE);
@@ -907,8 +650,8 @@ BOOLEAN L2CA_DisconnectRsp (UINT16 cid)
 {
     tL2C_CCB        *p_ccb;
 
+    counter_add("l2cap.disconn.rsp", 1);
     L2CAP_TRACE_WARNING ("L2CA_DisconnectRsp()  CID: 0x%04x", cid);
-
     /* Find the channel control block. We don't know the link it is on. */
     if ((p_ccb = l2cu_find_ccb_by_cid (NULL, cid)) == NULL)
     {
@@ -916,6 +659,14 @@ BOOLEAN L2CA_DisconnectRsp (UINT16 cid)
         return (FALSE);
     }
 
+#if (defined(LE_L2CAP_CFC_INCLUDED) && (LE_L2CAP_CFC_INCLUDED == TRUE))
+    if((BT_TRANSPORT_LE == l2cu_get_chnl_transport(p_ccb)) &&
+       (p_ccb->is_le_coc == TRUE))
+    {
+        l2c_le_csm_execute (p_ccb, L2CEVT_L2CA_DISCONNECT_RSP, NULL);
+    }
+    else
+#endif
     l2c_csm_execute (p_ccb, L2CEVT_L2CA_DISCONNECT_RSP, NULL);
 
     return (TRUE);
@@ -981,10 +732,7 @@ BOOLEAN  L2CA_Ping (BD_ADDR p_bd_addr, tL2CA_ECHO_RSP_CB *p_callback)
     {
         l2cu_adj_id(p_lcb, L2CAP_ADJ_BRCM_ID);  /* Make sure not using Broadcom ID */
         l2cu_send_peer_echo_req (p_lcb, NULL, 0);
-        alarm_set_on_queue(p_lcb->l2c_lcb_timer,
-                           L2CAP_ECHO_RSP_TIMEOUT_MS,
-                           l2c_lcb_timer_timeout, p_lcb,
-                           btu_general_alarm_queue);
+        btu_start_timer (&p_lcb->timer_entry, BTU_TTYPE_L2CAP_LINK, L2CAP_ECHO_RSP_TOUT);
     }
 
     return (TRUE);
@@ -1180,6 +928,7 @@ UINT8 L2CA_SetTraceLevel (UINT8 new_level)
     return (l2cb.l2cap_trace_level);
 }
 
+
 /*******************************************************************************
 **
 ** Function     L2CA_SetDesireRole
@@ -1245,7 +994,11 @@ UINT16 L2CA_LocalLoopbackReq (UINT16 psm, UINT16 handle, BD_ADDR p_bd_addr)
     }
 
     /* Fail if the PSM is not registered */
+#if (defined(LE_L2CAP_CFC_INCLUDED) && (LE_L2CAP_CFC_INCLUDED == TRUE))
+    if ((p_rcb = l2cu_find_rcb_by_psm (psm, BT_TRANSPORT_BR_EDR)) == NULL)
+#else
     if ((p_rcb = l2cu_find_rcb_by_psm (psm)) == NULL)
+#endif
     {
         L2CAP_TRACE_WARNING ("L2CAP - no RCB for L2CA_conn_req, PSM: %d", psm);
         return (0);
@@ -1374,6 +1127,7 @@ BOOLEAN L2CA_SendTestSFrame (UINT16 cid, UINT8 sup_type, UINT8 back_track)
 
     return (TRUE);
 }
+
 
 /*******************************************************************************
 **
@@ -1811,7 +1565,7 @@ UINT16 L2CA_SendFixedChnlData (UINT16 fixed_cid, BD_ADDR rem_bda, BT_HDR *p_buf)
      ||  (l2cb.fixed_reg[fixed_cid - L2CAP_FIRST_FIXED_CHNL].pL2CA_FixedData_Cb == NULL) )
     {
         L2CAP_TRACE_ERROR ("L2CA_SendFixedChnlData()  Invalid CID: 0x%04x", fixed_cid);
-        osi_free(p_buf);
+        GKI_freebuf (p_buf);
         return (L2CAP_DW_FAILED);
     }
 
@@ -1819,7 +1573,7 @@ UINT16 L2CA_SendFixedChnlData (UINT16 fixed_cid, BD_ADDR rem_bda, BT_HDR *p_buf)
     if (!BTM_IsDeviceUp())
     {
         L2CAP_TRACE_WARNING ("L2CA_SendFixedChnlData(0x%04x) - BTU not ready", fixed_cid);
-        osi_free(p_buf);
+        GKI_freebuf (p_buf);
         return (L2CAP_DW_FAILED);
     }
 
@@ -1829,7 +1583,7 @@ UINT16 L2CA_SendFixedChnlData (UINT16 fixed_cid, BD_ADDR rem_bda, BT_HDR *p_buf)
         p_lcb->link_state == LST_DISCONNECTING)
     {
         L2CAP_TRACE_WARNING ("L2CA_SendFixedChnlData(0x%04x) - no LCB", fixed_cid);
-        osi_free(p_buf);
+        GKI_freebuf (p_buf);
         return (L2CAP_DW_FAILED);
     }
 
@@ -1846,7 +1600,7 @@ UINT16 L2CA_SendFixedChnlData (UINT16 fixed_cid, BD_ADDR rem_bda, BT_HDR *p_buf)
     if ((peer_channel_mask & (1 << fixed_cid)) == 0)
     {
         L2CAP_TRACE_WARNING ("L2CA_SendFixedChnlData() - peer does not support fixed chnl: 0x%04x", fixed_cid);
-        osi_free(p_buf);
+        GKI_freebuf (p_buf);
         return (L2CAP_DW_FAILED);
     }
 
@@ -1858,7 +1612,7 @@ UINT16 L2CA_SendFixedChnlData (UINT16 fixed_cid, BD_ADDR rem_bda, BT_HDR *p_buf)
         if (!l2cu_initialize_fixed_ccb (p_lcb, fixed_cid, &l2cb.fixed_reg[fixed_cid - L2CAP_FIRST_FIXED_CHNL].fixed_chnl_opts))
         {
             L2CAP_TRACE_WARNING ("L2CA_SendFixedChnlData() - no CCB for chnl: 0x%4x", fixed_cid);
-            osi_free(p_buf);
+            GKI_freebuf (p_buf);
             return (L2CAP_DW_FAILED);
         }
     }
@@ -1868,9 +1622,9 @@ UINT16 L2CA_SendFixedChnlData (UINT16 fixed_cid, BD_ADDR rem_bda, BT_HDR *p_buf)
     {
         L2CAP_TRACE_ERROR ("L2CAP - CID: 0x%04x cannot send, already congested \
             xmit_hold_q.count: %u buff_quota: %u", fixed_cid,
-            fixed_queue_length(p_lcb->p_fixed_ccbs[fixed_cid - L2CAP_FIRST_FIXED_CHNL]->xmit_hold_q),
+            GKI_queue_length(&p_lcb->p_fixed_ccbs[fixed_cid - L2CAP_FIRST_FIXED_CHNL]->xmit_hold_q),
             p_lcb->p_fixed_ccbs[fixed_cid - L2CAP_FIRST_FIXED_CHNL]->buff_quota);
-        osi_free(p_buf);
+        GKI_freebuf (p_buf);
         return (L2CAP_DW_FAILED);
     }
 
@@ -2062,37 +1816,6 @@ BOOLEAN L2CA_GetCurrentConfig (UINT16 lcid,
 
 /*******************************************************************************
 **
-** Function      L2CA_GetConnectionConfig
-**
-** Description  This function returns configurations of L2CAP channel
-**              pp_l2c_ccb : pointer to this channels L2CAP ccb data.
-**
-** Returns      TRUE if successful
-**
-*******************************************************************************/
-BOOLEAN L2CA_GetConnectionConfig(UINT16 lcid, UINT16 *mtu, UINT16 *rcid, UINT16 *handle)
-{
-    tL2C_CCB *p_ccb = l2cu_find_ccb_by_cid(NULL, lcid);;
-
-    L2CAP_TRACE_API ("%s CID: 0x%04x", __func__, lcid);
-
-    if (p_ccb)
-    {
-        *mtu = L2CAP_MTU_SIZE;
-        if (p_ccb->our_cfg.mtu_present)
-            *mtu = p_ccb->our_cfg.mtu;
-
-        *rcid  = p_ccb->remote_cid;
-        *handle= p_ccb->p_lcb->handle;
-        return TRUE;
-    }
-
-    L2CAP_TRACE_ERROR ("%s No CCB for CID:0x%04x", __func__, lcid);
-    return FALSE;
-}
-
-/*******************************************************************************
-**
 ** Function         L2CA_RegForNoCPEvt
 **
 ** Description      Register callback for Number of Completed Packets event.
@@ -2247,9 +1970,7 @@ UINT16 L2CA_FlushChannel (UINT16 lcid, UINT16 num_to_flush)
     if (num_to_flush != L2CAP_FLUSH_CHANS_GET)
     {
         L2CAP_TRACE_API ("L2CA_FlushChannel (FLUSH)  CID: 0x%04x  NumToFlush: %d  QC: %u  pFirst: 0x%08x",
-                         lcid, num_to_flush,
-                         fixed_queue_length(p_ccb->xmit_hold_q),
-                         fixed_queue_try_peek_first(p_ccb->xmit_hold_q));
+                           lcid, num_to_flush, GKI_queue_length(&p_ccb->xmit_hold_q), GKI_getfirst(&p_ccb->xmit_hold_q));
     }
     else
     {
@@ -2288,16 +2009,17 @@ UINT16 L2CA_FlushChannel (UINT16 lcid, UINT16 num_to_flush)
             num_flushed1++;
 
             list_remove(p_lcb->link_xmit_data_q, p_buf);
-            osi_free(p_buf);
+            GKI_freebuf(p_buf);
           }
         }
     }
 
     /* If needed, flush buffers in the CCB xmit hold queue */
-    while ( (num_to_flush != 0) && (!fixed_queue_is_empty(p_ccb->xmit_hold_q)))
+    while ( (num_to_flush != 0) && (!GKI_queue_is_empty(&p_ccb->xmit_hold_q)))
     {
-        BT_HDR *p_buf = (BT_HDR *)fixed_queue_try_dequeue(p_ccb->xmit_hold_q);
-        osi_free(p_buf);
+        BT_HDR *p_buf = (BT_HDR *)GKI_dequeue (&p_ccb->xmit_hold_q);
+        if (p_buf)
+            GKI_freebuf (p_buf);
         num_to_flush--;
         num_flushed2++;
     }
@@ -2317,7 +2039,7 @@ UINT16 L2CA_FlushChannel (UINT16 lcid, UINT16 num_to_flush)
     }
 
     /* Add in the number in the CCB xmit queue */
-    num_left += fixed_queue_length(p_ccb->xmit_hold_q);
+    num_left += GKI_queue_length(&p_ccb->xmit_hold_q);
 
     /* Return the local number of buffers left for the CID */
     L2CAP_TRACE_DEBUG ("L2CA_FlushChannel()  flushed: %u + %u,  num_left: %u", num_flushed1, num_flushed2, num_left);

@@ -27,34 +27,37 @@
 #define LOG_TAG "bt_main"
 
 #include <assert.h>
+#include <cutils/properties.h>
 #include <fcntl.h>
+#include <hardware/bluetooth.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <time.h>
 
-#include <hardware/bluetooth.h>
-
-#include "bt_hci_bdroid.h"
-#include "bt_utils.h"
+#include "osi/include/alarm.h"
 #include "bta_api.h"
-#include "btcore/include/module.h"
+#include "bt_hci_bdroid.h"
 #include "bte.h"
 #include "btif_common.h"
-#include "btsnoop.h"
 #include "btu.h"
-#include "bt_common.h"
+#include "btsnoop.h"
+#include "bt_utils.h"
+#include "btcore/include/counter.h"
+#include "btcore/include/module.h"
 #include "device/include/interop.h"
 #include "hci_layer.h"
 #include "osi/include/alarm.h"
 #include "osi/include/fixed_queue.h"
 #include "osi/include/future.h"
+#include "gki.h"
 #include "osi/include/hash_functions.h"
 #include "osi/include/hash_map.h"
-#include "osi/include/log.h"
+#include "hci_layer.h"
 #include "osi/include/osi.h"
-#include "osi/include/thread.h"
+#include "osi/include/log.h"
 #include "stack_config.h"
+#include "osi/include/thread.h"
 
 /*******************************************************************************
 **  Constants & Macros
@@ -62,13 +65,8 @@
 
 /* Run-time configuration file for BLE*/
 #ifndef BTE_BLE_STACK_CONF_FILE
-// TODO(armansito): Find a better way than searching by a hardcoded path.
-#if defined(OS_GENERIC)
-#define BTE_BLE_STACK_CONF_FILE "ble_stack.conf"
-#else  // !defined(OS_GENERIC)
 #define BTE_BLE_STACK_CONF_FILE "/etc/bluetooth/ble_stack.conf"
-#endif  // defined(OS_GENERIC)
-#endif  // BT_BLE_STACK_CONF_FILE
+#endif
 
 /******************************************************************************
 **  Variables
@@ -86,6 +84,7 @@ static const hci_t *hci;
 /*******************************************************************************
 **  Externs
 *******************************************************************************/
+extern void bte_load_ble_conf(const char *p_path);
 fixed_queue_t *btu_hci_msg_queue;
 
 /******************************************************************************
@@ -99,34 +98,39 @@ fixed_queue_t *btu_hci_msg_queue;
 ******************************************************************************/
 void bte_main_boot_entry(void)
 {
+    module_init(get_module(GKI_MODULE));
+    module_init(get_module(COUNTER_MODULE));
     module_init(get_module(INTEROP_MODULE));
 
     hci = hci_layer_get_interface();
     if (!hci)
-      LOG_ERROR(LOG_TAG, "%s could not get hci layer interface.", __func__);
+      LOG_ERROR("%s could not get hci layer interface.", __func__);
 
     btu_hci_msg_queue = fixed_queue_new(SIZE_MAX);
     if (btu_hci_msg_queue == NULL) {
-      LOG_ERROR(LOG_TAG, "%s unable to allocate hci message queue.", __func__);
+      LOG_ERROR("%s unable to allocate hci message queue.", __func__);
       return;
     }
 
     data_dispatcher_register_default(hci->event_dispatcher, btu_hci_msg_queue);
     hci->set_data_queue(btu_hci_msg_queue);
 
+#if (defined(BLE_INCLUDED) && (BLE_INCLUDED == TRUE))
+    bte_load_ble_conf(BTE_BLE_STACK_CONF_FILE);
+#endif
     module_init(get_module(STACK_CONFIG_MODULE));
 }
 
 /******************************************************************************
 **
-** Function         bte_main_cleanup
+** Function         bte_main_shutdown
 **
-** Description      BTE MAIN API - Cleanup code for BTE chip/stack
+** Description      BTE MAIN API - Shutdown code for BTE chip/stack
 **
 ** Returns          None
 **
 ******************************************************************************/
-void bte_main_cleanup()
+void bte_main_shutdown()
 {
     data_dispatcher_register_default(hci_layer_get_interface()->event_dispatcher, NULL);
     hci->set_data_queue(NULL);
@@ -137,6 +141,8 @@ void bte_main_cleanup()
     module_clean_up(get_module(STACK_CONFIG_MODULE));
 
     module_clean_up(get_module(INTEROP_MODULE));
+    module_clean_up(get_module(COUNTER_MODULE));
+    module_clean_up(get_module(GKI_MODULE));
 }
 
 /******************************************************************************
@@ -212,7 +218,7 @@ void bte_main_enable_lpm(BOOLEAN enable)
 **
 ** Function         bte_main_lpm_allow_bt_device_sleep
 **
-** Description      BTE MAIN API - Allow the BT controller to go to sleep
+** Description      BTE MAIN API - Allow BT controller goest to sleep
 **
 ** Returns          None
 **
@@ -255,6 +261,8 @@ void bte_main_hci_send (BT_HDR *p_msg, UINT16 event)
 
     p_msg->event = event;
 
+    counter_add("main.tx.packets", 1);
+    counter_add("main.tx.bytes", p_msg->len);
 
     if((sub_event == LOCAL_BR_EDR_CONTROLLER_ID) || \
        (sub_event == LOCAL_BLE_CONTROLLER_ID))
@@ -264,7 +272,7 @@ void bte_main_hci_send (BT_HDR *p_msg, UINT16 event)
     else
     {
         APPL_TRACE_ERROR("Invalid Controller ID. Discarding message.");
-        osi_free(p_msg);
+        GKI_freebuf(p_msg);
     }
 }
 /******************************************************************************

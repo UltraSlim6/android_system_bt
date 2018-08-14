@@ -41,18 +41,17 @@
 #include <fcntl.h>
 #include <sys/prctl.h>
 #include <sys/capability.h>
-#include <signal.h>
-#include <time.h>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netdb.h>
-#include "bt_target.h"
+
 #include <private/android_filesystem_config.h>
 #include <android/log.h>
 
 #include <hardware/hardware.h>
 #include <hardware/bluetooth.h>
+
 
 
 /************************************************************************************
@@ -86,8 +85,6 @@ static BOOLEAN g_SecOnlyMode = FALSE;
 static int g_secvalue = 0;
 static BOOLEAN g_ConnType = TRUE;//DUT is initiating connection
 static BOOLEAN g_Fcr_Present = FALSE;
-static bool g_Sar_Present = FALSE;
-static bool strict_mode = FALSE;
 static UINT8 g_Fcr_Mode = L2CAP_FCR_BASIC_MODE;
 static UINT8 g_Ertm_AllowedMode = (L2CAP_FCR_CHAN_OPT_BASIC | L2CAP_FCR_CHAN_OPT_ERTM | L2CAP_FCR_CHAN_OPT_STREAM);
 static int g_LocalBusy = 0;
@@ -116,10 +113,13 @@ static unsigned char *buf;
 static int g_imtu = 672;
 static int g_omtu = 0;
 
+/* Default FCS option */
+static int g_fcs = 0x01;
 
 /* Default data size */
 static long data_size = -1;
 static long buffer_size = 2048;
+static unsigned short cid = 0;
 
 static int master = 0;
 static int auth = 0;
@@ -153,7 +153,7 @@ tL2CAP_FCR_OPTS stream_fcr_opts_def = {
     MCA_FCR_OPT_MONITOR_TOUT, /* Monitor timeout (12 secs) */
     100 /* MPS segment size */
 };
-static tL2CAP_ERTM_INFO t_ertm_info = {0,0,0,0,0,0};
+static tL2CAP_ERTM_INFO t_ertm_info = {0};
 
 UINT8 do_l2cap_DataWrite(char *p , UINT32 len);
 
@@ -174,6 +174,8 @@ static gid_t groups[] = { AID_NET_BT, AID_INET, AID_NET_BT_ADMIN,
                           AID_SYSTEM, AID_MISC, AID_SDCARD_RW,
                           AID_NET_ADMIN, AID_VPN};
 
+/* Set to 1 when the Bluedroid stack is enabled */
+static unsigned char bt_enabled = 0;
 
 const btl2cap_interface_t *sL2capInterface = NULL;
 
@@ -184,7 +186,7 @@ L2CAP_CONNECTED
 };
 
 static int L2cap_conn_state = L2CAP_NOT_CONNECTED;
-static tL2CAP_CFG_INFO tl2cap_cfg_info;
+static tL2CAP_CFG_INFO tl2cap_cfg_info = {0};
 static UINT16           g_PSM           = 0;
 static UINT16           g_lcid          = 0;
 
@@ -192,6 +194,11 @@ static UINT16           g_lcid          = 0;
 /************************************************************************************
 **  Static functions
 ************************************************************************************/
+
+//static void process_cmd(char *p, unsigned char is_job);
+static void job_handler(void *param);
+//static void printf(const char *fmt_str, ...);
+
 
 static int Send_Data();
 static int WaitForCompletion(int Cmd, int Timeout);
@@ -220,8 +227,7 @@ static void l2test_l2c_connect_ind_cb(BD_ADDR bd_addr, UINT16 lcid, UINT16 psm, 
         sL2capInterface->ConnectRsp(bd_addr, id, lcid, L2CAP_CONN_OK, L2CAP_CONN_OK);
     }
     {
-        tL2CAP_CFG_INFO cfg;
-        memcpy (&cfg ,&tl2cap_cfg_info,sizeof(tl2cap_cfg_info));
+        tL2CAP_CFG_INFO cfg = tl2cap_cfg_info;
         if ((!sL2capInterface->ConfigReq (lcid, &cfg)) && cfg.fcr_present
               && cfg.fcr.mode != L2CAP_FCR_BASIC_MODE) {
             cfg.fcr.mode = L2CAP_FCR_BASIC_MODE;
@@ -236,10 +242,9 @@ static void l2test_l2c_connect_ind_cb(BD_ADDR bd_addr, UINT16 lcid, UINT16 psm, 
 static void l2test_l2c_connect_cfm_cb(UINT16 lcid, UINT16 result)
 {
 
-    if (result == L2CAP_CONN_OK) {
+    if ((result == L2CAP_CONN_OK) ) {
         L2cap_conn_state = L2CAP_CONN_SETUP;
-        tL2CAP_CFG_INFO cfg;
-        memcpy (&cfg ,&tl2cap_cfg_info,sizeof(tl2cap_cfg_info));
+        tL2CAP_CFG_INFO cfg = tl2cap_cfg_info;
         sL2capInterface->ConfigReq (lcid, &cfg);
         g_imtu = cfg.mtu;
         g_ConnectionState = CONNECT;
@@ -271,8 +276,7 @@ static void l2test_l2c_config_cfm_cb(UINT16 lcid, tL2CAP_CFG_INFO *p_cfg)
 
      /* If peer has rejected FCR and suggested basic then try basic */
     if (p_cfg->fcr_present) {
-        tL2CAP_CFG_INFO cfg;
-        memcpy (&cfg ,&tl2cap_cfg_info,sizeof(tl2cap_cfg_info));
+        tL2CAP_CFG_INFO cfg = tl2cap_cfg_info;
         cfg.fcr_present = FALSE;
         sL2capInterface->ConfigReq (lcid, &cfg);
         // Remain in configure state
@@ -335,6 +339,11 @@ static tL2CAP_APPL_INFO l2test_l2c_appl = {
     l2test_l2c_data_ind_cb,
     l2test_l2c_congestion_ind_cb,
     l2test_l2c_tx_complete_cb
+#if (defined(LE_L2CAP_CFC_INCLUDED) && (LE_L2CAP_CFC_INCLUDED == TRUE))
+    ,
+    NULL,
+    NULL
+#endif
 };
 
 
@@ -356,7 +365,7 @@ static void bdt_shutdown(void)
 static void config_permissions(void)
 {
     struct __user_cap_header_struct header;
-    struct __user_cap_data_struct cap[2];
+    struct __user_cap_data_struct cap;
 
     printf("set_aid_and_cap : pid %d, uid %d gid %d", getpid(), getuid(), getgid());
 
@@ -366,25 +375,18 @@ static void config_permissions(void)
 
     setuid(AID_BLUETOOTH);
     setgid(AID_BLUETOOTH);
-    header.version = _LINUX_CAPABILITY_VERSION_3;
 
-    cap[CAP_TO_INDEX(CAP_NET_RAW)].permitted |= CAP_TO_MASK(CAP_NET_RAW);
-    cap[CAP_TO_INDEX(CAP_NET_ADMIN)].permitted |= CAP_TO_MASK(CAP_NET_ADMIN);
-    cap[CAP_TO_INDEX(CAP_NET_BIND_SERVICE)].permitted |= CAP_TO_MASK(CAP_NET_BIND_SERVICE);
-    cap[CAP_TO_INDEX(CAP_SYS_RAWIO)].permitted |= CAP_TO_MASK(CAP_SYS_RAWIO);
-    cap[CAP_TO_INDEX(CAP_SYS_NICE)].permitted |= CAP_TO_MASK(CAP_SYS_NICE);
-    cap[CAP_TO_INDEX(CAP_SETGID)].permitted |= CAP_TO_MASK(CAP_SETGID);
-    cap[CAP_TO_INDEX(CAP_WAKE_ALARM)].permitted |= CAP_TO_MASK(CAP_WAKE_ALARM);
+    header.version = _LINUX_CAPABILITY_VERSION;
 
-    cap[CAP_TO_INDEX(CAP_NET_RAW)].effective |= CAP_TO_MASK(CAP_NET_RAW);
-    cap[CAP_TO_INDEX(CAP_NET_ADMIN)].effective |= CAP_TO_MASK(CAP_NET_ADMIN);
-    cap[CAP_TO_INDEX(CAP_NET_BIND_SERVICE)].effective |= CAP_TO_MASK(CAP_NET_BIND_SERVICE);
-    cap[CAP_TO_INDEX(CAP_SYS_RAWIO)].effective |= CAP_TO_MASK(CAP_SYS_RAWIO);
-    cap[CAP_TO_INDEX(CAP_SYS_NICE)].effective |= CAP_TO_MASK(CAP_SYS_NICE);
-    cap[CAP_TO_INDEX(CAP_SETGID)].effective |= CAP_TO_MASK(CAP_SETGID);
-    cap[CAP_TO_INDEX(CAP_WAKE_ALARM)].effective |= CAP_TO_MASK(CAP_WAKE_ALARM);
+    cap.effective = cap.permitted =  cap.inheritable =
+                    1 << CAP_NET_RAW |
+                    1 << CAP_NET_ADMIN |
+                    1 << CAP_NET_BIND_SERVICE |
+                    1 << CAP_SYS_RAWIO |
+                    1 << CAP_SYS_NICE |
+                    1 << CAP_SETGID;
 
-    capset(&header, &cap[0]);
+    capset(&header, &cap);
     setgroups(sizeof(groups)/sizeof(groups[0]), groups);
 }
 
@@ -418,7 +420,9 @@ typedef struct {
 } t_cmd;
 
 
-#if 0
+//const t_cmd console_cmd_list[];
+static int console_cmd_maxlen = 0;
+
 static void cmdjob_handler(void *param)
 {
     char *job_cmd = (char*)param;
@@ -443,7 +447,6 @@ static int create_cmdjob(char *cmd)
 
     return 0;
 }
-#endif
 
 /*******************************************************************************
  ** Load stack lib
@@ -545,7 +548,7 @@ static void discovery_state_changed(bt_discovery_state_t state)
     printf("Discovery State Updated : %s\n", (state == BT_DISCOVERY_STOPPED)?"STOPPED":"STARTED");
 }
 
-#if 0
+
 static void pin_request_cb(bt_bdaddr_t *remote_bd_addr, bt_bdname_t *bd_name, uint32_t cod)
 {
 
@@ -556,7 +559,7 @@ static void pin_request_cb(bt_bdaddr_t *remote_bd_addr, bt_bdname_t *bd_name, ui
         printf("Pin Reply failed\n");
     }
 }
-#endif
+
 static void ssp_request_cb(bt_bdaddr_t *remote_bd_addr, bt_bdname_t *bd_name,
                            uint32_t cod, bt_ssp_variant_t pairing_variant, uint32_t pass_key)
 {
@@ -596,7 +599,7 @@ static bt_callbacks_t bt_callbacks = {
     dut_mode_recv, /*dut_mode_recv_cb */
     NULL, /*le_test_mode_cb*/
     NULL, /*energy_info_cb */
-    NULL, /*get_testapp_interface */
+    NULL
 };
 
 static bool set_wake_alarm(uint64_t delay_millis, bool should_wake, alarm_cb cb, void *data) {
@@ -657,7 +660,7 @@ void bdt_enable(void)
         printf("Bluetooth is already enabled\n");
         return;
     }
-    status = sBtInterface->enable(strict_mode);
+    status = sBtInterface->enable(false);
     return;
 }
 
@@ -740,6 +743,7 @@ int GetBdAddr(char *p, bt_bdaddr_t *pbd_addr)
     UINT8 k1 = 0;
     UINT8 k2 = 0;
     int i;
+    char *t = NULL;
 
     if(12 != strlen(p))
     {
@@ -767,6 +771,7 @@ int GetBdAddr(char *p, bt_bdaddr_t *pbd_addr)
 void do_l2cap_init(char *p)
 {
 
+    char *value = NULL;
 
     memset(&tl2cap_cfg_info, 0, sizeof(tl2cap_cfg_info));
     //Use macros for the constants
@@ -780,7 +785,6 @@ void do_l2cap_init(char *p)
     tl2cap_cfg_info.fcs = 0;
     tl2cap_cfg_info.fcs_present = 1;
 
-    tl2cap_cfg_info.fcr.tx_win_sz = 3;
     if(L2CAP_FCR_ERTM_MODE == tl2cap_cfg_info.fcr.mode)
     {
         tl2cap_cfg_info.fcr = ertm_fcr_opts_def;
@@ -789,13 +793,14 @@ void do_l2cap_init(char *p)
     {
         tl2cap_cfg_info.fcr = stream_fcr_opts_def;
     }
+    tl2cap_cfg_info.fcr.tx_win_sz = 3;
     //Initialize ERTM Parameters
     t_ertm_info.preferred_mode = g_Fcr_Mode;
     t_ertm_info.allowed_modes = g_Ertm_AllowedMode;
-    t_ertm_info.user_rx_buf_size  = BT_DEFAULT_BUFFER_SIZE;
-    t_ertm_info.user_tx_buf_size = BT_DEFAULT_BUFFER_SIZE;
-    t_ertm_info.fcr_rx_buf_size = BT_DEFAULT_BUFFER_SIZE;
-    t_ertm_info.fcr_tx_buf_size = BT_DEFAULT_BUFFER_SIZE;
+    t_ertm_info.user_rx_pool_id = HCI_ACL_POOL_ID;
+    t_ertm_info.user_tx_pool_id = HCI_ACL_POOL_ID;
+    t_ertm_info.fcr_rx_pool_id = L2CAP_FCR_RX_POOL_ID;
+    t_ertm_info.fcr_tx_pool_id = L2CAP_FCR_TX_POOL_ID;
     //Load L2cap Interface
     if(NULL == sL2capInterface)
     {
@@ -914,7 +919,9 @@ static void l2c_listen(int SendData)
 
 static int Send_Data()
 {
-    int fd, size;
+    uint32_t seq =0;
+    int i, fd, len, buflen, size, sent;
+    long buflen_tmp;
     char *tmpBuf = NULL;
 
     if (data_size < 0)
@@ -953,29 +960,9 @@ static int Send_Data()
     printf(" count %d...\n", count);
     sleep(5);
     while (count > 0) {
-        char tmpBuffer[] = {0x11,0x04,0x7F,0x7F,0x7F,0x7F,0x7F,
-                        0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,
-                        0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,
-                        0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,
-                        0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,
-                        0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,
-                        0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,
-                        0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,
-                        0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,
-                        0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,
-                        0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F
-                      };
+        char tmpBuffer[] = {0x7F,0x7F,0x7F,0x7F,0x7F,0x7F,0x7F};
         count--;
         printf("Before write count is %d...\n", count);
-        if( g_Sar_Present == TRUE)
-        {
-        sleep(5);
-        printf("SAR present..\n");
-        do_l2cap_DataWrite(tmpBuffer, 100);
-        sleep(5);
-        do_l2cap_DataWrite(tmpBuffer, 100);
-        }
-        else
         do_l2cap_DataWrite(tmpBuffer, 5);
     }
     sleep(50);
@@ -1066,7 +1053,7 @@ int main(int argc, char *argv[])
     int opt, mode = RECEIVE, addr_required = 0;
     char temp[3] = {0};
 
-    while ((opt=getopt(argc,argv,"arswcpb:i:P:K:O:H:F:N:L:C:D:X:Q:I:W:Z:UGATMES")) != EOF) {
+    while ((opt=getopt(argc,argv,"arswcpb:i:P:K:O:H:F:N:L:C:D:X:Q:I:W:UGATMES")) != EOF) {
         switch(opt) {
             case 'a':
                 mode = PING;
@@ -1183,12 +1170,7 @@ int main(int argc, char *argv[])
             case 'W':
                 ertm_fcr_opts_def.tx_win_sz = atoi(optarg);
                 stream_fcr_opts_def.tx_win_sz = ertm_fcr_opts_def.tx_win_sz;
-                tl2cap_cfg_info.fcr.tx_win_sz = ertm_fcr_opts_def.tx_win_sz;
                 break;
-            case 'Z':
-                 g_Sar_Present = TRUE;
-                 printf("g_Sar_Present = true \n");
-                 break;
             default:
             options();
             exit(1);

@@ -37,6 +37,7 @@
 #define LOG_NDDEBUG 0
 #define LOG_TAG "bluedroid"
 
+#include "gki.h"
 #include "btif_api.h"
 #include "bt_utils.h"
 #include "bt_testapp.h"

@@ -1,8 +1,13 @@
 LOCAL_PATH:= $(call my-dir)
 
-# BTA static library for target
-# ========================================================
 include $(CLEAR_VARS)
+
+ifeq ($(BOARD_HAVE_BLUETOOTH_BCM),true)
+LOCAL_CFLAGS += \
+	-DBOARD_HAVE_BLUETOOTH_BCM
+endif
+LOCAL_CFLAGS += -DBUILDCFG $(bdroid_CFLAGS) -std=c99
+LOCAL_CLANG_CFLAGS += -Wno-error=gnu-variable-sized-type-not-at-end
 
 LOCAL_SRC_FILES:= \
     ./dm/bta_dm_ci.c \
@@ -16,6 +21,7 @@ LOCAL_SRC_FILES:= \
     ./gatt/bta_gatts_act.c \
     ./gatt/bta_gatts_main.c \
     ./gatt/bta_gattc_utils.c \
+    ./gatt/bta_gattc_ci.c \
     ./gatt/bta_gatts_api.c \
     ./gatt/bta_gattc_main.c \
     ./gatt/bta_gattc_act.c \
@@ -45,6 +51,9 @@ LOCAL_SRC_FILES:= \
     ./hh/bta_hh_le.c \
     ./hh/bta_hh_utils.c \
     ./hh/bta_hh_main.c \
+    ./hd/bta_hd_act.c \
+    ./hd/bta_hd_api.c \
+    ./hd/bta_hd_main.c \
     ./pan/bta_pan_main.c \
     ./pan/bta_pan_ci.c \
     ./pan/bta_pan_act.c \
@@ -57,7 +66,6 @@ LOCAL_SRC_FILES:= \
     ./av/bta_av_cfg.c \
     ./av/bta_av_ssm.c \
     ./av/bta_av_sbc.c \
-    ./av/bta_av_aac.c \
     ./ar/bta_ar.c \
     ./hl/bta_hl_act.c \
     ./hl/bta_hl_api.c \
@@ -77,10 +85,11 @@ LOCAL_SRC_FILES:= \
     ./jv/bta_jv_main.c \
     ./jv/bta_jv_api.c
 
-LOCAL_MODULE := libbt-bta
+LOCAL_MODULE := libbt-brcm_bta
 LOCAL_MODULE_CLASS := STATIC_LIBRARIES
 LOCAL_MODULE_TAGS := optional
 LOCAL_SHARED_LIBRARIES := libcutils libc
+LOCAL_MULTILIB := 32
 
 LOCAL_C_INCLUDES+= . \
                    $(LOCAL_PATH)/include \
@@ -89,17 +98,17 @@ LOCAL_C_INCLUDES+= . \
                    $(LOCAL_PATH)/hh \
                    $(LOCAL_PATH)/../ \
                    $(LOCAL_PATH)/../btcore/include \
+                   $(LOCAL_PATH)/../gki/common \
+                   $(LOCAL_PATH)/../gki/ulinux \
                    $(LOCAL_PATH)/../hci/include \
                    $(LOCAL_PATH)/../include \
                    $(LOCAL_PATH)/../stack/include \
                    $(LOCAL_PATH)/../stack/btm \
+                   $(LOCAL_PATH)/../osi/include \
                    $(LOCAL_PATH)/../udrv/include \
                    $(LOCAL_PATH)/../vnd/include \
                    $(LOCAL_PATH)/../utils/include \
-                   $(bluetooth_C_INCLUDES)
+                   $(bdroid_C_INCLUDES) \
 
-LOCAL_CFLAGS += $(bluetooth_CFLAGS) -DBUILDCFG
-LOCAL_CONLYFLAGS += $(bluetooth_CONLYFLAGS)
-LOCAL_CPPFLAGS += $(bluetooth_CPPFLAGS)
 
 include $(BUILD_STATIC_LIBRARY)

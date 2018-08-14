@@ -23,7 +23,6 @@
 #include <cutils/properties.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <inttypes.h>
 #include <limits.h>
 #include <netinet/in.h>
 #include <stdbool.h>
@@ -36,12 +35,14 @@
 #include <sys/poll.h>
 #include <unistd.h>
 
-#include "bt_types.h"
 #include "hci/include/btsnoop.h"
 #include "hci/include/btsnoop_mem.h"
+#include "bt_types.h"
 #include "hci_layer.h"
 #include "osi/include/log.h"
 #include "stack_config.h"
+
+#define MAX_SNOOP_BUF_SIZE  (1200)
 
 typedef enum {
   kCommandPacket = 1,
@@ -57,11 +58,7 @@ static const stack_config_t *stack_config;
 extern int client_socket_btsnoop;
 static long int gmt_offset;
 #define USEC_PER_SEC 1000000L
-#define MAX_SNOOP_BUF_SIZE 1200
-
-// External BT snoop
-bool hci_ext_dump_enabled = false;
-
+bool hci_ext_dump_enabled = false;  /* External BT snoop */
 /* snoop config from the config file, required for userdebug
    build where snoop is enabled by default.
    power/perf measurements need the snoop to be disabled.
@@ -85,10 +82,10 @@ static void update_logging();
 
 static future_t *start_up(void) {
   time_t t = time(NULL);
-  struct tm tm_cur;
+  struct tm tm_cur = {0};
 
   localtime_r (&t, &tm_cur);
-  LOG_INFO(LOG_TAG, "%s Time GMT offset %ld\n", __func__, tm_cur.tm_gmtoff);
+  LOG_INFO("Time GMT offset %ld\n", tm_cur.tm_gmtoff);
   gmt_offset = tm_cur.tm_gmtoff;
 
   module_started = true;
@@ -113,7 +110,7 @@ static future_t *shut_down(void) {
   return NULL;
 }
 
-EXPORT_SYMBOL const module_t btsnoop_module = {
+const module_t btsnoop_module = {
   .name = BTSNOOP_MODULE,
   .init = NULL,
   .start_up = start_up,
@@ -192,7 +189,6 @@ static void update_logging() {
   is_logging = should_log;
   if (should_log) {
     btsnoop_net_open();
-
     if (hci_ext_dump_enabled == true) {
       property_set("bluetooth.startbtsnoop", "true");
     }
@@ -201,23 +197,20 @@ static void update_logging() {
     // Save the old log if configured to do so
     if (stack_config->get_btsnoop_should_save_last()) {
       char last_log_path[PATH_MAX];
-      snprintf(last_log_path, PATH_MAX, "%s.%" PRIu64, log_path,
-               btsnoop_timestamp());
+      snprintf(last_log_path, PATH_MAX, "%s.%llu", log_path, btsnoop_timestamp());
       if (!rename(log_path, last_log_path) && errno != ENOENT)
-        LOG_ERROR(LOG_TAG, "%s unable to rename '%s' to '%s': %s", __func__, log_path, last_log_path, strerror(errno));
+        LOG_ERROR("%s unable to rename '%s' to '%s': %s", __func__, log_path, last_log_path, strerror(errno));
     }
 
-    mode_t prevmask = umask(0);
-    logfile_fd = open(log_path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
+    logfile_fd = TEMP_FAILURE_RETRY(open(log_path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH));
     if (logfile_fd == INVALID_FD) {
-      LOG_ERROR(LOG_TAG, "%s unable to open '%s': %s", __func__, log_path, strerror(errno));
+      LOG_ERROR("%s unable to open '%s': %s", __func__, log_path, strerror(errno));
+      btsnoop_net_close();
       is_logging = false;
-      umask(prevmask);
       return;
     }
-    umask(prevmask);
 
-    write(logfile_fd, "btsnoop\0\0\0\0\1\0\0\x3\xea", 16);
+    TEMP_FAILURE_RETRY(write(logfile_fd, "btsnoop\0\0\0\0\1\0\0\x3\xea", 16));
   } else {
     if (logfile_fd != INVALID_FD)
       close(logfile_fd);
@@ -235,16 +228,8 @@ static void btsnoop_write(const void *data, size_t length) {
   }
 
   if (logfile_fd != INVALID_FD)
-    write(logfile_fd, data, length);
+    TEMP_FAILURE_RETRY(write(logfile_fd, data, length));
 }
-
-#ifdef DEBUG_SNOOP
-static uint64_t time_now_us() {
-    struct timespec ts_now;
-    clock_gettime(CLOCK_BOOTTIME, &ts_now);
-    return ((uint64_t)ts_now.tv_sec * USEC_PER_SEC) + ((uint64_t)ts_now.tv_nsec / 1000);
-}
-#endif
 
 static void btsnoop_write_packet(packet_type_t type, const uint8_t *packet, bool is_received) {
   int length_he = 0;
@@ -311,8 +296,8 @@ static void btsnoop_write_packet(packet_type_t type, const uint8_t *packet, bool
   snoop_buf[offset] = type;
   offset += 1;
   if (offset + length_he + 1 > MAX_SNOOP_BUF_SIZE) {
-    LOG_ERROR(LOG_TAG, "Bad packet length, downgrading the length to %d from %d",
-                                      MAX_SNOOP_BUF_SIZE - offset - 1, length_he);
+    LOG_ERROR("Bad packet length, downgrading the length to %d from %d ",
+                             MAX_SNOOP_BUF_SIZE - offset - 1,length_he);
     length_he = MAX_SNOOP_BUF_SIZE - offset - 1;
   }
   memcpy(snoop_buf + offset, packet, length_he - 1);
@@ -325,12 +310,12 @@ static void btsnoop_write_packet(packet_type_t type, const uint8_t *packet, bool
 #endif
 
     if (poll(&pfd, 1, 10) == 0) {
-      LOG_ERROR(LOG_TAG, "btsnoop poll : Taking more than 10 ms : skip dump");
+      LOG_ERROR("btsnoop poll : Taking more than 10 ms : skip dump");
 #ifdef DEBUG_SNOOP
       ts_end = time_now_us();
       ts_diff = ts_end - ts_begin;
       if (ts_diff > 10000) {
-        LOG_ERROR(LOG_TAG, "btsnoop poll T/O : took more time %08lld us", ts_diff);
+        LOG_ERROR("btsnoop poll T/O : took more time %08lld us", ts_diff);
       }
 #endif
       return;
@@ -340,7 +325,7 @@ static void btsnoop_write_packet(packet_type_t type, const uint8_t *packet, bool
     ts_end = time_now_us();
     ts_diff = ts_end - ts_begin;
     if (ts_diff > 10000) {
-      LOG_ERROR(LOG_TAG, "btsnoop poll : took more time %08lld us", ts_diff);
+      LOG_ERROR("btsnoop poll : took more time %08lld us", ts_diff);
     }
 #endif
   }
@@ -354,7 +339,7 @@ static void btsnoop_write_packet(packet_type_t type, const uint8_t *packet, bool
   ts_end = time_now_us();
   ts_diff = ts_end - ts_begin;
   if (ts_diff > 10000) {
-    LOG_ERROR(LOG_TAG, "btsnoop write : Write took more time %08lld us", ts_diff);
+    LOG_ERROR("btsnoop write : Write took more time %08lld us", ts_diff);
   }
 #endif
 }

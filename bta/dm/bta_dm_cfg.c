@@ -58,11 +58,11 @@
 
 /* Reduce Idle timeout value due to intermediate timer */
 #ifndef BTA_JVS_IDLE_TO_SNIFF_DELAY_MS
-#define BTA_JVS_IDLE_TO_SNIFF_DELAY_MS (BTA_FTS_OPS_IDLE_TO_SNIFF_DELAY_MS - BTA_JV_IDLE_TIMEOUT_MS)
+#define BTA_JVS_IDLE_TO_SNIFF_DELAY_MS BTA_FTS_OPS_IDLE_TO_SNIFF_DELAY_MS-BTA_JV_IDLE_TIMEOUT*1000
 #endif
 
 #ifndef BTA_JVC_IDLE_TO_SNIFF_DELAY_MS
-#define BTA_JVC_IDLE_TO_SNIFF_DELAY_MS (5000 - BTA_JV_IDLE_TIMEOUT_MS)
+#define BTA_JVC_IDLE_TO_SNIFF_DELAY_MS 5000-BTA_JV_IDLE_TIMEOUT*1000
 #endif
 
 
@@ -504,7 +504,6 @@ tBTA_DM_PM_TYPE_QUALIFIER tBTM_PM_PWR_MD bta_dm_pm_md[] =
   {BTA_DM_PM_SNIFF3_MAX, BTA_DM_PM_SNIFF3_MIN, BTA_DM_PM_SNIFF3_ATTEMPT, BTA_DM_PM_SNIFF3_TIMEOUT, BTM_PM_MD_SNIFF}, /* for BTA_DM_PM_SNIFF3- SCO open */
   {BTA_DM_PM_SNIFF4_MAX, BTA_DM_PM_SNIFF4_MIN, BTA_DM_PM_SNIFF4_ATTEMPT, BTA_DM_PM_SNIFF4_TIMEOUT, BTM_PM_MD_SNIFF}, /* for BTA_DM_PM_SNIFF4- HD active */
   {BTA_DM_PM_SNIFF5_MAX, BTA_DM_PM_SNIFF5_MIN, BTA_DM_PM_SNIFF5_ATTEMPT, BTA_DM_PM_SNIFF5_TIMEOUT, BTM_PM_MD_SNIFF}, /* for BTA_DM_PM_SNIFF5- HD active */
-  {BTA_DM_PM_SNIFF6_MAX, BTA_DM_PM_SNIFF6_MIN, BTA_DM_PM_SNIFF6_ATTEMPT, BTA_DM_PM_SNIFF6_TIMEOUT, BTM_PM_MD_SNIFF}, /* for BTA_DM_PM_SNIFF6- HH active */
   {BTA_DM_PM_PARK_MAX, BTA_DM_PM_PARK_MIN, BTA_DM_PM_PARK_ATTEMPT, BTA_DM_PM_PARK_TIMEOUT, BTM_PM_MD_PARK}
 
 #ifdef BTE_SIM_APP      /* For Insight builds only */
@@ -533,7 +532,7 @@ tBTA_DM_SSR_SPEC bta_dm_ssr_spec[] =
                            seting default max latency and min remote timeout as 0,
                            and always read individual device preference from HH module */
     {1200,   2, 2},     /* BTA_DM_PM_SSR2 - others (as long as sniff is allowed)*/
-    {360,  160, 2}      /* BTA_DM_PM_SSR3 - HD */
+    {360,  160, 1600}      /* BTA_DM_PM_SSR3 - HD */
 };
 
 tBTA_DM_SSR_SPEC *p_bta_dm_ssr_spec = (tBTA_DM_SSR_SPEC *)&bta_dm_ssr_spec;

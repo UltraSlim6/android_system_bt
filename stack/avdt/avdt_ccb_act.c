@@ -30,11 +30,9 @@
 #include "avdt_api.h"
 #include "avdtc_api.h"
 #include "avdt_int.h"
-#include "bt_common.h"
+#include "gki.h"
 #include "btu.h"
 #include "btm_api.h"
-
-extern fixed_queue_t *btu_general_alarm_queue;
 
 /*******************************************************************************
 **
@@ -56,14 +54,24 @@ static void avdt_ccb_clear_ccb(tAVDT_CCB *p_ccb)
     p_ccb->ret_count = 0;
 
     /* free message being fragmented */
-    osi_free_and_reset((void **)&p_ccb->p_curr_msg);
+    if (p_ccb->p_curr_msg != NULL)
+    {
+        GKI_freebuf(p_ccb->p_curr_msg);
+        p_ccb->p_curr_msg = NULL;
+    }
 
     /* free message being reassembled */
-    osi_free_and_reset((void **)&p_ccb->p_rx_msg);
+    if (p_ccb->p_rx_msg != NULL)
+    {
+        GKI_freebuf(p_ccb->p_rx_msg);
+        p_ccb->p_rx_msg = NULL;
+    }
 
     /* clear out response queue */
-    while ((p_buf = (BT_HDR *) fixed_queue_try_dequeue(p_ccb->rsp_q)) != NULL)
-        osi_free(p_buf);
+    while ((p_buf = (BT_HDR *) GKI_dequeue(&p_ccb->rsp_q)) != NULL)
+    {
+        GKI_freebuf(p_buf);
+    }
 }
 
 /*******************************************************************************
@@ -133,12 +141,7 @@ void avdt_ccb_chk_close(tAVDT_CCB *p_ccb, tAVDT_CCB_EVT *p_data)
     /* if no active scbs start idle timer */
     if (i == AVDT_NUM_SEPS)
     {
-        alarm_cancel(p_ccb->ret_ccb_timer);
-        alarm_cancel(p_ccb->rsp_ccb_timer);
-        period_ms_t interval_ms = avdt_cb.rcb.idle_tout * 1000;
-        alarm_set_on_queue(p_ccb->idle_ccb_timer, interval_ms,
-                           avdt_ccb_idle_ccb_timer_timeout, p_ccb,
-                           btu_general_alarm_queue);
+        btu_start_timer(&p_ccb->timer_entry, BTU_TTYPE_AVDT_CCB_IDLE, avdt_cb.rcb.idle_tout);
     }
 }
 
@@ -178,38 +181,7 @@ void avdt_ccb_hdl_discover_cmd(tAVDT_CCB *p_ccb, tAVDT_CCB_EVT *p_data)
             p_data->msg.discover_rsp.num_seps++;
         }
     }
-    /* adjust inuse. Mark all the SEP of a perticualr cluster in use
-     * if one of the SEP is in use to avoid incoming connection failure
-     */
-    if (p_data->msg.discover_rsp.num_seps > 2
-        && avdt_scb_get_max_av_client() > 1)
-    {
-        int i,j;
-        int num_sep = p_data->msg.discover_rsp.num_seps;
-        int num_stream  = avdt_scb_get_max_av_client();
-        int num_codecs = num_sep/num_stream;
-        BOOLEAN is_busy = false;
 
-        for (i = 0; i < num_sep; i += num_codecs)
-        {
-            is_busy = false;
-            for (j = i; j < (i+num_codecs); j++)
-            {
-                if (sep_info[j].in_use)
-                {
-                    is_busy = true;
-                    break;
-                }
-            }
-            if (is_busy)
-            {
-                for (j = i; j < (i+num_codecs); j++)
-                {
-                    sep_info[j].in_use = is_busy;
-                }
-            }
-        }
-    }
     /* send response */
     avdt_ccb_event(p_ccb, AVDT_CCB_API_DISCOVER_RSP_EVT, p_data);
 }
@@ -714,7 +686,7 @@ void avdt_ccb_clear_cmds(tAVDT_CCB *p_ccb, tAVDT_CCB_EVT *p_data)
         avdt_ccb_cmd_fail(p_ccb, (tAVDT_CCB_EVT *) &err_code);
 
         /* set up next message */
-        p_ccb->p_curr_cmd = (BT_HDR *) fixed_queue_try_dequeue(p_ccb->cmd_q);
+        p_ccb->p_curr_cmd = (BT_HDR *) GKI_dequeue(&p_ccb->cmd_q);
 
     } while (p_ccb->p_curr_cmd != NULL);
 
@@ -770,7 +742,8 @@ void avdt_ccb_cmd_fail(tAVDT_CCB *p_ccb, tAVDT_CCB_EVT *p_data)
             }
         }
 
-        osi_free_and_reset((void **)&p_ccb->p_curr_cmd);
+        GKI_freebuf(p_ccb->p_curr_cmd);
+        p_ccb->p_curr_cmd = NULL;
     }
 }
 
@@ -788,7 +761,12 @@ void avdt_ccb_cmd_fail(tAVDT_CCB *p_ccb, tAVDT_CCB_EVT *p_data)
 void avdt_ccb_free_cmd(tAVDT_CCB *p_ccb, tAVDT_CCB_EVT *p_data)
 {
     UNUSED(p_data);
-    osi_free_and_reset((void **)&p_ccb->p_curr_cmd);
+
+    if (p_ccb->p_curr_cmd != NULL)
+    {
+        GKI_freebuf(p_ccb->p_curr_cmd);
+        p_ccb->p_curr_cmd = NULL;
+    }
 }
 
 /*******************************************************************************
@@ -823,6 +801,7 @@ void avdt_ccb_cong_state(tAVDT_CCB *p_ccb, tAVDT_CCB_EVT *p_data)
 void avdt_ccb_ret_cmd(tAVDT_CCB *p_ccb, tAVDT_CCB_EVT *p_data)
 {
     UINT8   err_code = AVDT_ERR_TIMEOUT;
+    BT_HDR  *p_msg;
 
     p_ccb->ret_count++;
     if (p_ccb->ret_count == AVDT_RET_MAX)
@@ -840,19 +819,16 @@ void avdt_ccb_ret_cmd(tAVDT_CCB *p_ccb, tAVDT_CCB_EVT *p_data)
         if ((!p_ccb->cong) && (p_ccb->p_curr_msg == NULL) && (p_ccb->p_curr_cmd != NULL))
         {
             /* make copy of message in p_curr_cmd and send it */
-            BT_HDR *p_msg = (BT_HDR *)osi_malloc(AVDT_CMD_BUF_SIZE);
-            memcpy(p_msg, p_ccb->p_curr_cmd,
-                   (sizeof(BT_HDR) + p_ccb->p_curr_cmd->offset + p_ccb->p_curr_cmd->len));
-            avdt_msg_send(p_ccb, p_msg);
+            if ((p_msg = (BT_HDR *) GKI_getpoolbuf(AVDT_CMD_POOL_ID)) != NULL)
+            {
+                memcpy(p_msg, p_ccb->p_curr_cmd,
+                       (sizeof(BT_HDR) + p_ccb->p_curr_cmd->offset + p_ccb->p_curr_cmd->len));
+                avdt_msg_send(p_ccb, p_msg);
+            }
         }
 
-        /* restart ret timer */
-        alarm_cancel(p_ccb->idle_ccb_timer);
-        alarm_cancel(p_ccb->rsp_ccb_timer);
-        period_ms_t interval_ms = avdt_cb.rcb.ret_tout * 1000;
-        alarm_set_on_queue(p_ccb->ret_ccb_timer, interval_ms,
-                           avdt_ccb_ret_ccb_timer_timeout, p_ccb,
-                           btu_general_alarm_queue);
+        /* restart timer */
+        btu_start_timer(&p_ccb->timer_entry, BTU_TTYPE_AVDT_CCB_RET, avdt_cb.rcb.ret_tout);
     }
 }
 
@@ -877,13 +853,15 @@ void avdt_ccb_snd_cmd(tAVDT_CCB *p_ccb, tAVDT_CCB_EVT *p_data)
     */
     if ((!p_ccb->cong) && (p_ccb->p_curr_msg == NULL) && (p_ccb->p_curr_cmd == NULL))
     {
-        if ((p_msg = (BT_HDR *) fixed_queue_try_dequeue(p_ccb->cmd_q)) != NULL)
+        if ((p_msg = (BT_HDR *) GKI_dequeue(&p_ccb->cmd_q)) != NULL)
         {
             /* make a copy of buffer in p_curr_cmd */
-            p_ccb->p_curr_cmd = (BT_HDR *)osi_malloc(AVDT_CMD_BUF_SIZE);
-            memcpy(p_ccb->p_curr_cmd, p_msg,
-                   (sizeof(BT_HDR) + p_msg->offset + p_msg->len));
-            avdt_msg_send(p_ccb, p_msg);
+            if ((p_ccb->p_curr_cmd = (BT_HDR *) GKI_getpoolbuf(AVDT_CMD_POOL_ID)) != NULL)
+            {
+                memcpy(p_ccb->p_curr_cmd, p_msg, (sizeof(BT_HDR) + p_msg->offset + p_msg->len));
+
+                avdt_msg_send(p_ccb, p_msg);
+            }
         }
     }
 }
@@ -912,9 +890,9 @@ void avdt_ccb_snd_msg(tAVDT_CCB *p_ccb, tAVDT_CCB_EVT *p_data)
             avdt_msg_send(p_ccb, NULL);
         }
         /* do we have responses to send?  send them */
-        else if (!fixed_queue_is_empty(p_ccb->rsp_q))
+        else if (!GKI_queue_is_empty(&p_ccb->rsp_q))
         {
-            while ((p_msg = (BT_HDR *)fixed_queue_try_dequeue(p_ccb->rsp_q)) != NULL)
+            while ((p_msg = (BT_HDR *) GKI_dequeue(&p_ccb->rsp_q)) != NULL)
             {
                 if (avdt_msg_send(p_ccb, p_msg) == TRUE)
                 {
@@ -1016,7 +994,10 @@ void avdt_ccb_chk_timer(tAVDT_CCB *p_ccb, tAVDT_CCB_EVT *p_data)
 {
     UNUSED(p_data);
 
-    alarm_cancel(p_ccb->idle_ccb_timer);
+    if (p_ccb->timer_entry.event == BTU_TTYPE_AVDT_CCB_IDLE)
+    {
+        btu_stop_timer(&p_ccb->timer_entry);
+    }
 }
 
 /*******************************************************************************

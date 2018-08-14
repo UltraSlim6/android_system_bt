@@ -1,5 +1,7 @@
 /******************************************************************************
  *
+ *  Copyright (c) 2013, The Linux Foundation. All rights reserved.
+ *  Not a Contribution.
  *  Copyright (C) 2009-2012 Broadcom Corporation
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,9 +21,6 @@
 #ifndef BTIF_STORAGE_H
 #define BTIF_STORAGE_H
 
-#include <hardware/bluetooth.h>
-
-#include "bt_target.h"
 #include "bt_types.h"
 
 /*******************************************************************************
@@ -140,7 +139,7 @@ bt_status_t btif_storage_remove_bonded_device(bt_bdaddr_t *remote_bd_addr);
 **
 ** Function         btif_storage_is_device_bonded
 **
-* Description      BTIF storage API - checks if device present in bonded list
+** Description      BTIF storage API - checks if device present in bonded list
 **
 ** Returns          TRUE if the device is bonded,
 **                  FALSE otherwise
@@ -276,26 +275,53 @@ bt_status_t btif_storage_remove_hid_info(bt_bdaddr_t *remote_bd_addr);
 
 /*******************************************************************************
 **
-** Function         btif_storage_is_retricted_device
+** Function         btif_storage_load_autopair_device_list
 **
-** Description      BTIF storage API - checks if this device is a restricted device
+** Description      BTIF storage API - Populates auto pair device list
 **
-** Returns          TRUE  if the device is labled as restricted
-**                  FALSE otherwise
+** Returns          BT_STATUS_SUCCESS if the auto pair blacklist is successfully populated
+**                  BT_STATUS_FAIL otherwise
 **
 *******************************************************************************/
-BOOLEAN btif_storage_is_restricted_device(const bt_bdaddr_t *remote_bd_addr);
+bt_status_t btif_storage_load_autopair_device_list();
 
 /*******************************************************************************
 **
-** Function         btif_storage_get_num_bonded_devices
+** Function         btif_storage_is_device_autopair_blacklisted
 **
-** Description      BTIF storage API - Gets the number of bonded devices
+** Description      BTIF storage API  Checks if the given device is blacklisted for auto pairing
 **
-** Returns          the number of bonded devices
+** Returns          TRUE if the device is found in the auto pair blacklist
+**                  FALSE otherwise
 **
 *******************************************************************************/
-int btif_storage_get_num_bonded_devices(void);
+
+BOOLEAN  btif_storage_is_device_autopair_blacklisted(bt_bdaddr_t *remote_bd_addr);
+
+/*******************************************************************************
+**
+** Function         btif_storage_add_device_to_autopair_blacklist
+**
+** Description      BTIF storage API - Add a remote device to the auto pairing blacklist
+**
+** Returns          BT_STATUS_SUCCESS if the device is successfully added to the auto pair blacklist
+**                  BT_STATUS_FAIL otherwise
+**
+*******************************************************************************/
+
+bt_status_t btif_storage_add_device_to_autopair_blacklist(bt_bdaddr_t *remote_bd_addr);
+
+/*******************************************************************************
+**
+** Function         btif_storage_is_fixed_pin_zeros_keyboard
+**
+** Description      BTIF storage API - checks if this device has fixed PIN key device list
+**
+** Returns          TRUE   if the device is found in the fixed pin keyboard device list
+**                  FALSE otherwise
+**
+*******************************************************************************/
+BOOLEAN btif_storage_is_fixed_pin_zeros_keyboard(bt_bdaddr_t *remote_bd_addr);
 
 /*******************************************************************************
 **
@@ -308,6 +334,18 @@ int btif_storage_get_num_bonded_devices(void);
 **
 *******************************************************************************/
 BOOLEAN btif_storage_is_wiimote(bt_bdaddr_t *remote_bd_addr, bt_bdname_t *remote_bd_name);
+
+/*******************************************************************************
+**
+** Function         btif_storage_is_retricted_device
+**
+** Description      BTIF storage API - checks if this device is a restricted device
+**
+** Returns          TRUE  if the device is labled as restricted
+**                  FALSE otherwise
+**
+*******************************************************************************/
+BOOLEAN btif_storage_is_restricted_device(const bt_bdaddr_t *remote_bd_addr);
 
 #if (BLE_INCLUDED == TRUE)
 bt_status_t btif_storage_add_ble_bonding_key( bt_bdaddr_t *remote_bd_addr,
@@ -349,9 +387,38 @@ bt_status_t btif_storage_set_remote_addr_type(bt_bdaddr_t *remote_bd_addr,
 bt_status_t btif_storage_get_remote_version(const bt_bdaddr_t *remote_bd_addr,
                                   bt_remote_version_t *p_ver);
 
-/******************************************************************************
- * Exported for unit tests
- *****************************************************************************/
-size_t btif_split_uuids_string(const char *str, bt_uuid_t *p_uuid, size_t max_uuids);
+/*******************************************************************************
+** Function         btif_storage_load_hidd
+**
+** Description      Loads hidd bonded device and "plugs" it into hidd
+**
+** Returns          BT_STATUS_SUCCESS if successful, BT_STATUS_FAIL otherwise
+**
+*******************************************************************************/
+bt_status_t btif_storage_load_hidd(void);
+
+/*******************************************************************************
+**
+** Function         btif_storage_set_hidd
+**
+** Description      Stores hidd bonded device info in nvram.
+**
+** Returns          BT_STATUS_SUCCESS
+**
+*******************************************************************************/
+
+bt_status_t btif_storage_set_hidd(bt_bdaddr_t *remote_bd_addr);
+
+/*******************************************************************************
+**
+** Function         btif_storage_remove_hidd
+**
+** Description      Removes hidd bonded device info from nvram
+**
+** Returns          BT_STATUS_SUCCESS
+**
+*******************************************************************************/
+
+bt_status_t btif_storage_remove_hidd(bt_bdaddr_t *remote_bd_addr);
 
 #endif /* BTIF_STORAGE_H */

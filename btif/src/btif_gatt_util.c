@@ -16,29 +16,28 @@
  *
  ******************************************************************************/
 
-#define LOG_TAG "bt_btif_gatt"
-
-#include "btif_gatt_util.h"
-
-#include <errno.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
 #include <hardware/bluetooth.h>
 #include <hardware/bt_gatt.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <string.h>
 
-#include "bdaddr.h"
+#define LOG_TAG "bt_btif_gatt"
+
+#include "btcore/include/bdaddr.h"
 #include "bta_api.h"
 #include "bta_gatt_api.h"
 #include "bta_jv_api.h"
-#include "btif_common.h"
-#include "btif_config.h"
-#include "btif_dm.h"
-#include "btif_gatt.h"
 #include "btif_storage.h"
+#include "btif_config.h"
+
+#include "btif_common.h"
+#include "btif_dm.h"
 #include "btif_util.h"
-#include "bt_common.h"
+#include "btif_gatt.h"
+#include "btif_gatt_util.h"
+#include "gki.h"
 
 #if BTA_GATT_INCLUDED == TRUE
 
@@ -104,9 +103,22 @@ void btif_to_bta_uuid(tBT_UUID *p_dest, bt_uuid_t *p_src)
             break;
 
         default:
-            LOG_ERROR(LOG_TAG, "%s: Unknown UUID length %d!", __FUNCTION__, p_dest->len);
+            LOG_ERROR("%s: Unknown UUID length %d!", __FUNCTION__, p_dest->len);
             break;
     }
+}
+
+void btif_to_bta_gatt_id(tBTA_GATT_ID *p_dest, btgatt_gatt_id_t *p_src)
+{
+    p_dest->inst_id = p_src->inst_id;
+    btif_to_bta_uuid(&p_dest->uuid, &p_src->uuid);
+}
+
+void btif_to_bta_srvc_id(tBTA_GATT_SRVC_ID *p_dest, btgatt_srvc_id_t *p_src)
+{
+    p_dest->id.inst_id = p_src->id.inst_id;
+    btif_to_bta_uuid(&p_dest->id.uuid, &p_src->id.uuid);
+    p_dest->is_primary = p_src->is_primary;
 }
 
 void btif_to_bta_response(tBTA_GATTS_RSP *p_dest, btgatt_response_t* p_src)
@@ -118,20 +130,21 @@ void btif_to_bta_response(tBTA_GATTS_RSP *p_dest, btgatt_response_t* p_src)
     memcpy(p_dest->attr_value.value, p_src->attr_value.value, GATT_MAX_ATTR_LEN);
 }
 
-void btif_to_bta_uuid_mask(tBTA_DM_BLE_PF_COND_MASK *p_mask, bt_uuid_t *p_src)
+void btif_to_bta_uuid_mask(tBTA_DM_BLE_PF_COND_MASK *p_mask, bt_uuid_t *uuid_mask, bt_uuid_t *svc_uuid)
 {
-    char *p_byte = (char*)p_src;
+    char *p_byte = (char*)uuid_mask;
+    int uuid_len = uuidType(svc_uuid->uu);
     int i = 0;
 
-    switch (uuidType(p_src->uu))
+    switch (uuid_len)
     {
         case LEN_UUID_16:
-            p_mask->uuid16_mask = (p_src->uu[13] << 8) + p_src->uu[12];
+            p_mask->uuid16_mask = (uuid_mask->uu[13] << 8) + uuid_mask->uu[12];
             break;
 
         case LEN_UUID_32:
-            p_mask->uuid32_mask = (p_src->uu[13] <<  8) + p_src->uu[12];
-            p_mask->uuid32_mask += (p_src->uu[15] << 24) + (p_src->uu[14] << 16);
+            p_mask->uuid32_mask = (uuid_mask->uu[13] <<  8) + uuid_mask->uu[12];
+            p_mask->uuid32_mask += (uuid_mask->uu[15] << 24) + (uuid_mask->uu[14] << 16);
             break;
 
         case LEN_UUID_128:
@@ -181,10 +194,25 @@ void bta_to_btif_uuid(bt_uuid_t *p_dest, tBT_UUID *p_src)
             break;
 
         default:
-            LOG_ERROR(LOG_TAG, "%s: Unknown UUID length %d!", __FUNCTION__, p_src->len);
+            LOG_ERROR("%s: Unknown UUID length %d!", __FUNCTION__, p_src->len);
             break;
     }
 }
+
+
+void bta_to_btif_gatt_id(btgatt_gatt_id_t *p_dest, tBTA_GATT_ID *p_src)
+{
+    p_dest->inst_id = p_src->inst_id;
+    bta_to_btif_uuid(&p_dest->uuid, &p_src->uuid);
+}
+
+void bta_to_btif_srvc_id(btgatt_srvc_id_t *p_dest, tBTA_GATT_SRVC_ID *p_src)
+{
+    p_dest->id.inst_id = p_src->id.inst_id;
+    bta_to_btif_uuid(&p_dest->id.uuid, &p_src->id.uuid);
+    p_dest->is_primary = p_src->is_primary;
+}
+
 
 /*******************************************************************************
  * Utility functions
@@ -211,25 +239,44 @@ uint16_t get_uuid16(tBT_UUID *p_uuid)
 
 uint16_t set_read_value(btgatt_read_params_t *p_dest, tBTA_GATTC_READ *p_src)
 {
+    uint16_t descr_type = 0;
     uint16_t len = 0;
 
     p_dest->status = p_src->status;
-    p_dest->handle = p_src->handle;
+    bta_to_btif_srvc_id(&p_dest->srvc_id, &p_src->srvc_id);
+    bta_to_btif_gatt_id(&p_dest->char_id, &p_src->char_id);
+    bta_to_btif_gatt_id(&p_dest->descr_id, &p_src->descr_type);
 
-    if (( p_src->status == BTA_GATT_OK ) &&(p_src->p_value != NULL))
+    descr_type = get_uuid16(&p_src->descr_type.uuid);
+
+    switch (descr_type)
     {
-        LOG_INFO(LOG_TAG, "%s len = %d ", __FUNCTION__, p_src->p_value->len);
-        p_dest->value.len = p_src->p_value->len;
-        if ( p_src->p_value->len > 0  && p_src->p_value->p_value != NULL )
-            memcpy(p_dest->value.value, p_src->p_value->p_value,
-                    p_src->p_value->len);
+        case GATT_UUID_CHAR_AGG_FORMAT:
+            /* not supported */
+            p_dest->value_type = GATTC_READ_VALUE_TYPE_AGG_FORMAT;
+            break;
 
-        len += p_src->p_value->len;
-    } else {
-        p_dest->value.len = 0;
+        default:
+            if (( p_src->status == BTA_GATT_OK ) &&(p_src->p_value != NULL))
+            {
+                LOG_INFO("%s unformat.len = %d ", __FUNCTION__, p_src->p_value->unformat.len);
+                p_dest->value.len = p_src->p_value->unformat.len;
+                if ( p_src->p_value->unformat.len > 0  && p_src->p_value->unformat.p_value != NULL )
+                {
+                    memcpy(p_dest->value.value, p_src->p_value->unformat.p_value,
+                           p_src->p_value->unformat.len);
+                }
+                len += p_src->p_value->unformat.len;
+            }
+            else
+            {
+                p_dest->value.len = 0;
+            }
+
+            p_dest->value_type = GATTC_READ_VALUE_TYPE_VALUE;
+            break;
     }
 
-    p_dest->value_type = GATTC_READ_VALUE_TYPE_VALUE;
     return len;
 }
 
@@ -237,13 +284,14 @@ uint16_t set_read_value(btgatt_read_params_t *p_dest, tBTA_GATTC_READ *p_src)
  * Encrypted link map handling
  *******************************************************************************/
 
-#if (!defined(BLE_DELAY_REQUEST_ENC) || (BLE_DELAY_REQUEST_ENC == FALSE))
-static BOOLEAN btif_gatt_is_link_encrypted (BD_ADDR bd_addr)
+static void btif_gatt_set_encryption_cb (BD_ADDR bd_addr, tBTA_TRANSPORT transport, tBTA_STATUS result);
+
+static BOOLEAN btif_gatt_is_link_encrypted (BD_ADDR bd_addr, tBTA_GATT_TRANSPORT transport)
 {
     if (bd_addr == NULL)
         return FALSE;
 
-    return BTA_JvIsEncrypted(bd_addr);
+    return BTA_JvIsEncrypted(bd_addr, transport);
 }
 
 static void btif_gatt_set_encryption_cb (BD_ADDR bd_addr, tBTA_TRANSPORT transport, tBTA_STATUS result)
@@ -256,27 +304,23 @@ static void btif_gatt_set_encryption_cb (BD_ADDR bd_addr, tBTA_TRANSPORT transpo
         BTIF_TRACE_WARNING("%s() - Encryption failed (%d)", __FUNCTION__, result);
     }
 }
-#endif
 
 void btif_gatt_check_encrypted_link (BD_ADDR bd_addr, tBTA_GATT_TRANSPORT transport_link)
 {
-#if (!defined(BLE_DELAY_REQUEST_ENC) || (BLE_DELAY_REQUEST_ENC == FALSE))
     char buf[100];
 
     bt_bdaddr_t bda;
     bdcpy(bda.address, bd_addr);
 
+#if (!defined(BLE_DELAY_REQUEST_ENC) || (BLE_DELAY_REQUEST_ENC == FALSE))
     if ((btif_storage_get_ble_bonding_key(&bda, BTIF_DM_LE_KEY_PENC,
                     buf, sizeof(tBTM_LE_PENC_KEYS)) == BT_STATUS_SUCCESS)
-        && !btif_gatt_is_link_encrypted(bd_addr))
+        && !btif_gatt_is_link_encrypted(bd_addr, transport_link))
     {
         BTIF_TRACE_DEBUG ("%s: transport = %d", __func__, transport_link);
         BTA_DmSetEncryption(bd_addr,transport_link,
                             &btif_gatt_set_encryption_cb, BTM_BLE_SEC_ENCRYPT);
     }
-#else
-    UNUSED(bd_addr);
-    UNUSED(transport_link);
 #endif
 }
 
@@ -291,18 +335,18 @@ void btif_gatt_move_track_adv_data(btgatt_track_adv_info_t *p_dest,
 
     if (p_src->adv_pkt_len > 0)
     {
-        p_dest->p_adv_pkt_data = osi_malloc(p_src->adv_pkt_len);
+        p_dest->p_adv_pkt_data = GKI_getbuf(p_src->adv_pkt_len);
         memcpy(p_dest->p_adv_pkt_data, p_src->p_adv_pkt_data,
                p_src->adv_pkt_len);
-        osi_free_and_reset((void **)&p_src->p_adv_pkt_data);
+        GKI_freebuf(p_src->p_adv_pkt_data);
     }
 
     if (p_src->scan_rsp_len > 0)
     {
-        p_dest->p_scan_rsp_data = osi_malloc(p_src->scan_rsp_len);
+        p_dest->p_scan_rsp_data = GKI_getbuf(p_src->scan_rsp_len);
         memcpy(p_dest->p_scan_rsp_data, p_src->p_scan_rsp_data,
                p_src->scan_rsp_len);
-        osi_free_and_reset((void **)&p_src->p_scan_rsp_data);
+        GKI_freebuf(p_src->p_scan_rsp_data);
     }
 }
 

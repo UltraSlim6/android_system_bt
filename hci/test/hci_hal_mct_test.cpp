@@ -26,9 +26,9 @@ extern "C" {
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include "osi/include/osi.h"
-#include "osi/include/semaphore.h"
 #include "hci_hal.h"
+#include "osi.h"
+#include "semaphore.h"
 #include "test_stubs.h"
 #include "vendor.h"
 }
@@ -62,7 +62,7 @@ static void expect_packet_synchronous(serial_data_type_t type, char *packet_data
   int length = strlen(packet_data);
   for (int i = 0; i < length; i++) {
     uint8_t byte;
-    EXPECT_EQ((size_t)1, hal->read_data(type, &byte, 1));
+    EXPECT_EQ((size_t)1, hal->read_data(type, &byte, 1, true));
     EXPECT_EQ(packet_data[i], byte);
   }
 
@@ -109,7 +109,7 @@ STUB_FUNCTION(void, data_ready_callback, (serial_data_type_t type))
 
     uint8_t byte;
     size_t bytes_read;
-    while ((bytes_read = hal->read_data(type, &byte, 1)) != 0) {
+    while ((bytes_read = hal->read_data(type, &byte, 1, false)) != 0) {
       EXPECT_EQ(sample_data3[reentry_i], byte);
       semaphore_post(reentry_semaphore);
       reentry_i++;
@@ -186,23 +186,23 @@ static void expect_socket_data(int fd, char *data) {
     fd_set read_fds;
     FD_ZERO(&read_fds);
     FD_SET(fd, &read_fds);
-    select(fd + 1, &read_fds, NULL, NULL, NULL);
+    TEMP_FAILURE_RETRY(select(fd + 1, &read_fds, NULL, NULL, NULL));
 
     char byte;
-    read(fd, &byte, 1);
+    TEMP_FAILURE_RETRY(read(fd, &byte, 1));
 
     EXPECT_EQ(data[i], byte);
   }
 }
 
 static void write_packet(int fd, char *data) {
-  write(fd, data, strlen(data));
+  TEMP_FAILURE_RETRY(write(fd, data, strlen(data)));
 }
 
 static void write_packet_reentry(int fd, char *data) {
   int length = strlen(data);
   for (int i = 0; i < length; i++) {
-    write(fd, &data[i], 1);
+    TEMP_FAILURE_RETRY(write(fd, &data[i], 1));
     semaphore_wait(reentry_semaphore);
   }
 }

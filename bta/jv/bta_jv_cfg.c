@@ -24,7 +24,7 @@
  *
  ******************************************************************************/
 
-#include "bt_common.h"
+#include "gki.h"
 #include "bta_api.h"
 #include "bta_jv_api.h"
 

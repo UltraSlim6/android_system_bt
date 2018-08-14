@@ -53,6 +53,7 @@ typedef struct
 {
     tA2D_FIND_CB    find;   /* find service control block */
     UINT8           trace_level;
+    BOOLEAN         use_desc;
     UINT16          avdt_sdp_ver;   /* AVDTP version */
 } tA2D_CB;
 

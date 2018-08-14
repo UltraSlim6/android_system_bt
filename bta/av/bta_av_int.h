@@ -1,10 +1,4 @@
 /******************************************************************************
- *  Copyright (c) 2016, The Linux Foundation. All rights reserved.
- *
- *  Not a contribution.
- ******************************************************************************/
-
-/******************************************************************************
  *
  *  Copyright (C) 2004-2012 Broadcom Corporation
  *
@@ -30,12 +24,12 @@
 #ifndef BTA_AV_INT_H
 #define BTA_AV_INT_H
 
-#include "osi/include/list.h"
 #include "bta_sys.h"
 #include "bta_api.h"
 #include "bta_av_api.h"
 #include "avdt_api.h"
 #include "bta_av_co.h"
+#include "list.h"
 
 #define BTA_AV_DEBUG TRUE
 /*****************************************************************************
@@ -90,8 +84,6 @@ enum
     BTA_AV_ROLE_CHANGE_EVT,
     BTA_AV_AVDT_DELAY_RPT_EVT,
     BTA_AV_ACP_CONNECT_EVT,
-    BTA_AV_API_OFFLOAD_START_EVT,
-    BTA_AV_API_OFFLOAD_START_RSP_EVT,
 
     /* these events are handled outside of the state machine */
     BTA_AV_API_ENABLE_EVT,
@@ -100,7 +92,7 @@ enum
     BTA_AV_API_DISCONNECT_EVT,
     BTA_AV_CI_SRC_DATA_READY_EVT,
     BTA_AV_SIG_CHG_EVT,
-    BTA_AV_SIGNALLING_TIMER_EVT,
+    BTA_AV_SIG_TIMER_EVT,
     BTA_AV_SDP_AVRC_DISC_EVT,
     BTA_AV_AVRC_CLOSE_EVT,
     BTA_AV_CONN_CHG_EVT,
@@ -113,7 +105,6 @@ enum
 #endif
     BTA_AV_API_START_EVT,       /* the following 2 events must be in the same order as the *AP_*EVT */
     BTA_AV_API_STOP_EVT,
-    BTA_AV_UPDATE_MAX_AV_CLIENTS_EVT,
     BTA_AV_ENABLE_MULTICAST_EVT /* Event for enable and disable multicast */
 };
 
@@ -187,8 +178,6 @@ typedef void (*tBTA_AV_CO_STOP) (tBTA_AV_HNDL hndl, tBTA_AV_CODEC codec_type);
 typedef void * (*tBTA_AV_CO_DATAPATH) (tBTA_AV_CODEC codec_type,
                                        UINT32 *p_len, UINT32 *p_timestamp);
 typedef void (*tBTA_AV_CO_DELAY) (tBTA_AV_HNDL hndl, UINT16 delay);
-typedef BOOLEAN (*tBTA_AV_CO_OFFLOAD_SUPPORT) (void);
-typedef BOOLEAN (*tBTA_AV_CO_OFFLOAD_CAP) (int codec);
 
 /* the call-out functions for one stream */
 typedef struct
@@ -203,8 +192,6 @@ typedef struct
     tBTA_AV_CO_STOP     stop;
     tBTA_AV_CO_DATAPATH data;
     tBTA_AV_CO_DELAY    delay;
-    tBTA_AV_CO_OFFLOAD_SUPPORT offload;
-    tBTA_AV_CO_OFFLOAD_CAP cap;
 } tBTA_AV_CO_FUNCTS;
 
 /* data type for BTA_AV_API_ENABLE_EVT */
@@ -260,13 +247,6 @@ typedef struct
     BT_HDR              hdr;
     BOOLEAN             is_multicast_enabled;
 } tBTA_AV_ENABLE_MULTICAST;
-
-/* data type for BTA_AV_UPDATE_MAX_AV_CLIENTS_EVTT */
-typedef struct
-{
-    BT_HDR              hdr;
-    UINT8               max_clients;
-} tBTA_AV_MAX_CLIENT;
 
 /* data type for BTA_AV_API_DISCONNECT_EVT */
 typedef struct
@@ -407,14 +387,6 @@ typedef struct
     UINT16              avdt_version;   /* AVDTP protocol version */
 } tBTA_AV_SDP_RES;
 
-/* data type for BTA_AV_API_OFFLOAD_RSP_EVT */
-typedef struct
-{
-    BT_HDR              hdr;
-    tBTA_AV_STATUS      status;
-} tBTA_AV_API_STATUS_RSP;
-
-
 /* type for SEP control block */
 typedef struct
 {
@@ -422,8 +394,6 @@ typedef struct
     tBTA_AV_CODEC       codec_type;        /* codec type */
     UINT8               tsep;              /* SEP type of local SEP */
     tBTA_AV_DATA_CBACK  *p_app_data_cback; /* Application callback for media packets */
-    UINT32              vendorId;          /* vendorId type */
-    UINT16              codecId;           /* codecId type */
 } tBTA_AV_SEP;
 
 
@@ -441,28 +411,26 @@ typedef struct
 /* union of all event datatypes */
 typedef union
 {
-    BT_HDR                  hdr;
-    tBTA_AV_API_ENABLE      api_enable;
-    tBTA_AV_API_REG         api_reg;
-    tBTA_AV_API_OPEN        api_open;
-    tBTA_AV_API_STOP        api_stop;
-    tBTA_AV_API_DISCNT      api_discnt;
-    tBTA_AV_API_PROTECT_REQ api_protect_req;
-    tBTA_AV_API_PROTECT_RSP api_protect_rsp;
-    tBTA_AV_API_REMOTE_CMD  api_remote_cmd;
-    tBTA_AV_API_VENDOR      api_vendor;
-    tBTA_AV_API_RCFG        api_reconfig;
-    tBTA_AV_CI_SETCONFIG    ci_setconfig;
-    tBTA_AV_STR_MSG         str_msg;
-    tBTA_AV_RC_MSG          rc_msg;
-    tBTA_AV_RC_CONN_CHG     rc_conn_chg;
-    tBTA_AV_CONN_CHG        conn_chg;
-    tBTA_AV_ROLE_RES        role_res;
-    tBTA_AV_SDP_RES         sdp_res;
-    tBTA_AV_API_META_RSP    api_meta_rsp;
-    tBTA_AV_API_STATUS_RSP  api_status_rsp;
+    BT_HDR                    hdr;
+    tBTA_AV_API_ENABLE        api_enable;
+    tBTA_AV_API_REG           api_reg;
+    tBTA_AV_API_OPEN          api_open;
+    tBTA_AV_API_STOP          api_stop;
+    tBTA_AV_API_DISCNT        api_discnt;
+    tBTA_AV_API_PROTECT_REQ   api_protect_req;
+    tBTA_AV_API_PROTECT_RSP   api_protect_rsp;
+    tBTA_AV_API_REMOTE_CMD    api_remote_cmd;
+    tBTA_AV_API_VENDOR        api_vendor;
+    tBTA_AV_API_RCFG          api_reconfig;
+    tBTA_AV_CI_SETCONFIG      ci_setconfig;
+    tBTA_AV_STR_MSG           str_msg;
+    tBTA_AV_RC_MSG            rc_msg;
+    tBTA_AV_RC_CONN_CHG       rc_conn_chg;
+    tBTA_AV_CONN_CHG          conn_chg;
+    tBTA_AV_ROLE_RES          role_res;
+    tBTA_AV_SDP_RES           sdp_res;
+    tBTA_AV_API_META_RSP      api_meta_rsp;
     tBTA_AV_ENABLE_MULTICAST  multicast_state;
-    tBTA_AV_MAX_CLIENT      max_av_clients;
 } tBTA_AV_DATA;
 
 typedef void (tBTA_AV_VDP_DATA_ACT)(void *p_scb);
@@ -509,14 +477,14 @@ typedef struct
 {
     const tBTA_AV_ACT   *p_act_tbl;     /* the action table for stream state machine */
     const tBTA_AV_CO_FUNCTS *p_cos;     /* the associated callout functions */
-    BOOLEAN             sdp_discovery_started; /* variable to determine whether SDP is started */
+    BOOLEAN             sdp_discovery_started;     /* variable to determine whether SDP is started */
     tBTA_AV_SEP         seps[BTA_AV_MAX_SEPS];
     tAVDT_CFG           *p_cap;         /* buffer used for get capabilities */
     list_t              *a2d_list;      /* used for audio channels only */
     tBTA_AV_Q_INFO      q_info;
     tAVDT_SEP_INFO      sep_info[BTA_AV_NUM_SEPS];      /* stream discovery results */
     tAVDT_CFG           cfg;            /* local SEP configuration */
-    alarm_t             *avrc_ct_timer; /* delay timer for AVRC CT */
+    TIMER_LIST_ENT      timer;          /* delay timer for AVRC CT */
     BD_ADDR             peer_addr;      /* peer BD address */
     UINT16              l2c_cid;        /* L2CAP channel ID */
     UINT16              stream_mtu;     /* MTU of stream */
@@ -557,7 +525,6 @@ typedef struct
     UINT8               q_tag;          /* identify the associated q_info union member */
     BOOLEAN             no_rtp_hdr;     /* TRUE if add no RTP header*/
     UINT16              uuid_int;       /*intended UUID of Initiator to connect to */
-    BOOLEAN             offload_start_pending;
     BOOLEAN             skip_sdp;       /* Decides if sdp to be done prior to profile connection */
 } tBTA_AV_SCB;
 
@@ -605,8 +572,8 @@ typedef struct
     tBTA_AV_CBACK       *p_cback;       /* application callback function */
     tBTA_AV_RCB         rcb[BTA_AV_NUM_RCB];  /* RCB control block */
     tBTA_AV_LCB         lcb[BTA_AV_NUM_LINKS+1];  /* link control block */
-    alarm_t             *link_signalling_timer;
-    alarm_t             *accept_signalling_timer; /* timer to monitor signalling when accepting */
+    TIMER_LIST_ENT      sig_tmr;        /* link timer */
+    TIMER_LIST_ENT      acp_sig_tmr;    /* timer to monitor signalling when accepting */
     UINT32              sdp_a2d_handle; /* SDP record handle for audio src */
 #if (BTA_AV_SINK_INCLUDED == TRUE)
     UINT32              sdp_a2d_snk_handle; /* SDP record handle for audio snk */
@@ -631,7 +598,6 @@ typedef struct
     BOOLEAN             sco_occupied;   /* TRUE if SCO is being used or call is in progress */
     UINT8               audio_streams;  /* handle mask of streaming audio channels */
     UINT8               video_streams;  /* handle mask of streaming video channels */
-    UINT8               codec_type;     /* p_scb->codec_type */
 } tBTA_AV_CB;
 
 
@@ -698,7 +664,7 @@ extern BOOLEAN bta_av_is_rcfg_sst(tBTA_AV_SCB *p_scb);
 /* nsm action functions */
 extern void bta_av_api_disconnect(tBTA_AV_DATA *p_data);
 extern void bta_av_sig_chg(tBTA_AV_DATA *p_data);
-extern void bta_av_signalling_timer(tBTA_AV_DATA *p_data);
+extern void bta_av_sig_timer(tBTA_AV_DATA *p_data);
 extern void bta_av_rc_disc_done(tBTA_AV_DATA *p_data);
 extern void bta_av_rc_closed(tBTA_AV_DATA *p_data);
 extern void bta_av_rc_disc(UINT8 disc);
@@ -770,9 +736,6 @@ extern void bta_av_switch_role (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data);
 extern void bta_av_role_res (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data);
 extern void bta_av_delay_co (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data);
 extern void bta_av_open_at_inc (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data);
-extern void bta_av_offload_req (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data);
-extern void bta_av_offload_rsp (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data);
-
 
 /* ssm action functions - vdp specific */
 extern void bta_av_do_disc_vdp (tBTA_AV_SCB *p_scb, tBTA_AV_DATA *p_data);

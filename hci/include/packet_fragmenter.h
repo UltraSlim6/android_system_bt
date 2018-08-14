@@ -18,7 +18,7 @@
 
 #pragma once
 
-#include "osi/include/allocator.h"
+#include "allocator.h"
 #include "bt_types.h"
 #include "hci_layer.h"
 

@@ -33,8 +33,6 @@
 #include "smp_int.h"
 
 
-extern fixed_queue_t *btu_general_alarm_queue;
-
 static void smp_tx_complete_callback(UINT16 cid, UINT16 num_pkt);
 
 static void smp_connect_callback(UINT16 channel, BD_ADDR bd_addr, BOOLEAN connected, UINT16 reason,
@@ -73,10 +71,12 @@ void smp_l2cap_if_init (void)
 
     L2CA_RegisterFixedChannel (L2CAP_SMP_CID, &fixed_reg);
 
+#if (defined BLE_SC_INCLUDED && BLE_SC_INCLUDED == TRUE)
     fixed_reg.pL2CA_FixedConn_Cb = smp_br_connect_callback;
     fixed_reg.pL2CA_FixedData_Cb = smp_br_data_received;
 
     L2CA_RegisterFixedChannel (L2CAP_SMP_BR_CID, &fixed_reg);
+#endif
 }
 
 /*******************************************************************************
@@ -156,7 +156,7 @@ static void smp_data_received(UINT16 channel, BD_ADDR bd_addr, BT_HDR *p_buf)
     if ((SMP_OPCODE_MAX < cmd) || (SMP_OPCODE_MIN > cmd))
     {
         SMP_TRACE_WARNING( "Ignore received command with RESERVED code 0x%02x", cmd);
-        osi_free(p_buf);
+        GKI_freebuf (p_buf);
         return;
     }
 
@@ -171,7 +171,7 @@ static void smp_data_received(UINT16 channel, BD_ADDR bd_addr, BT_HDR *p_buf)
         }
         else if (memcmp(&bd_addr[0], p_cb->pairing_bda, BD_ADDR_LEN))
         {
-            osi_free(p_buf);
+            GKI_freebuf (p_buf);
             smp_reject_unexpected_pairing_command(bd_addr);
             return;
         }
@@ -180,9 +180,9 @@ static void smp_data_received(UINT16 channel, BD_ADDR bd_addr, BT_HDR *p_buf)
 
     if (memcmp(&bd_addr[0], p_cb->pairing_bda, BD_ADDR_LEN) == 0)
     {
-        alarm_set_on_queue(p_cb->smp_rsp_timer_ent,
-                           SMP_WAIT_FOR_RSP_TIMEOUT_MS, smp_rsp_timeout, NULL,
-                           btu_general_alarm_queue);
+        btu_stop_timer (&p_cb->rsp_timer_ent);
+        btu_start_timer (&p_cb->rsp_timer_ent, BTU_TTYPE_SMP_PAIRING_CMD,
+                             SMP_WAIT_FOR_RSP_TOUT);
 
         if (cmd == SMP_OPCODE_CONFIRM)
         {
@@ -202,7 +202,7 @@ static void smp_data_received(UINT16 channel, BD_ADDR bd_addr, BT_HDR *p_buf)
         smp_sm_event(p_cb, cmd, p);
     }
 
-    osi_free(p_buf);
+    GKI_freebuf (p_buf);
 }
 
 /*******************************************************************************
@@ -307,7 +307,7 @@ static void smp_br_data_received(UINT16 channel, BD_ADDR bd_addr, BT_HDR *p_buf)
     if ((SMP_OPCODE_MAX < cmd) || (SMP_OPCODE_MIN > cmd))
     {
         SMP_TRACE_WARNING( "Ignore received command with RESERVED code 0x%02x", cmd);
-        osi_free(p_buf);
+        GKI_freebuf(p_buf);
         return;
     }
 
@@ -322,7 +322,7 @@ static void smp_br_data_received(UINT16 channel, BD_ADDR bd_addr, BT_HDR *p_buf)
         }
         else if (memcmp(&bd_addr[0], p_cb->pairing_bda, BD_ADDR_LEN))
         {
-            osi_free(p_buf);
+            GKI_freebuf (p_buf);
             smp_reject_unexpected_pairing_command(bd_addr);
             return;
         }
@@ -331,15 +331,15 @@ static void smp_br_data_received(UINT16 channel, BD_ADDR bd_addr, BT_HDR *p_buf)
 
     if (memcmp(&bd_addr[0], p_cb->pairing_bda, BD_ADDR_LEN) == 0)
     {
-        alarm_set_on_queue(p_cb->smp_rsp_timer_ent,
-                           SMP_WAIT_FOR_RSP_TIMEOUT_MS, smp_rsp_timeout, NULL,
-                           btu_general_alarm_queue);
+        btu_stop_timer (&p_cb->rsp_timer_ent);
+        btu_start_timer (&p_cb->rsp_timer_ent, BTU_TTYPE_SMP_PAIRING_CMD,
+                             SMP_WAIT_FOR_RSP_TOUT);
 
         p_cb->rcvd_cmd_code = cmd;
         p_cb->rcvd_cmd_len = (UINT8) p_buf->len;
         smp_br_state_machine_event(p_cb, cmd, p);
     }
 
-    osi_free(p_buf);
+    GKI_freebuf (p_buf);
 }
 #endif /* SMP_INCLUDED == TRUE */

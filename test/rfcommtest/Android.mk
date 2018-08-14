@@ -12,12 +12,15 @@ LOCAL_C_INCLUDES += . \
         $(LOCAL_PATH)/../../stack/include \
         $(LOCAL_PATH)/../../include \
         $(LOCAL_PATH)/../../stack/l2cap \
+        $(LOCAL_PATH)/../../gki/common \
+        $(LOCAL_PATH)/../../gki/ulinux \
         $(LOCAL_PATH)/../../utils/include \
-        $(LOCAL_PATH)/../../ \
         $(LOCAL_PATH)/btif/include \
-        $(bluetooth_C_INCLUDES)
+        $(bdroid_C_INCLUDES)
 
-LOCAL_CFLAGS += $(bluetooth_CFLAGS)
+LOCAL_CFLAGS += -Wno-unused-parameter
+LOCAL_CFLAGS += -Wno-unused-but-set-variable
+LOCAL_CFLAGS += $(bdroid_CFLAGS)
 
 LOCAL_MODULE_PATH := $(TARGET_OUT_EXECUTABLES)
 LOCAL_MODULE_TAGS := debug optional
