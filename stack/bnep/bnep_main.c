@@ -512,20 +512,22 @@ static void bnep_data_ind (UINT16 l2cap_cid, BT_HDR *p_buf)
             UINT16      org_len, new_len;
             /* parse the extension headers and process unknown control headers */
             org_len = rem_len;
-            new_len = 0;
             do {
-
+                  if (org_len < 2) {
+                    android_errorWriteLog(0x534e4554, "67863755");
+                    break;
+                }
                 ext     = *p++;
                 length  = *p++;
-                p += length;
 
                 if ((!(ext & 0x7F)) && (*p > BNEP_FILTER_MULTI_ADDR_RESPONSE_MSG))
                     bnep_send_command_not_understood (p_bcb, *p);
 
                 new_len += (length + 2);
-
-                if (new_len > org_len)
-                    break;
+                if (new_len > org_len) {
+                  android_errorWriteLog(0x534e4554, "67863755");
+                  break;
+                }
 
             } while (ext & 0x80);
         }
